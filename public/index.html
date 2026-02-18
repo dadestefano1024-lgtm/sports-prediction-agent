@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sports Prediction Agent</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+    }
+    header {
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    header h1 { font-size: 20px; font-weight: 700; color: #58a6ff; }
+    header span { font-size: 12px; color: #8b949e; }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      padding: 20px 24px 0;
+      border-bottom: 1px solid #30363d;
+    }
+    .tab {
+      padding: 10px 20px;
+      border-radius: 6px 6px 0 0;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      background: transparent;
+      color: #8b949e;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+    .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; background: #161b22; }
+    .tab:hover:not(.active) { color: #e6edf3; }
+    .controls {
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .btn {
+      padding: 8px 18px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    .btn-primary { background: #238636; color: #fff; }
+    .btn-primary:hover { background: #2ea043; }
+    .btn-primary:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+    .refresh-info { font-size: 12px; color: #8b949e; }
+    .content { padding: 16px 24px; }
+    .loading {
+      text-align: center;
+      padding: 60px;
+      color: #8b949e;
+    }
+    .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid #30363d;
+      border-top-color: #58a6ff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error {
+      background: #1a0a0a;
+      border: 1px solid #6e1010;
+      border-radius: 8px;
+      padding: 16px;
+      color: #f85149;
+    }
+    .games-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
+      gap: 16px;
+    }
+    .game-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+    .game-card:hover { border-color: #58a6ff44; }
+    .game-card.value-bet { border-color: #2ea04388; }
+    .card-header {
+      background: #1c2128;
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .teams { font-size: 15px; font-weight: 700; }
+    .game-time { font-size: 12px; color: #8b949e; }
+    .rank-badge {
+      display: inline-block;
+      background: #388bfd22;
+      color: #58a6ff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-right: 4px;
+    }
+    .card-body { padding: 14px 16px; }
+    .lines-row {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .line-item { flex: 1; }
+    .line-label { font-size: 11px; color: #8b949e; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .line-value { font-size: 15px; font-weight: 700; }
+    .prediction-row {
+      background: #0d1117;
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+    .pred-label { font-size: 11px; color: #8b949e; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .pred-score { font-size: 18px; font-weight: 800; color: #58a6ff; }
+    .edges-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .edge-chip {
+      flex: 1;
+      border-radius: 6px;
+      padding: 8px 10px;
+      text-align: center;
+    }
+    .edge-chip.positive { background: #0f2a1a; border: 1px solid #2ea04355; }
+    .edge-chip.negative { background: #1a0f0f; border: 1px solid #6e101055; }
+    .edge-chip.neutral { background: #1c2128; border: 1px solid #30363d; }
+    .edge-label { font-size: 10px; color: #8b949e; margin-bottom: 2px; text-transform: uppercase; }
+    .edge-val {
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .edge-chip.positive .edge-val { color: #3fb950; }
+    .edge-chip.negative .edge-val { color: #f85149; }
+    .edge-chip.neutral .edge-val { color: #8b949e; }
+    .kelly-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .kelly-chip {
+      flex: 1;
+      background: #1c2128;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 8px 10px;
+      text-align: center;
+    }
+    .kelly-label { font-size: 10px; color: #8b949e; margin-bottom: 2px; text-transform: uppercase; }
+    .kelly-val { font-size: 14px; font-weight: 800; color: #d2a679; }
+    .recommendation {
+      background: #0f2a1a;
+      border: 1px solid #2ea04355;
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .rec-label { font-size: 11px; color: #8b949e; }
+    .rec-value { font-size: 14px; font-weight: 800; color: #3fb950; }
+    .confidence {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 4px;
+    }
+    .confidence.High { background: #0f2a1a; color: #3fb950; }
+    .confidence.Medium { background: #1a1a0a; color: #d29922; }
+    .confidence.Low { background: #1a0f0f; color: #f85149; }
+    .factors { margin-top: 8px; }
+    .factors-label { font-size: 11px; color: #8b949e; margin-bottom: 5px; }
+    .factor-item {
+      font-size: 12px;
+      color: #8b949e;
+      padding: 3px 0;
+      border-top: 1px solid #21262d;
+    }
+    .factor-item:before { content: '→ '; color: #58a6ff; }
+    .value-badge {
+      display: inline-block;
+      background: #2ea04322;
+      color: #3fb950;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 10px;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    .no-games {
+      text-align: center;
+      padding: 48px;
+      color: #8b949e;
+      font-size: 15px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>⚡ Sports Prediction Agent</h1>
+    <span id="last-updated">Not yet loaded</span>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('nba', this)">🏀 NBA</button>
+    <button class="tab" onclick="switchTab('nhl', this)">🏒 NHL</button>
+    <button class="tab" onclick="switchTab('cbb', this)">🏫 CBB Top 25</button>
+  </div>
+
+  <div class="controls">
+    <button class="btn btn-primary" id="fetch-btn" onclick="fetchPredictions()">Fetch Predictions</button>
+    <span class="refresh-info" id="refresh-info">Click to load today's predictions with live betting lines</span>
+  </div>
+
+  <div class="content" id="content">
+    <div class="no-games">Select a sport tab and click Fetch Predictions to begin.</div>
+  </div>
+
+  <script>
+    let currentSport = 'nba';
+    let cache = {};
+
+    function switchTab(sport, el) {
+      currentSport = sport;
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      el.classList.add('active');
+      if (cache[sport]) {
+        renderGames(cache[sport]);
+      } else {
+        document.getElementById('content').innerHTML = '<div class="no-games">Click Fetch Predictions to load ' + sport.toUpperCase() + ' data.</div>';
+      }
+    }
+
+    async function fetchPredictions() {
+      const btn = document.getElementById('fetch-btn');
+      const info = document.getElementById('refresh-info');
+      btn.disabled = true;
+      btn.textContent = 'Loading...';
+      info.textContent = 'Fetching live data & running predictions...';
+
+      document.getElementById('content').innerHTML = `
+        <div class="loading">
+          <div class="spinner"></div>
+          <div>Fetching live data & running predictions for ${currentSport.toUpperCase()}...</div>
+          <div style="font-size:12px;color:#8b949e;margin-top:8px">This may take 20-40 seconds</div>
+        </div>`;
+
+      try {
+        const res = await fetch('/api/predictions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sport: currentSport })
+        });
+        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        cache[currentSport] = data;
+        renderGames(data);
+        document.getElementById('last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+        info.textContent = `Loaded ${data.games?.length || 0} games · Auto-refresh every 5 min`;
+
+        // Auto-refresh every 5 min
+        setTimeout(() => {
+          if (currentSport === data.sport?.toLowerCase()) fetchPredictions();
+        }, 300000);
+
+      } catch (err) {
+        document.getElementById('content').innerHTML = `<div class="error">❌ Error: ${err.message}</div>`;
+        info.textContent = 'Error loading data. Try again.';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Fetch Predictions';
+      }
+    }
+
+    function edgeClass(val) {
+      if (val > 1) return 'positive';
+      if (val < -1) return 'negative';
+      return 'neutral';
+    }
+
+    function isValueBet(game) {
+      const edges = [game.spreadEdge, game.totalEdge, game.puckLineEdge, game.homeMoneylineEdge].filter(e => e != null);
+      return edges.some(e => Math.abs(e) > 3);
+    }
+
+    function renderGames(data) {
+      const games = data.games || [];
+      if (!games.length) {
+        document.getElementById('content').innerHTML = '<div class="no-games">No games found for today.</div>';
+        return;
+      }
+
+      const isCBB = data.sport === 'CBB';
+      const isNHL = data.sport === 'NHL';
+
+      const html = games.map(g => {
+        const valueBet = isValueBet(g);
+        const homeRank = g.homeRank ? `<span class="rank-badge">#${g.homeRank}</span>` : '';
+        const awayRank = g.awayRank ? `<span class="rank-badge">#${g.awayRank}</span>` : '';
+        const valueBadge = valueBet ? '<span class="value-badge">VALUE BET</span>' : '';
+
+        let linesHTML = '';
+        if (isNHL) {
+          linesHTML = `
+            <div class="lines-row">
+              <div class="line-item"><div class="line-label">Puck Line</div><div class="line-value">${g.puckLine || 'N/A'}</div></div>
+              <div class="line-item"><div class="line-label">Home ML</div><div class="line-value">${g.moneylineHome || 'N/A'}</div></div>
+              <div class="line-item"><div class="line-label">Away ML</div><div class="line-value">${g.moneylineAway || 'N/A'}</div></div>
+              <div class="line-item"><div class="line-label">Total</div><div class="line-value">${g.total || 'N/A'}</div></div>
+            </div>`;
+        } else {
+          linesHTML = `
+            <div class="lines-row">
+              <div class="line-item"><div class="line-label">Spread</div><div class="line-value">${g.spread || 'N/A'}</div></div>
+              <div class="line-item"><div class="line-label">Total</div><div class="line-value">${g.total || 'N/A'}</div></div>
+            </div>`;
+        }
+
+        let edgesHTML = '';
+        if (isNHL) {
+          edgesHTML = `
+            <div class="edges-row">
+              <div class="edge-chip ${edgeClass(g.puckLineEdge)}">
+                <div class="edge-label">Puck Line Edge</div>
+                <div class="edge-val">${g.puckLineEdge != null ? (g.puckLineEdge > 0 ? '+' : '') + g.puckLineEdge.toFixed(1) + '%' : 'N/A'}</div>
+              </div>
+              <div class="edge-chip ${edgeClass(g.homeMoneylineEdge)}">
+                <div class="edge-label">ML Edge</div>
+                <div class="edge-val">${g.homeMoneylineEdge != null ? (g.homeMoneylineEdge > 0 ? '+' : '') + g.homeMoneylineEdge.toFixed(1) + '%' : 'N/A'}</div>
+              </div>
+              <div class="edge-chip ${edgeClass(g.totalEdge)}">
+                <div class="edge-label">Total Edge</div>
+                <div class="edge-val">${g.totalEdge != null ? (g.totalEdge > 0 ? '+' : '') + g.totalEdge.toFixed(1) + '%' : 'N/A'}</div>
+              </div>
+            </div>
+            <div class="kelly-row">
+              <div class="kelly-chip"><div class="kelly-label">Half Kelly ML %</div><div class="kelly-val">${g.kellyMoneyline != null ? g.kellyMoneyline.toFixed(1) + '%' : '0%'}</div></div>
+              <div class="kelly-chip"><div class="kelly-label">Half Kelly Total %</div><div class="kelly-val">${g.kellyTotal != null ? g.kellyTotal.toFixed(1) + '%' : '0%'}</div></div>
+            </div>`;
+        } else {
+          edgesHTML = `
+            <div class="edges-row">
+              <div class="edge-chip ${edgeClass(g.spreadEdge)}">
+                <div class="edge-label">Spread Edge</div>
+                <div class="edge-val">${g.spreadEdge != null ? (g.spreadEdge > 0 ? '+' : '') + g.spreadEdge.toFixed(1) + '%' : 'N/A'}</div>
+              </div>
+              <div class="edge-chip ${edgeClass(g.totalEdge)}">
+                <div class="edge-label">Total Edge</div>
+                <div class="edge-val">${g.totalEdge != null ? (g.totalEdge > 0 ? '+' : '') + g.totalEdge.toFixed(1) + '%' : 'N/A'}</div>
+              </div>
+            </div>
+            <div class="kelly-row">
+              <div class="kelly-chip"><div class="kelly-label">Half Kelly Spread %</div><div class="kelly-val">${g.kellySpread != null ? g.kellySpread.toFixed(1) + '%' : '0%'}</div></div>
+              <div class="kelly-chip"><div class="kelly-label">Half Kelly Total %</div><div class="kelly-val">${g.kellyTotal != null ? g.kellyTotal.toFixed(1) + '%' : '0%'}</div></div>
+            </div>`;
+        }
+
+        const factors = (g.keyFactors || []).map(f => `<div class="factor-item">${f}</div>`).join('');
+
+        return `
+          <div class="game-card ${valueBet ? 'value-bet' : ''}">
+            <div class="card-header">
+              <div>
+                <div class="teams">${awayRank}${g.awayTeam} @ ${homeRank}${g.homeTeam}${valueBadge}</div>
+                <div class="game-time">${g.gameTime || ''}</div>
+              </div>
+              <span class="confidence ${g.confidence}">${g.confidence || 'N/A'}</span>
+            </div>
+            <div class="card-body">
+              ${linesHTML}
+              <div class="prediction-row">
+                <div class="pred-label">Predicted Score</div>
+                <div class="pred-score">${g.awayTeam?.split(' ').pop()} ${g.predictedScore?.away ?? '?'} — ${g.predictedScore?.home ?? '?'} ${g.homeTeam?.split(' ').pop()}</div>
+              </div>
+              ${edgesHTML}
+              <div class="recommendation">
+                <div><div class="rec-label">Recommendation</div><div class="rec-value">🎯 ${g.recommendation || 'No clear edge'}</div></div>
+              </div>
+              ${factors ? `<div class="factors"><div class="factors-label">Key Factors</div>${factors}</div>` : ''}
+            </div>
+          </div>`;
+      }).join('');
+
+      document.getElementById('content').innerHTML = `<div class="games-grid">${html}</div>`;
+    }
+  </script>
+</body>
+</html>
