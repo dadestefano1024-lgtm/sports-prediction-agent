@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
+const { Pool } = require('pg');
 const path = require('path');
 
 const app = express();
@@ -10,12 +11,19 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// PostgreSQL connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
 console.log('API Key found:', process.env.ANTHROPIC_API_KEY ? 'YES (length: ' + process.env.ANTHROPIC_API_KEY.length + ')' : 'NO');
 console.log('Odds API Key found:', process.env.ODDS_API_KEY ? 'YES' : 'NO');
+console.log('Database connected:', process.env.DATABASE_URL ? 'YES' : 'NO');
 
 // ── Rate limiting ─────────────────────────────────────────────────────────────
 const requestTracker = new Map();
@@ -51,7 +59,7 @@ function rateLimitMiddleware(req, res, next) {
 
 // ── Simple in-memory cache (5 min TTL) ───────────────────────────────────────
 const cache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 5 * 60 * 1000;
 
 function getCached(key) {
   const cached = cache.get(key);
@@ -63,6 +71,44 @@ function getCached(key) {
 
 function setCache(key, data) {
   cache.set(key, { data, timestamp: Date.now() });
+}
+
+// ── Save prediction to database ──────────────────────────────────────────────
+async function savePrediction(sport, game) {
+  try {
+    const query = `
+      INSERT INTO predictions (
+        sport, game_id, home_team, away_team, game_time,
+        spread, total, predicted_home_score, predicted_away_score,
+        spread_edge, total_edge, kelly_spread, kelly_total,
+        recommendation, confidence
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+      RETURNING id
+    `;
+    
+    const values = [
+      sport.toUpperCase(),
+      game.id,
+      game.homeTeam,
+      game.awayTeam,
+      game.gameTime,
+      parseFloat(game.spread) || null,
+      parseFloat(game.total) || null,
+      game.predictedScore?.home || null,
+      game.predictedScore?.away || null,
+      game.spreadEdge || null,
+      game.totalEdge || null,
+      game.kellySpread || null,
+      game.kellyTotal || null,
+      game.recommendation,
+      game.confidence
+    ];
+
+    const result = await pool.query(query, values);
+    console.log(`Saved prediction ${result.rows[0].id} for ${game.awayTeam} @ ${game.homeTeam}`);
+  } catch (err) {
+    console.error('Error saving prediction:', err.message);
+  }
 }
 
 // ── Fetch games from The Odds API ────────────────────────────────────────────
@@ -102,7 +148,6 @@ app.post('/api/predictions', rateLimitMiddleware, async (req, res) => {
   const { sport } = req.body;
 
   try {
-    // Fetch odds data
     const oddsData = await fetchOddsData(sport);
 
     if (!oddsData || oddsData.length === 0) {
@@ -113,7 +158,6 @@ app.post('/api/predictions', rateLimitMiddleware, async (req, res) => {
       });
     }
 
-    // Format games for Claude
     const gamesFormatted = oddsData.slice(0, 10).map(game => {
       const bookmaker = game.bookmakers?.[0];
       const spreads = bookmaker?.markets?.find(m => m.key === 'spreads');
@@ -130,14 +174,6 @@ app.post('/api/predictions', rateLimitMiddleware, async (req, res) => {
         moneylineAway: h2h?.outcomes?.find(o => o.name === game.away_team)?.price || 'N/A'
       };
     });
-
-    const sportPrompts = {
-      nba: `You are an expert NBA analyst. Analyze these games and predict with Half Kelly sizing.`,
-      nhl: `You are an expert NHL analyst. Analyze these games with focus on goalie matchups and Half Kelly sizing.`,
-      cbb: `You are an expert college basketball analyst focusing on AP Top 25 teams with Half Kelly sizing.`,
-      nfl: `You are an expert NFL analyst. Analyze these games considering matchups, injuries, weather, and coaching with Half Kelly sizing.`,
-      mlb: `You are an expert MLB analyst. Analyze these games considering pitching matchups, bullpen strength, ballpark factors, and weather with Half Kelly sizing.`
-    };
 
     const prompt = `You are an expert sports analyst. Here are today's ${sport.toUpperCase()} games with current betting lines:
 
@@ -203,10 +239,38 @@ Return ONLY valid JSON in this exact format (no markdown, no explanations):
     if (!jsonMatch) throw new Error('No JSON found in response');
 
     const data = JSON.parse(jsonMatch[0]);
+
+    // Save each prediction to database
+    for (const game of data.games) {
+      await savePrediction(sport, game);
+    }
+
     res.json(data);
 
   } catch (err) {
     console.error(`Error fetching ${sport} predictions:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Performance stats endpoint ────────────────────────────────────────────────
+app.get('/api/performance', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        sport,
+        COUNT(*) as total_predictions,
+        AVG(spread_edge) as avg_spread_edge,
+        AVG(total_edge) as avg_total_edge
+      FROM predictions
+      GROUP BY sport
+      ORDER BY total_predictions DESC
+    `;
+    
+    const result = await pool.query(query);
+    res.json({ stats: result.rows });
+  } catch (err) {
+    console.error('Error fetching performance:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
