@@ -70,7 +70,9 @@ async function fetchOddsData(sport) {
   const sportMap = {
     nba: 'basketball_nba',
     nhl: 'icehockey_nhl',
-    cbb: 'basketball_ncaab'
+    cbb: 'basketball_ncaab',
+    nfl: 'americanfootball_nfl',
+    mlb: 'baseball_mlb'
   };
 
   const oddsApiSport = sportMap[sport];
@@ -116,15 +118,26 @@ app.post('/api/predictions', rateLimitMiddleware, async (req, res) => {
       const bookmaker = game.bookmakers?.[0];
       const spreads = bookmaker?.markets?.find(m => m.key === 'spreads');
       const totals = bookmaker?.markets?.find(m => m.key === 'totals');
+      const h2h = bookmaker?.markets?.find(m => m.key === 'h2h');
       
       return {
         homeTeam: game.home_team,
         awayTeam: game.away_team,
         gameTime: game.commence_time,
         spread: spreads?.outcomes?.[0]?.point || 'N/A',
-        total: totals?.outcomes?.[0]?.point || 'N/A'
+        total: totals?.outcomes?.[0]?.point || 'N/A',
+        moneylineHome: h2h?.outcomes?.find(o => o.name === game.home_team)?.price || 'N/A',
+        moneylineAway: h2h?.outcomes?.find(o => o.name === game.away_team)?.price || 'N/A'
       };
     });
+
+    const sportPrompts = {
+      nba: `You are an expert NBA analyst. Analyze these games and predict with Half Kelly sizing.`,
+      nhl: `You are an expert NHL analyst. Analyze these games with focus on goalie matchups and Half Kelly sizing.`,
+      cbb: `You are an expert college basketball analyst focusing on AP Top 25 teams with Half Kelly sizing.`,
+      nfl: `You are an expert NFL analyst. Analyze these games considering matchups, injuries, weather, and coaching with Half Kelly sizing.`,
+      mlb: `You are an expert MLB analyst. Analyze these games considering pitching matchups, bullpen strength, ballpark factors, and weather with Half Kelly sizing.`
+    };
 
     const prompt = `You are an expert sports analyst. Here are today's ${sport.toUpperCase()} games with current betting lines:
 
