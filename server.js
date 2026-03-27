@@ -433,8 +433,8 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
     // Fetch injury data
     const injuries = await fetchInjuryData(sport);
 
-    // Take up to 10 games (no Top 25 filter - show ALL games)
-    let gamesToAnalyze = oddsData.slice(0, 10);
+    // Take up to 6 games (no Top 25 filter - show ALL games)
+    let gamesToAnalyze = oddsData.slice(0, 6);
 
     if (gamesToAnalyze.length === 0) {
       return res.json({
@@ -516,71 +516,49 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
     }
 
     // Build the Claude prompt with all the data
-    const prompt = `You are an expert sports analyst and handicapper. Analyze these ${sport.toUpperCase()} games with betting lines, injuries, and other factors.
+    const prompt = `You are an expert sports analyst. Analyze these ${sport.toUpperCase()} games.
 
-GAMES DATA:
+GAMES:
 ${JSON.stringify(gamesFormatted, null, 2)}
 
-IMPORTANT RULES:
-1. The FAVORITE is determined by MONEYLINE ODDS (more negative = bigger favorite). This is provided in the "favorite" field.
-2. DO NOT assume home team is favorite - use the moneyline data provided.
-3. Factor in injuries when making predictions - players marked "Out" or "Doubtful" have HIGH impact.
-4. If weather data is provided (for outdoor games), factor in wind/rain/cold.
-5. Note any significant line movement (spreadMove, totalMove fields).
-6. Calculate HALF KELLY (multiply Kelly result by 0.5) for bet sizing.
-7. Flag games where |edge| > 3% as strong plays.
+RULES:
+1. FAVORITE = more negative moneyline (use "favorite" field provided)
+2. Factor in injuries (Out/Doubtful = HIGH impact)
+3. Factor in weather for outdoor games
+4. Use HALF KELLY for bet sizing
+5. Flag |edge| > 3% as strong plays
 
-For each game, provide:
-1. Predicted final score
-2. Your spread pick with edge percentage
-3. Your total (over/under) pick with edge percentage  
-4. Half Kelly bet size (as % of bankroll)
-5. Confidence level (Low/Medium/High)
-6. Key factors including injuries, weather, line movement
-
-Return ONLY valid JSON in this exact format (no markdown, no explanations):
+Return ONLY valid JSON (no markdown):
 {
   "games": [
     {
       "id": "game_id",
-      "homeTeam": "Team Name",
-      "awayTeam": "Team Name",
-      "gameTime": "ISO timestamp",
+      "homeTeam": "Team",
+      "awayTeam": "Team",
+      "gameTime": "ISO",
       "spread": -4.5,
       "total": 224.5,
       "homeML": -180,
       "awayML": 155,
-      "favorite": "Team Name",
+      "favorite": "Team",
       "predictedScore": {"home": 112, "away": 108},
-      "predictedSpread": -4,
-      "predictedTotal": 220,
-      "spreadPick": "HOME -4.5",
+      "spreadPick": "TEAM -4.5",
       "spreadEdge": 2.5,
-      "totalPick": "UNDER 224.5",
-      "totalEdge": -1.8,
-      "spreadWinProb": 0.54,
-      "totalWinProb": 0.52,
+      "totalPick": "OVER 224.5",
+      "totalEdge": 1.8,
       "kellySpread": 1.05,
       "kellyTotal": 0.8,
-      "confidence": "Medium",
-      "keyFactors": ["Factor 1", "Factor 2", "Factor 3"],
-      "injuryImpact": "Brief summary of injury impact",
-      "weatherImpact": "Brief summary if applicable or null",
-      "lineMovement": {"spreadMove": 0.5, "totalMove": -1.0},
-      "bestLines": {
-        "spread": {"book": "DraftKings", "price": -105},
-        "total": {"book": "FanDuel", "price": -108}
-      }
+      "confidence": "High",
+      "keyFactors": ["factor1", "factor2"]
     }
   ],
-  "arbitrageAlerts": ${JSON.stringify(allArbitrageOpps)},
   "lastUpdated": "${new Date().toISOString()}",
   "sport": "${sport.toUpperCase()}"
 }`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
+      max_tokens: 8192,
       messages: [{ role: "user", content: prompt }],
     });
 
