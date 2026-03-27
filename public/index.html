@@ -249,6 +249,21 @@
     .pick-value { font-size: 14px; font-weight: 800; color: #3fb950; }
     .pick-chip.weak .pick-value { color: #8b949e; }
     
+    /* Recommendation Box */
+    .recommendation {
+      background: linear-gradient(90deg, #0f2a1a 0%, #1a3d2a 100%);
+      border: 1px solid #2ea043;
+      border-radius: 6px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .rec-label { font-size: 10px; color: #8b949e; text-transform: uppercase; margin-bottom: 2px; }
+    .rec-value { font-size: 16px; font-weight: 800; color: #3fb950; }
+    .rec-edge { font-size: 14px; font-weight: 700; color: #3fb950; background: #2ea04333; padding: 4px 10px; border-radius: 4px; }
+    
     /* Line Movement */
     .line-movement {
       display: flex;
@@ -386,7 +401,6 @@
         document.getElementById('last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
         info.textContent = `Loaded ${data.games?.length || 0} games · Auto-refresh every 5 min`;
 
-        // Auto-refresh every 5 min
         setTimeout(() => {
           if (currentSport === data.sport?.toLowerCase()) fetchPredictions();
         }, 300000);
@@ -440,7 +454,6 @@
     function renderGames(data) {
       const games = data.games || [];
       
-      // Render arbitrage alerts
       renderArbitrageAlerts(data.arbitrageAlerts);
       
       if (!games.length) {
@@ -456,17 +469,14 @@
         const awayRank = g.awayRank ? `<span class="rank-badge">#${g.awayRank}</span>` : '';
         const valueBadge = valueBet ? '<span class="value-badge">VALUE BET</span>' : '';
         
-        // Weather badge (for outdoor sports)
         let weatherBadge = '';
         if (g.weather) {
           weatherBadge = `<span class="weather-badge">🌡️ ${g.weather.temperature}°F ${g.weather.windSpeed}mph</span>`;
         }
         
-        // Favorite indicator
         const favoriteTeam = g.favorite || '';
         const homeIsFavorite = favoriteTeam.includes(g.homeTeam?.split(' ').pop());
         
-        // Line movement
         let movementHTML = '';
         if (g.lineMovement && (g.lineMovement.spreadMove || g.lineMovement.totalMove)) {
           const spreadMov = formatMovement(g.lineMovement.spreadMove);
@@ -478,7 +488,6 @@
             </div>`;
         }
 
-        // Lines display
         let linesHTML = '';
         if (isNHL) {
           linesHTML = `
@@ -498,7 +507,6 @@
             </div>`;
         }
 
-        // Edges display
         let edgesHTML = `
           <div class="edges-row">
             <div class="edge-chip ${edgeClass(g.spreadEdge)}">
@@ -515,7 +523,6 @@
             <div class="kelly-chip"><div class="kelly-label">Half Kelly Total %</div><div class="kelly-val">${g.kellyTotal != null ? g.kellyTotal.toFixed(1) + '%' : '0%'}</div></div>
           </div>`;
 
-        // Picks display (the actual recommendations)
         const spreadPickStrong = Math.abs(g.spreadEdge || 0) >= 2;
         const totalPickStrong = Math.abs(g.totalEdge || 0) >= 2;
         
@@ -530,6 +537,33 @@
               <div class="pick-value">${g.totalPick || 'No edge'}</div>
             </div>
           </div>`;
+        
+        let recommendationHTML = '';
+        if (valueBet) {
+          const bestSpreadEdge = Math.abs(g.spreadEdge || 0);
+          const bestTotalEdge = Math.abs(g.totalEdge || 0);
+          let bestPick = '';
+          let bestEdge = 0;
+          
+          if (bestSpreadEdge >= bestTotalEdge && bestSpreadEdge >= 3) {
+            bestPick = g.spreadPick;
+            bestEdge = g.spreadEdge;
+          } else if (bestTotalEdge >= 3) {
+            bestPick = g.totalPick;
+            bestEdge = g.totalEdge;
+          }
+          
+          if (bestPick) {
+            recommendationHTML = `
+              <div class="recommendation">
+                <div>
+                  <div class="rec-label">Recommendation</div>
+                  <div class="rec-value">🎯 ${bestPick}</div>
+                </div>
+                <div class="rec-edge">+${bestEdge.toFixed(1)}% edge</div>
+              </div>`;
+          }
+        }
 
         const factors = (g.keyFactors || []).map(f => `<div class="factor-item">${f}</div>`).join('');
 
@@ -554,6 +588,7 @@
               </div>
               ${edgesHTML}
               ${picksHTML}
+              ${recommendationHTML}
               ${factors ? `<div class="factors"><div class="factors-label">Key Factors</div>${factors}</div>` : ''}
             </div>
           </div>`;
