@@ -433,8 +433,8 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
     // Fetch injury data
     const injuries = await fetchInjuryData(sport);
 
-    // Take up to 6 games (no Top 25 filter - show ALL games)
-    let gamesToAnalyze = oddsData.slice(0, 6);
+    // Take up to 15 games (show ALL games with odds)
+    let gamesToAnalyze = oddsData.slice(0, 15);
 
     if (gamesToAnalyze.length === 0) {
       return res.json({
@@ -515,46 +515,29 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
       });
     }
 
+    // Build simplified game data for Claude (reduce token usage)
+    const simplifiedGames = gamesFormatted.map(g => ({
+      id: g.id,
+      home: g.homeTeam,
+      away: g.awayTeam,
+      spread: g.spread,
+      total: g.total,
+      homeML: g.homeML,
+      awayML: g.awayML,
+      fav: g.favorite
+    }));
+
     // Build the Claude prompt with all the data
-    const prompt = `You are an expert sports analyst. Analyze these ${sport.toUpperCase()} games.
+    const prompt = `Analyze ${sport.toUpperCase()} games. Return predictions as JSON.
 
 GAMES:
-${JSON.stringify(gamesFormatted, null, 2)}
+${JSON.stringify(simplifiedGames)}
 
-RULES:
-1. FAVORITE = more negative moneyline (use "favorite" field provided)
-2. Factor in injuries (Out/Doubtful = HIGH impact)
-3. Factor in weather for outdoor games
-4. Use HALF KELLY for bet sizing
-5. Flag |edge| > 3% as strong plays
+For each game return: id, homeTeam, awayTeam, gameTime, spread, total, homeML, awayML, favorite, predictedScore {home, away}, spreadPick, spreadEdge, totalPick, totalEdge, kellySpread, kellyTotal, confidence (High/Medium/Low), keyFactors [2 items max].
 
-Return ONLY valid JSON (no markdown):
-{
-  "games": [
-    {
-      "id": "game_id",
-      "homeTeam": "Team",
-      "awayTeam": "Team",
-      "gameTime": "ISO",
-      "spread": -4.5,
-      "total": 224.5,
-      "homeML": -180,
-      "awayML": 155,
-      "favorite": "Team",
-      "predictedScore": {"home": 112, "away": 108},
-      "spreadPick": "TEAM -4.5",
-      "spreadEdge": 2.5,
-      "totalPick": "OVER 224.5",
-      "totalEdge": 1.8,
-      "kellySpread": 1.05,
-      "kellyTotal": 0.8,
-      "confidence": "High",
-      "keyFactors": ["factor1", "factor2"]
-    }
-  ],
-  "lastUpdated": "${new Date().toISOString()}",
-  "sport": "${sport.toUpperCase()}"
-}`;
+Use moneyline to determine favorite. Calculate half Kelly. Flag edge>3% as High confidence.
+
+Return ONLY valid JSON: {"games":[...],"lastUpdated":"${new Date().toISOString()}","sport":"${sport.toUpperCase()}"}`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
@@ -581,7 +564,24 @@ Return ONLY valid JSON (no markdown):
 
     const data = JSON.parse(jsonMatch[0]);
 
-    // Add the raw best lines and arbitrage data to response
+    // Merge extra data (weather, line movement, best lines) back into each game
+    if (data.games) {
+      data.games = data.games.map(game => {
+        const originalGame = gamesFormatted.find(g => g.id === game.id);
+        if (originalGame) {
+          return {
+            ...game,
+            weather: originalGame.weather,
+            lineMovement: originalGame.lineMovement,
+            bestLines: originalGame.bestLines,
+            injuries: originalGame.injuries
+          };
+        }
+        return game;
+      });
+    }
+
+    // Add arbitrage alerts to response
     data.arbitrageAlerts = allArbitrageOpps;
 
     res.json(data);
