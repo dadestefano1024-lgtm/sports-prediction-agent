@@ -64,7 +64,6 @@
     .btn-primary:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
     .refresh-info { font-size: 12px; color: #8b949e; }
     
-    /* Arbitrage Alert Banner */
     .arb-alert {
       background: linear-gradient(90deg, #1a0a2e 0%, #2d1b4e 100%);
       border: 1px solid #8b5cf6;
@@ -82,11 +81,7 @@
     .arb-profit { font-size: 18px; font-weight: 800; color: #10b981; }
     
     .content { padding: 0 24px 24px; }
-    .loading {
-      text-align: center;
-      padding: 60px;
-      color: #8b949e;
-    }
+    .loading { text-align: center; padding: 60px; color: #8b949e; }
     .spinner {
       width: 32px; height: 32px;
       border: 3px solid #30363d;
@@ -140,7 +135,6 @@
     }
     .card-body { padding: 14px 16px; }
     
-    /* Weather Badge */
     .weather-badge {
       display: inline-flex;
       align-items: center;
@@ -150,16 +144,6 @@
       font-size: 11px;
       font-weight: 600;
       padding: 3px 8px;
-      border-radius: 4px;
-    }
-    
-    /* Favorite Badge */
-    .favorite-badge {
-      background: #2ea04322;
-      color: #3fb950;
-      font-size: 10px;
-      font-weight: 700;
-      padding: 2px 6px;
       border-radius: 4px;
     }
     
@@ -173,13 +157,6 @@
     .line-label { font-size: 10px; color: #8b949e; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
     .line-value { font-size: 15px; font-weight: 700; }
     .line-value.favorite { color: #3fb950; }
-    
-    /* Best Line indicator */
-    .best-line {
-      font-size: 9px;
-      color: #a78bfa;
-      margin-top: 2px;
-    }
     
     .prediction-row {
       background: #0d1117;
@@ -204,10 +181,7 @@
     .edge-chip.negative { background: #1a0f0f; border: 1px solid #6e101055; }
     .edge-chip.neutral { background: #1c2128; border: 1px solid #30363d; }
     .edge-label { font-size: 10px; color: #8b949e; margin-bottom: 2px; text-transform: uppercase; }
-    .edge-val {
-      font-size: 14px;
-      font-weight: 800;
-    }
+    .edge-val { font-size: 14px; font-weight: 800; }
     .edge-chip.positive .edge-val { color: #3fb950; }
     .edge-chip.negative .edge-val { color: #f85149; }
     .edge-chip.neutral .edge-val { color: #8b949e; }
@@ -227,7 +201,6 @@
     .kelly-label { font-size: 10px; color: #8b949e; margin-bottom: 2px; text-transform: uppercase; }
     .kelly-val { font-size: 14px; font-weight: 800; color: #d2a679; }
     
-    /* Picks Row */
     .picks-row {
       display: flex;
       gap: 10px;
@@ -249,7 +222,6 @@
     .pick-value { font-size: 14px; font-weight: 800; color: #3fb950; }
     .pick-chip.weak .pick-value { color: #8b949e; }
     
-    /* Recommendation Box */
     .recommendation {
       background: linear-gradient(90deg, #0f2a1a 0%, #1a3d2a 100%);
       border: 1px solid #2ea043;
@@ -264,7 +236,6 @@
     .rec-value { font-size: 16px; font-weight: 800; color: #3fb950; }
     .rec-edge { font-size: 14px; font-weight: 700; color: #3fb950; background: #2ea04333; padding: 4px 10px; border-radius: 4px; }
     
-    /* Line Movement */
     .line-movement {
       display: flex;
       gap: 8px;
@@ -276,9 +247,6 @@
       border: 1px solid #30363d;
       border-radius: 4px;
       padding: 4px 8px;
-      display: flex;
-      align-items: center;
-      gap: 4px;
     }
     .movement-chip.up { color: #f85149; }
     .movement-chip.down { color: #3fb950; }
@@ -311,7 +279,6 @@
       padding: 2px 8px;
       border-radius: 10px;
       margin-left: 8px;
-      vertical-align: middle;
     }
     .no-games {
       text-align: center;
@@ -383,7 +350,6 @@
         <div class="loading">
           <div class="spinner"></div>
           <div>Analyzing ${currentSport.toUpperCase()} games with live odds...</div>
-          <div style="font-size:12px;color:#8b949e;margin-top:8px">Checking injuries, weather & line movement</div>
         </div>`;
 
       try {
@@ -399,7 +365,7 @@
         cache[currentSport] = data;
         renderGames(data);
         document.getElementById('last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
-        info.textContent = `Loaded ${data.games?.length || 0} games · Auto-refresh every 5 min`;
+        info.textContent = `Loaded ${data.games?.length || 0} games`;
 
         setTimeout(() => {
           if (currentSport === data.sport?.toLowerCase()) fetchPredictions();
@@ -414,16 +380,37 @@
       }
     }
 
+    function safeNum(val) {
+      const num = parseFloat(val);
+      return isNaN(num) ? null : num;
+    }
+
+    function formatEdge(val) {
+      const num = safeNum(val);
+      if (num === null) return 'N/A';
+      return (num > 0 ? '+' : '') + num.toFixed(1) + '%';
+    }
+
+    function formatKelly(val) {
+      const num = safeNum(val);
+      if (num === null) return '0%';
+      return num.toFixed(1) + '%';
+    }
+
     function edgeClass(val) {
-      if (val > 1) return 'positive';
-      if (val < -1) return 'negative';
+      const num = safeNum(val);
+      if (num === null) return 'neutral';
+      if (num > 1) return 'positive';
+      if (num < -1) return 'negative';
       return 'neutral';
     }
 
     function isValueBet(game) {
-      return Math.abs(game.spreadEdge || 0) >= 3 || Math.abs(game.totalEdge || 0) >= 3;
+      const spreadEdge = safeNum(game.spreadEdge);
+      const totalEdge = safeNum(game.totalEdge);
+      return Math.abs(spreadEdge || 0) >= 3 || Math.abs(totalEdge || 0) >= 3;
     }
-    
+
     function formatMovement(val) {
       if (!val || val === 0) return { text: '—', cls: 'neutral' };
       if (val > 0) return { text: '+' + val.toFixed(1), cls: 'up' };
@@ -436,24 +423,20 @@
         container.innerHTML = '';
         return;
       }
-      
-      const html = arbs.map(arb => `
+      container.innerHTML = arbs.map(arb => `
         <div class="arb-alert">
           <div class="arb-alert-icon">💰</div>
           <div class="arb-alert-text">
             <div class="arb-alert-title">ARBITRAGE OPPORTUNITY</div>
-            <div class="arb-alert-desc">${arb.description || `${arb.homeTeam} vs ${arb.awayTeam}`}</div>
+            <div class="arb-alert-desc">${arb.description || arb.homeTeam + ' vs ' + arb.awayTeam}</div>
           </div>
           <div class="arb-profit">+${arb.profit}%</div>
         </div>
       `).join('');
-      
-      container.innerHTML = html;
     }
 
     function renderGames(data) {
       const games = data.games || [];
-      
       renderArbitrageAlerts(data.arbitrageAlerts);
       
       if (!games.length) {
@@ -465,8 +448,6 @@
 
       const html = games.map(g => {
         const valueBet = isValueBet(g);
-        const homeRank = g.homeRank ? `<span class="rank-badge">#${g.homeRank}</span>` : '';
-        const awayRank = g.awayRank ? `<span class="rank-badge">#${g.awayRank}</span>` : '';
         const valueBadge = valueBet ? '<span class="value-badge">VALUE BET</span>' : '';
         
         let weatherBadge = '';
@@ -488,44 +469,36 @@
             </div>`;
         }
 
-        let linesHTML = '';
-        if (isNHL) {
-          linesHTML = `
-            <div class="lines-row">
-              <div class="line-item"><div class="line-label">Puck Line</div><div class="line-value">${g.puckLine || g.spread || 'N/A'}</div></div>
-              <div class="line-item"><div class="line-label">Home ML</div><div class="line-value ${homeIsFavorite ? 'favorite' : ''}">${g.homeML || 'N/A'}</div></div>
-              <div class="line-item"><div class="line-label">Away ML</div><div class="line-value ${!homeIsFavorite ? 'favorite' : ''}">${g.awayML || 'N/A'}</div></div>
-              <div class="line-item"><div class="line-label">Total</div><div class="line-value">${g.total || 'N/A'}</div></div>
-            </div>`;
-        } else {
-          linesHTML = `
-            <div class="lines-row">
-              <div class="line-item"><div class="line-label">Spread</div><div class="line-value">${g.spread || 'N/A'}</div></div>
-              <div class="line-item"><div class="line-label">Total</div><div class="line-value">${g.total || 'N/A'}</div></div>
-              <div class="line-item"><div class="line-label">Home ML</div><div class="line-value ${homeIsFavorite ? 'favorite' : ''}">${g.homeML || 'N/A'}</div></div>
-              <div class="line-item"><div class="line-label">Away ML</div><div class="line-value ${!homeIsFavorite ? 'favorite' : ''}">${g.awayML || 'N/A'}</div></div>
-            </div>`;
-        }
+        let linesHTML = `
+          <div class="lines-row">
+            <div class="line-item"><div class="line-label">Spread</div><div class="line-value">${g.spread || 'N/A'}</div></div>
+            <div class="line-item"><div class="line-label">Total</div><div class="line-value">${g.total || 'N/A'}</div></div>
+            <div class="line-item"><div class="line-label">Home ML</div><div class="line-value ${homeIsFavorite ? 'favorite' : ''}">${g.homeML || 'N/A'}</div></div>
+            <div class="line-item"><div class="line-label">Away ML</div><div class="line-value ${!homeIsFavorite ? 'favorite' : ''}">${g.awayML || 'N/A'}</div></div>
+          </div>`;
+
+        const spreadEdgeNum = safeNum(g.spreadEdge);
+        const totalEdgeNum = safeNum(g.totalEdge);
 
         let edgesHTML = `
           <div class="edges-row">
             <div class="edge-chip ${edgeClass(g.spreadEdge)}">
               <div class="edge-label">Spread Edge</div>
-              <div class="edge-val">${g.spreadEdge != null ? (g.spreadEdge > 0 ? '+' : '') + g.spreadEdge.toFixed(1) + '%' : 'N/A'}</div>
+              <div class="edge-val">${formatEdge(g.spreadEdge)}</div>
             </div>
             <div class="edge-chip ${edgeClass(g.totalEdge)}">
               <div class="edge-label">Total Edge</div>
-              <div class="edge-val">${g.totalEdge != null ? (g.totalEdge > 0 ? '+' : '') + g.totalEdge.toFixed(1) + '%' : 'N/A'}</div>
+              <div class="edge-val">${formatEdge(g.totalEdge)}</div>
             </div>
           </div>
           <div class="kelly-row">
-            <div class="kelly-chip"><div class="kelly-label">Half Kelly Spread %</div><div class="kelly-val">${g.kellySpread != null ? g.kellySpread.toFixed(1) + '%' : '0%'}</div></div>
-            <div class="kelly-chip"><div class="kelly-label">Half Kelly Total %</div><div class="kelly-val">${g.kellyTotal != null ? g.kellyTotal.toFixed(1) + '%' : '0%'}</div></div>
+            <div class="kelly-chip"><div class="kelly-label">Half Kelly Spread</div><div class="kelly-val">${formatKelly(g.kellySpread)}</div></div>
+            <div class="kelly-chip"><div class="kelly-label">Half Kelly Total</div><div class="kelly-val">${formatKelly(g.kellyTotal)}</div></div>
           </div>`;
 
-        const spreadPickStrong = Math.abs(g.spreadEdge || 0) >= 2;
-        const totalPickStrong = Math.abs(g.totalEdge || 0) >= 2;
-        
+        const spreadPickStrong = Math.abs(spreadEdgeNum || 0) >= 2;
+        const totalPickStrong = Math.abs(totalEdgeNum || 0) >= 2;
+
         const picksHTML = `
           <div class="picks-row">
             <div class="pick-chip ${spreadPickStrong ? '' : 'weak'}">
@@ -537,30 +510,30 @@
               <div class="pick-value">${g.totalPick || 'No edge'}</div>
             </div>
           </div>`;
-        
+
         let recommendationHTML = '';
         if (valueBet) {
-          const bestSpreadEdge = Math.abs(g.spreadEdge || 0);
-          const bestTotalEdge = Math.abs(g.totalEdge || 0);
+          const bestSpreadEdge = Math.abs(spreadEdgeNum || 0);
+          const bestTotalEdge = Math.abs(totalEdgeNum || 0);
           let bestPick = '';
           let bestEdge = 0;
           
           if (bestSpreadEdge >= bestTotalEdge && bestSpreadEdge >= 3) {
             bestPick = g.spreadPick;
-            bestEdge = g.spreadEdge;
+            bestEdge = spreadEdgeNum;
           } else if (bestTotalEdge >= 3) {
             bestPick = g.totalPick;
-            bestEdge = g.totalEdge;
+            bestEdge = totalEdgeNum;
           }
           
-          if (bestPick) {
+          if (bestPick && bestEdge !== null) {
             recommendationHTML = `
               <div class="recommendation">
                 <div>
                   <div class="rec-label">Recommendation</div>
                   <div class="rec-value">🎯 ${bestPick}</div>
                 </div>
-                <div class="rec-edge">+${bestEdge.toFixed(1)}% edge</div>
+                <div class="rec-edge">+${Math.abs(bestEdge).toFixed(1)}% edge</div>
               </div>`;
           }
         }
@@ -571,7 +544,7 @@
           <div class="game-card ${valueBet ? 'value-bet' : ''}">
             <div class="card-header">
               <div>
-                <div class="teams">${awayRank}${g.awayTeam} @ ${homeRank}${g.homeTeam}${valueBadge}</div>
+                <div class="teams">${g.awayTeam} @ ${g.homeTeam}${valueBadge}</div>
                 <div class="game-time">${g.gameTime || ''}</div>
               </div>
               <div class="header-badges">
