@@ -81,7 +81,6 @@ const openingLines = new Map();
 
 function trackLineMovement(gameId, currentSpread, currentTotal, currentML) {
   if (!openingLines.has(gameId)) {
-    // First time seeing this game - store as opening line
     openingLines.set(gameId, {
       spread: currentSpread,
       total: currentTotal,
@@ -113,16 +112,14 @@ const sportMap = {
   mlb: "baseball_mlb",
 };
 
-// Outdoor sports that need weather data
 const outdoorSports = ["nfl", "mlb"];
 
-// ESPN API endpoints for injuries
 const espnInjuryEndpoints = {
   nba: "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries",
   nhl: "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/injuries",
   nfl: "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries",
   mlb: "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/injuries",
-  cbb: null, // No reliable CBB injury endpoint
+  cbb: null,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -146,7 +143,6 @@ async function fetchInjuryData(sport) {
     const data = await response.json();
     const injuries = [];
 
-    // Parse ESPN's injury format
     if (data.items) {
       for (const team of data.items) {
         const teamName = team.team?.displayName || team.team?.name || "Unknown";
@@ -221,9 +217,7 @@ function getWeatherDescription(code) {
   return codes[code] || "Unknown";
 }
 
-// Stadium coordinates for weather (major outdoor venues)
 const stadiumCoords = {
-  // NFL Stadiums (outdoor only)
   "Buffalo Bills": { lat: 42.7738, lon: -78.787 },
   "Miami Dolphins": { lat: 25.958, lon: -80.2389 },
   "New England Patriots": { lat: 42.0909, lon: -71.2643 },
@@ -237,8 +231,8 @@ const stadiumCoords = {
   "Jacksonville Jaguars": { lat: 30.324, lon: -81.6373 },
   "Denver Broncos": { lat: 39.7439, lon: -105.02 },
   "Kansas City Chiefs": { lat: 39.0489, lon: -94.4839 },
-  "Las Vegas Raiders": { lat: 36.0909, lon: -115.1833 }, // Dome
-  "Los Angeles Chargers": { lat: 33.9535, lon: -118.3392 }, // SoFi has roof
+  "Las Vegas Raiders": { lat: 36.0909, lon: -115.1833 },
+  "Los Angeles Chargers": { lat: 33.9535, lon: -118.3392 },
   "Los Angeles Rams": { lat: 33.9535, lon: -118.3392 },
   "Chicago Bears": { lat: 41.8623, lon: -87.6167 },
   "Green Bay Packers": { lat: 44.5013, lon: -88.0622 },
@@ -248,7 +242,6 @@ const stadiumCoords = {
   "Tampa Bay Buccaneers": { lat: 27.9759, lon: -82.5033 },
   "San Francisco 49ers": { lat: 37.4033, lon: -121.9694 },
   "Seattle Seahawks": { lat: 47.5952, lon: -122.3316 },
-  // Dome teams (skip weather)
   "Arizona Cardinals": null,
   "Atlanta Falcons": null,
   "Dallas Cowboys": null,
@@ -257,8 +250,6 @@ const stadiumCoords = {
   "Indianapolis Colts": null,
   "Minnesota Vikings": null,
   "New Orleans Saints": null,
-  // MLB (all outdoor except domes)
-  // Add as needed...
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -275,7 +266,6 @@ async function fetchOddsData(sport) {
     return cached;
   }
 
-  // Request ALL bookmakers for comparison
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds/?apiKey=${process.env.ODDS_API_KEY}&regions=us,us2&markets=spreads,totals,h2h&oddsFormat=american`;
 
   const response = await fetch(url);
@@ -305,7 +295,6 @@ function findBestLines(game) {
   for (const book of game.bookmakers) {
     const bookName = book.title;
 
-    // Check spreads
     const spreads = book.markets?.find((m) => m.key === "spreads");
     if (spreads) {
       for (const outcome of spreads.outcomes) {
@@ -322,7 +311,6 @@ function findBestLines(game) {
       }
     }
 
-    // Check totals
     const totals = book.markets?.find((m) => m.key === "totals");
     if (totals) {
       for (const outcome of totals.outcomes) {
@@ -337,7 +325,6 @@ function findBestLines(game) {
       }
     }
 
-    // Check moneyline (h2h)
     const h2h = book.markets?.find((m) => m.key === "h2h");
     if (h2h) {
       for (const outcome of h2h.outcomes) {
@@ -367,7 +354,6 @@ function detectArbitrage(game) {
     return opportunities;
   }
 
-  // Check moneyline arbitrage
   let bestHomeML = { price: -Infinity, book: null };
   let bestAwayML = { price: -Infinity, book: null };
 
@@ -388,7 +374,6 @@ function detectArbitrage(game) {
     }
   }
 
-  // Calculate arbitrage percentage
   if (bestHomeML.book && bestAwayML.book) {
     const homeDecimal = bestHomeML.price > 0 ? (bestHomeML.price / 100) + 1 : (100 / Math.abs(bestHomeML.price)) + 1;
     const awayDecimal = bestAwayML.price > 0 ? (bestAwayML.price / 100) + 1 : (100 / Math.abs(bestAwayML.price)) + 1;
@@ -419,7 +404,6 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
   const { sport } = req.body;
 
   try {
-    // Fetch odds data
     const oddsData = await fetchOddsData(sport);
 
     if (!oddsData || oddsData.length === 0) {
@@ -430,10 +414,8 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
       });
     }
 
-    // Fetch injury data
     const injuries = await fetchInjuryData(sport);
 
-    // Take up to 15 games (show ALL games with odds)
     let gamesToAnalyze = oddsData.slice(0, 15);
 
     if (gamesToAnalyze.length === 0) {
@@ -445,7 +427,6 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
       });
     }
 
-    // Process each game
     const gamesFormatted = [];
     const allArbitrageOpps = [];
 
@@ -455,28 +436,20 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
       const totals = bookmaker?.markets?.find((m) => m.key === "totals");
       const h2h = bookmaker?.markets?.find((m) => m.key === "h2h");
 
-      // Get spread, total, and moneyline
       const homeSpread = spreads?.outcomes?.find((o) => o.name === game.home_team)?.point || 0;
       const totalLine = totals?.outcomes?.[0]?.point || 0;
       const homeML = h2h?.outcomes?.find((o) => o.name === game.home_team)?.price || -110;
       const awayML = h2h?.outcomes?.find((o) => o.name === game.away_team)?.price || -110;
 
-      // Determine favorite using MONEYLINE (negative = favorite)
       const homeFavorite = homeML < awayML;
       const favorite = homeFavorite ? game.home_team : game.away_team;
       const favoriteML = homeFavorite ? homeML : awayML;
 
-      // Track line movement
       const lineMovement = trackLineMovement(game.id, homeSpread, totalLine, homeML);
-
-      // Find best lines across books
       const bestLines = findBestLines(game);
-
-      // Detect arbitrage
       const arbOpps = detectArbitrage(game);
       allArbitrageOpps.push(...arbOpps);
 
-      // Get relevant injuries for this game
       const homeInjuries = injuries.filter((inj) =>
         game.home_team.toLowerCase().includes(inj.team.toLowerCase().split(" ").pop())
       );
@@ -484,7 +457,6 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
         game.away_team.toLowerCase().includes(inj.team.toLowerCase().split(" ").pop())
       );
 
-      // Get weather for outdoor sports
       let weather = null;
       if (outdoorSports.includes(sport)) {
         const coords = stadiumCoords[game.home_team];
@@ -515,7 +487,6 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
       });
     }
 
-    // Build simplified game data for Claude (reduce token usage)
     const simplifiedGames = gamesFormatted.map(g => ({
       id: g.id,
       home: g.homeTeam,
@@ -527,17 +498,48 @@ app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
       fav: g.favorite
     }));
 
-    // Build the Claude prompt with all the data
-    const prompt = `Analyze ${sport.toUpperCase()} games. Return predictions as JSON.
+    const prompt = `Analyze ${sport.toUpperCase()} games and return betting predictions as JSON.
 
 GAMES:
 ${JSON.stringify(simplifiedGames)}
 
-For each game return: id, homeTeam, awayTeam, gameTime, spread, total, homeML, awayML, favorite, predictedScore {home, away}, spreadPick, spreadEdge, totalPick, totalEdge, kellySpread, kellyTotal, confidence (High/Medium/Low), keyFactors [2 items max].
+RULES:
+1. Predict realistic final scores for each game
+2. spreadPick MUST match predicted score (if you predict home wins by 6 and spread is -3.5, pick home team)
+3. totalPick MUST match predicted score (if predicted total is 210 and line is 220, pick UNDER 220)
+4. Calculate edge as percentage difference between your prediction and the line
+5. kellySpread and kellyTotal = (edge / 100) * 0.5 (half Kelly), return as NUMBER not string
+6. confidence: High if edge >= 3%, Medium if 1-3%, Low if < 1%
 
-Use moneyline to determine favorite. Calculate half Kelly. Flag edge>3% as High confidence.
+Return this exact JSON structure:
+{
+  "games": [
+    {
+      "id": "game_id",
+      "homeTeam": "Full Team Name",
+      "awayTeam": "Full Team Name", 
+      "gameTime": "ISO datetime",
+      "spread": -4.5,
+      "total": 220.5,
+      "homeML": -180,
+      "awayML": 155,
+      "favorite": "Team Name",
+      "predictedScore": {"home": 112, "away": 108},
+      "spreadPick": "Team Name -4.5",
+      "spreadEdge": 2.5,
+      "totalPick": "OVER 220.5",
+      "totalEdge": 1.8,
+      "kellySpread": 1.25,
+      "kellyTotal": 0.9,
+      "confidence": "High",
+      "keyFactors": ["factor1", "factor2"]
+    }
+  ],
+  "lastUpdated": "${new Date().toISOString()}",
+  "sport": "${sport.toUpperCase()}"
+}
 
-Return ONLY valid JSON: {"games":[...],"lastUpdated":"${new Date().toISOString()}","sport":"${sport.toUpperCase()}"}`;
+Return ONLY valid JSON, no markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
@@ -564,7 +566,6 @@ Return ONLY valid JSON: {"games":[...],"lastUpdated":"${new Date().toISOString()
 
     const data = JSON.parse(jsonMatch[0]);
 
-    // Merge extra data (weather, line movement, best lines) back into each game
     if (data.games) {
       data.games = data.games.map(game => {
         const originalGame = gamesFormatted.find(g => g.id === game.id);
@@ -581,7 +582,6 @@ Return ONLY valid JSON: {"games":[...],"lastUpdated":"${new Date().toISOString()
       });
     }
 
-    // Add arbitrage alerts to response
     data.arbitrageAlerts = allArbitrageOpps;
 
     res.json(data);
