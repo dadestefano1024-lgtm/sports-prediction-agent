@@ -1,687 +1,914 @@
-const express = require("express");
-const cors = require("cors");
-const Anthropic = require("@anthropic-ai/sdk");
-const path = require("path");
+const express = require('express');
+const Anthropic = require('@anthropic-ai/sdk');
+const axios = require('axios');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static('public'));
 
 const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
+  apiKey: process.env.ANTHROPIC_API_KEY
 });
 
-console.log(
-  "API Key found:",
-  process.env.ANTHROPIC_API_KEY
-    ? "YES (length: " + process.env.ANTHROPIC_API_KEY.length + ")"
-    : "NO"
-);
-console.log("Odds API Key found:", process.env.ODDS_API_KEY ? "YES" : "NO");
+// ============================================================================
+// NBA TEAM IDS & LOCATIONS
+// ============================================================================
 
-// ══════════════════════════════════════════════════════════════════════════════
-// RATE LIMITING
-// ══════════════════════════════════════════════════════════════════════════════
-const requestTracker = new Map();
+const nbaTeamIds = {
+  'Hawks': 1, 'Celtics': 2, 'Nets': 17, 'Hornets': 30, 'Bulls': 4,
+  'Cavaliers': 5, 'Mavericks': 6, 'Nuggets': 7, 'Pistons': 8, 'Warriors': 9,
+  'Rockets': 10, 'Pacers': 11, 'Clippers': 12, 'Lakers': 13, 'Grizzlies': 29,
+  'Heat': 14, 'Bucks': 15, 'Timberwolves': 16, 'Pelicans': 3, 'Knicks': 18,
+  'Thunder': 25, 'Magic': 19, 'Sixers': 20, 'Suns': 21, 'Trail Blazers': 22,
+  'Kings': 23, 'Spurs': 24, 'Raptors': 28, 'Jazz': 26, 'Wizards': 27
+};
 
-function rateLimitMiddleware(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress;
-  const now = Date.now();
-  const hourInMs = 60 * 60 * 1000;
-  const maxRequests = 10;
+const nbaTeamLocations = {
+  'Hawks': { lat: 33.7573, lon: -84.3963, tz: -5 },
+  'Celtics': { lat: 42.3662, lon: -71.0621, tz: -5 },
+  'Nets': { lat: 40.6826, lon: -73.9754, tz: -5 },
+  'Hornets': { lat: 35.2251, lon: -80.8392, tz: -5 },
+  'Bulls': { lat: 41.8807, lon: -87.6742, tz: -6 },
+  'Cavaliers': { lat: 41.4965, lon: -81.6882, tz: -5 },
+  'Mavericks': { lat: 32.7905, lon: -96.8103, tz: -6 },
+  'Nuggets': { lat: 39.7487, lon: -104.8769, tz: -7 },
+  'Pistons': { lat: 42.3410, lon: -83.0550, tz: -5 },
+  'Warriors': { lat: 37.7680, lon: -122.3878, tz: -8 },
+  'Rockets': { lat: 29.7508, lon: -95.3621, tz: -6 },
+  'Pacers': { lat: 39.7640, lon: -86.1555, tz: -5 },
+  'Clippers': { lat: 34.0430, lon: -118.2673, tz: -8 },
+  'Lakers': { lat: 34.0430, lon: -118.2673, tz: -8 },
+  'Grizzlies': { lat: 35.1382, lon: -90.0505, tz: -6 },
+  'Heat': { lat: 25.7814, lon: -80.1870, tz: -5 },
+  'Bucks': { lat: 43.0435, lon: -87.9170, tz: -6 },
+  'Timberwolves': { lat: 44.9795, lon: -93.2760, tz: -6 },
+  'Pelicans': { lat: 29.9490, lon: -90.0821, tz: -6 },
+  'Knicks': { lat: 40.7505, lon: -73.9934, tz: -5 },
+  'Thunder': { lat: 35.4634, lon: -97.5151, tz: -6 },
+  'Magic': { lat: 28.5392, lon: -81.3839, tz: -5 },
+  'Sixers': { lat: 39.9012, lon: -75.1720, tz: -5 },
+  'Suns': { lat: 33.4457, lon: -112.0712, tz: -7 },
+  'Trail Blazers': { lat: 45.5317, lon: -122.6668, tz: -8 },
+  'Kings': { lat: 38.5802, lon: -121.4997, tz: -8 },
+  'Spurs': { lat: 29.4270, lon: -98.4375, tz: -6 },
+  'Raptors': { lat: 43.6435, lon: -79.3791, tz: -5 },
+  'Jazz': { lat: 40.7683, lon: -111.9011, tz: -7 },
+  'Wizards': { lat: 38.8981, lon: -77.0209, tz: -5 }
+};
 
-  if (!requestTracker.has(ip)) {
-    requestTracker.set(ip, { count: 1, resetTime: now + hourInMs });
-    return next();
+// ============================================================================
+// ATS TRACKING (IN-MEMORY - WOULD USE DATABASE IN PRODUCTION)
+// ============================================================================
+
+const atsRecords = {};
+
+function updateATSRecord(teamName, covered, isFavorite, isHome) {
+  if (!atsRecords[teamName]) {
+    atsRecords[teamName] = {
+      overall: { games: 0, covers: 0 },
+      home: { games: 0, covers: 0 },
+      away: { games: 0, covers: 0 },
+      favorite: { games: 0, covers: 0 },
+      underdog: { games: 0, covers: 0 }
+    };
   }
-
-  const tracker = requestTracker.get(ip);
-
-  if (now > tracker.resetTime) {
-    requestTracker.set(ip, { count: 1, resetTime: now + hourInMs });
-    return next();
+  
+  const record = atsRecords[teamName];
+  record.overall.games++;
+  if (covered) record.overall.covers++;
+  
+  if (isHome) {
+    record.home.games++;
+    if (covered) record.home.covers++;
+  } else {
+    record.away.games++;
+    if (covered) record.away.covers++;
   }
-
-  if (tracker.count >= maxRequests) {
-    const minutesLeft = Math.ceil((tracker.resetTime - now) / 60000);
-    return res.status(429).json({
-      error: `Rate limit exceeded. You can make ${maxRequests} requests per hour. Try again in ${minutesLeft} minutes.`,
-    });
+  
+  if (isFavorite) {
+    record.favorite.games++;
+    if (covered) record.favorite.covers++;
+  } else {
+    record.underdog.games++;
+    if (covered) record.underdog.covers++;
   }
-
-  tracker.count += 1;
-  next();
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// CACHING (5 min TTL)
-// ══════════════════════════════════════════════════════════════════════════════
-const cache = new Map();
-const CACHE_TTL = 5 * 60 * 1000;
-
-function getCached(key) {
-  const cached = cache.get(key);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.data;
+function getATSRecord(teamName) {
+  if (!atsRecords[teamName]) {
+    return {
+      overall: '0-0 (0%)',
+      home: '0-0 (0%)',
+      away: '0-0 (0%)',
+      asFavorite: '0-0 (0%)',
+      asUnderdog: '0-0 (0%)'
+    };
   }
-  return null;
-}
-
-function setCache(key, data) {
-  cache.set(key, { data, timestamp: Date.now() });
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// LINE MOVEMENT TRACKING (in-memory)
-// ══════════════════════════════════════════════════════════════════════════════
-const openingLines = new Map();
-
-function trackLineMovement(gameId, currentSpread, currentTotal, currentML) {
-  if (!openingLines.has(gameId)) {
-    openingLines.set(gameId, {
-      spread: currentSpread,
-      total: currentTotal,
-      moneyline: currentML,
-      timestamp: Date.now(),
-    });
-    return { spreadMove: 0, totalMove: 0, mlMove: 0 };
-  }
-
-  const opening = openingLines.get(gameId);
+  
+  const r = atsRecords[teamName];
+  const format = (rec) => {
+    if (rec.games === 0) return '0-0 (0%)';
+    const pct = ((rec.covers / rec.games) * 100).toFixed(0);
+    return `${rec.covers}-${rec.games - rec.covers} (${pct}%)`;
+  };
+  
   return {
-    spreadMove: currentSpread - opening.spread,
-    totalMove: currentTotal - opening.total,
-    mlMove: currentML - opening.moneyline,
-    openingSpread: opening.spread,
-    openingTotal: opening.total,
-    openingML: opening.moneyline,
+    overall: format(r.overall),
+    home: format(r.home),
+    away: format(r.away),
+    asFavorite: format(r.favorite),
+    asUnderdog: format(r.underdog)
   };
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// SPORT CONFIGURATION
-// ══════════════════════════════════════════════════════════════════════════════
-const sportMap = {
-  nba: "basketball_nba",
-  nhl: "icehockey_nhl",
-  cbb: "basketball_ncaab",
-  nfl: "americanfootball_nfl",
-  mlb: "baseball_mlb",
-};
+// ============================================================================
+// ESPN API FUNCTIONS
+// ============================================================================
 
-const outdoorSports = ["nfl", "mlb"];
-
-const espnInjuryEndpoints = {
-  nba: "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries",
-  nhl: "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/injuries",
-  nfl: "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries",
-  mlb: "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/injuries",
-  cbb: null,
-};
-
-// ══════════════════════════════════════════════════════════════════════════════
-// FETCH INJURY DATA FROM ESPN
-// ══════════════════════════════════════════════════════════════════════════════
-async function fetchInjuryData(sport) {
-  const endpoint = espnInjuryEndpoints[sport];
-  if (!endpoint) return [];
-
-  const cacheKey = `injuries_${sport}`;
-  const cached = getCached(cacheKey);
-  if (cached) return cached;
-
+async function fetchNBATeamStats(teamName) {
   try {
-    const response = await fetch(endpoint);
-    if (!response.ok) {
-      console.log(`ESPN injury API returned ${response.status} for ${sport}`);
-      return [];
-    }
-
-    const data = await response.json();
-    const injuries = [];
-
-    if (data.items) {
-      for (const team of data.items) {
-        const teamName = team.team?.displayName || team.team?.name || "Unknown";
-        if (team.injuries) {
-          for (const injury of team.injuries) {
-            injuries.push({
-              team: teamName,
-              player: injury.athlete?.displayName || "Unknown",
-              position: injury.athlete?.position?.abbreviation || "",
-              status: injury.status || "Unknown",
-              injury: injury.details?.type || injury.details?.detail || "Undisclosed",
-              impact: injury.status === "Out" ? "HIGH" : injury.status === "Doubtful" ? "HIGH" : "MEDIUM",
-            });
-          }
-        }
-      }
-    }
-
-    console.log(`Fetched ${injuries.length} injuries for ${sport}`);
-    setCache(cacheKey, injuries);
-    return injuries;
-  } catch (err) {
-    console.error(`Error fetching injuries for ${sport}:`, err.message);
-    return [];
-  }
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// FETCH WEATHER DATA (Open-Meteo - free, no API key needed)
-// ══════════════════════════════════════════════════════════════════════════════
-async function fetchWeatherData(lat, lon) {
-  try {
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,precipitation,wind_speed_10m,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph`;
-    const response = await fetch(url);
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    const current = data.current;
-
+    const teamId = nbaTeamIds[teamName];
+    if (!teamId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const team = response.data.team;
+    const record = team.record?.items?.find(r => r.type === 'total');
+    const homeRecord = team.record?.items?.find(r => r.type === 'home');
+    const awayRecord = team.record?.items?.find(r => r.type === 'road');
+    
     return {
-      temperature: Math.round(current.temperature_2m),
-      precipitation: current.precipitation,
-      windSpeed: Math.round(current.wind_speed_10m),
-      weatherCode: current.weather_code,
-      description: getWeatherDescription(current.weather_code),
+      record: record?.summary || 'N/A',
+      homeRecord: homeRecord?.summary || 'N/A',
+      awayRecord: awayRecord?.summary || 'N/A',
+      wins: record?.stats?.find(s => s.name === 'wins')?.value || 0,
+      losses: record?.stats?.find(s => s.name === 'losses')?.value || 0
     };
-  } catch (err) {
-    console.error("Weather fetch error:", err.message);
+  } catch (error) {
+    console.error(`Error fetching stats for ${teamName}:`, error.message);
     return null;
   }
 }
 
-function getWeatherDescription(code) {
-  const codes = {
-    0: "Clear sky",
-    1: "Mainly clear",
-    2: "Partly cloudy",
-    3: "Overcast",
-    45: "Foggy",
-    48: "Depositing rime fog",
-    51: "Light drizzle",
-    53: "Moderate drizzle",
-    55: "Dense drizzle",
-    61: "Slight rain",
-    63: "Moderate rain",
-    65: "Heavy rain",
-    71: "Slight snow",
-    73: "Moderate snow",
-    75: "Heavy snow",
-    95: "Thunderstorm",
-  };
-  return codes[code] || "Unknown";
-}
-
-const stadiumCoords = {
-  "Buffalo Bills": { lat: 42.7738, lon: -78.787 },
-  "Miami Dolphins": { lat: 25.958, lon: -80.2389 },
-  "New England Patriots": { lat: 42.0909, lon: -71.2643 },
-  "New York Jets": { lat: 40.8135, lon: -74.0745 },
-  "New York Giants": { lat: 40.8135, lon: -74.0745 },
-  "Baltimore Ravens": { lat: 39.278, lon: -76.6227 },
-  "Cincinnati Bengals": { lat: 39.0954, lon: -84.516 },
-  "Cleveland Browns": { lat: 41.506, lon: -81.6994 },
-  "Pittsburgh Steelers": { lat: 40.4468, lon: -80.0158 },
-  "Tennessee Titans": { lat: 36.1665, lon: -86.7713 },
-  "Jacksonville Jaguars": { lat: 30.324, lon: -81.6373 },
-  "Denver Broncos": { lat: 39.7439, lon: -105.02 },
-  "Kansas City Chiefs": { lat: 39.0489, lon: -94.4839 },
-  "Las Vegas Raiders": { lat: 36.0909, lon: -115.1833 },
-  "Los Angeles Chargers": { lat: 33.9535, lon: -118.3392 },
-  "Los Angeles Rams": { lat: 33.9535, lon: -118.3392 },
-  "Chicago Bears": { lat: 41.8623, lon: -87.6167 },
-  "Green Bay Packers": { lat: 44.5013, lon: -88.0622 },
-  "Philadelphia Eagles": { lat: 39.9008, lon: -75.1675 },
-  "Washington Commanders": { lat: 38.9076, lon: -76.8645 },
-  "Carolina Panthers": { lat: 35.2258, lon: -80.8528 },
-  "Tampa Bay Buccaneers": { lat: 27.9759, lon: -82.5033 },
-  "San Francisco 49ers": { lat: 37.4033, lon: -121.9694 },
-  "Seattle Seahawks": { lat: 47.5952, lon: -122.3316 },
-  "Arizona Cardinals": null,
-  "Atlanta Falcons": null,
-  "Dallas Cowboys": null,
-  "Detroit Lions": null,
-  "Houston Texans": null,
-  "Indianapolis Colts": null,
-  "Minnesota Vikings": null,
-  "New Orleans Saints": null,
-};
-
-// ══════════════════════════════════════════════════════════════════════════════
-// FETCH ODDS DATA FROM THE ODDS API
-// ══════════════════════════════════════════════════════════════════════════════
-async function fetchOddsData(sport) {
-  const oddsApiSport = sportMap[sport];
-  if (!oddsApiSport) throw new Error("Invalid sport");
-
-  const cacheKey = `odds_${sport}`;
-  const cached = getCached(cacheKey);
-  if (cached) {
-    console.log(`Using cached data for ${sport}`);
-    return cached;
-  }
-
-  const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds/?apiKey=${process.env.ODDS_API_KEY}&regions=us,us2&markets=spreads,totals,h2h&oddsFormat=american`;
-
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Odds API error: ${response.status}`);
-
-  const data = await response.json();
-  console.log(`Fetched ${data.length} games for ${sport} from Odds API`);
-
-  setCache(cacheKey, data);
-  return data;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// FIND BEST LINES ACROSS SPORTSBOOKS
-// ══════════════════════════════════════════════════════════════════════════════
-function findBestLines(game) {
-  const bestLines = {
-    spread: { home: null, away: null },
-    total: { over: null, under: null },
-    moneyline: { home: null, away: null },
-  };
-
-  if (!game.bookmakers || game.bookmakers.length === 0) {
-    return bestLines;
-  }
-
-  for (const book of game.bookmakers) {
-    const bookName = book.title;
-
-    const spreads = book.markets?.find((m) => m.key === "spreads");
-    if (spreads) {
-      for (const outcome of spreads.outcomes) {
-        const isHome = outcome.name === game.home_team;
-        const key = isHome ? "home" : "away";
-
-        if (!bestLines.spread[key] || outcome.price > bestLines.spread[key].price) {
-          bestLines.spread[key] = {
-            point: outcome.point,
-            price: outcome.price,
-            book: bookName,
-          };
-        }
-      }
-    }
-
-    const totals = book.markets?.find((m) => m.key === "totals");
-    if (totals) {
-      for (const outcome of totals.outcomes) {
-        const key = outcome.name.toLowerCase();
-        if (!bestLines.total[key] || outcome.price > bestLines.total[key].price) {
-          bestLines.total[key] = {
-            point: outcome.point,
-            price: outcome.price,
-            book: bookName,
-          };
-        }
-      }
-    }
-
-    const h2h = book.markets?.find((m) => m.key === "h2h");
-    if (h2h) {
-      for (const outcome of h2h.outcomes) {
-        const isHome = outcome.name === game.home_team;
-        const key = isHome ? "home" : "away";
-
-        if (!bestLines.moneyline[key] || outcome.price > bestLines.moneyline[key].price) {
-          bestLines.moneyline[key] = {
-            price: outcome.price,
-            book: bookName,
-          };
-        }
-      }
-    }
-  }
-
-  return bestLines;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// DETECT ARBITRAGE OPPORTUNITIES
-// ══════════════════════════════════════════════════════════════════════════════
-function detectArbitrage(game) {
-  const opportunities = [];
-
-  if (!game.bookmakers || game.bookmakers.length < 2) {
-    return opportunities;
-  }
-
-  let bestHomeML = { price: -Infinity, book: null };
-  let bestAwayML = { price: -Infinity, book: null };
-
-  for (const book of game.bookmakers) {
-    const h2h = book.markets?.find((m) => m.key === "h2h");
-    if (!h2h) continue;
-
-    for (const outcome of h2h.outcomes) {
-      if (outcome.name === game.home_team) {
-        if (outcome.price > bestHomeML.price) {
-          bestHomeML = { price: outcome.price, book: book.title };
-        }
-      } else {
-        if (outcome.price > bestAwayML.price) {
-          bestAwayML = { price: outcome.price, book: book.title };
-        }
-      }
-    }
-  }
-
-  if (bestHomeML.book && bestAwayML.book) {
-    const homeDecimal = bestHomeML.price > 0 ? (bestHomeML.price / 100) + 1 : (100 / Math.abs(bestHomeML.price)) + 1;
-    const awayDecimal = bestAwayML.price > 0 ? (bestAwayML.price / 100) + 1 : (100 / Math.abs(bestAwayML.price)) + 1;
-
-    const arbPercentage = (1 / homeDecimal + 1 / awayDecimal) * 100;
-
-    if (arbPercentage < 100) {
-      const profit = ((100 - arbPercentage) / arbPercentage) * 100;
-      opportunities.push({
-        type: "MONEYLINE",
-        profit: profit.toFixed(2),
-        homeTeam: game.home_team,
-        awayTeam: game.away_team,
-        homeBet: { price: bestHomeML.price, book: bestHomeML.book },
-        awayBet: { price: bestAwayML.price, book: bestAwayML.book },
-        description: `${profit.toFixed(2)}% guaranteed profit: ${game.home_team} ML @ ${bestHomeML.price} (${bestHomeML.book}) + ${game.away_team} ML @ ${bestAwayML.price} (${bestAwayML.book})`,
+async function fetchRecentGames(teamName) {
+  try {
+    const teamId = nbaTeamIds[teamName];
+    if (!teamId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const events = response.data.events || [];
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+    const recent10 = completedGames.slice(0, 10);
+    const recent5 = recent10.slice(0, 5);
+    
+    const analyzeGames = (games) => {
+      let wins = 0;
+      let totalScored = 0;
+      let totalAllowed = 0;
+      
+      games.forEach(game => {
+        const comp = game.competitions[0];
+        const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+        const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+        const isHome = homeTeam.team.id == teamId;
+        const teamScore = isHome ? parseInt(homeTeam.score) : parseInt(awayTeam.score);
+        const oppScore = isHome ? parseInt(awayTeam.score) : parseInt(homeTeam.score);
+        
+        if (teamScore > oppScore) wins++;
+        totalScored += teamScore;
+        totalAllowed += oppScore;
       });
+      
+      return {
+        record: `${wins}-${games.length - wins}`,
+        avgScored: games.length > 0 ? (totalScored / games.length).toFixed(1) : 0,
+        avgAllowed: games.length > 0 ? (totalAllowed / games.length).toFixed(1) : 0
+      };
+    };
+    
+    const streak = calculateStreak(recent10);
+    const last10Data = analyzeGames(recent10);
+    const last5Data = analyzeGames(recent5);
+    
+    return {
+      last10: last10Data.record,
+      last5: last5Data.record,
+      streak: streak,
+      avgScored: last10Data.avgScored,
+      avgAllowed: last10Data.avgAllowed
+    };
+  } catch (error) {
+    console.error(`Error fetching recent games for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+function calculateStreak(games) {
+  if (!games || games.length === 0) return 'N/A';
+  
+  let streak = 0;
+  let streakType = null;
+  
+  for (const game of games) {
+    const comp = game.competitions[0];
+    const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+    const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+    const teamId = nbaTeamIds[games.teamName];
+    const isHome = homeTeam.team.id == teamId;
+    const won = isHome ? homeTeam.winner : awayTeam.winner;
+    
+    if (streakType === null) {
+      streakType = won ? 'W' : 'L';
+      streak = 1;
+    } else if ((won && streakType === 'W') || (!won && streakType === 'L')) {
+      streak++;
+    } else {
+      break;
     }
   }
+  
+  return `${streakType}${streak}`;
+}
 
+async function fetchRestDays(teamName, gameDate) {
+  try {
+    const teamId = nbaTeamIds[teamName];
+    if (!teamId) return { restDays: null, isB2B: false, is3in4: false };
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const events = response.data.events || [];
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+    
+    if (completedGames.length === 0) {
+      return { restDays: null, isB2B: false, is3in4: false };
+    }
+    
+    const lastGame = completedGames[0];
+    const lastGameDate = new Date(lastGame.date);
+    const currentGameDate = new Date(gameDate);
+    const diffTime = currentGameDate - lastGameDate;
+    const restDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    
+    const isB2B = restDays === 1;
+    
+    // Check for 3 games in 4 nights
+    const last3Games = completedGames.slice(0, 3);
+    let is3in4 = false;
+    if (last3Games.length >= 2) {
+      const firstGameDate = new Date(last3Games[2].date);
+      const daysBetween = (currentGameDate - firstGameDate) / (1000 * 60 * 60 * 24);
+      is3in4 = daysBetween <= 4;
+    }
+    
+    return { restDays, isB2B, is3in4 };
+  } catch (error) {
+    console.error(`Error fetching rest days for ${teamName}:`, error.message);
+    return { restDays: null, isB2B: false, is3in4: false };
+  }
+}
+
+async function fetchHeadToHead(homeTeam, awayTeam) {
+  try {
+    const homeId = nbaTeamIds[homeTeam];
+    if (!homeId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${homeId}/schedule`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const events = response.data.events || [];
+    const h2hGames = events.filter(e => {
+      const comp = e.competitions?.[0];
+      if (!comp) return false;
+      const home = comp.competitors.find(c => c.homeAway === 'home');
+      const away = comp.competitors.find(c => c.homeAway === 'away');
+      return (home?.team?.displayName.includes(homeTeam) && away?.team?.displayName.includes(awayTeam)) ||
+             (home?.team?.displayName.includes(awayTeam) && away?.team?.displayName.includes(homeTeam));
+    }).filter(e => e.competitions?.[0]?.status?.type?.completed);
+    
+    if (h2hGames.length === 0) {
+      return { games: 0, homeRecord: '0-0', avgMargin: 0, avgTotal: 0 };
+    }
+    
+    let homeWins = 0;
+    let totalMargin = 0;
+    let totalPoints = 0;
+    
+    h2hGames.forEach(game => {
+      const comp = game.competitions[0];
+      const home = comp.competitors.find(c => c.homeAway === 'home');
+      const away = comp.competitors.find(c => c.homeAway === 'away');
+      const homeScore = parseInt(home.score);
+      const awayScore = parseInt(away.score);
+      
+      if (home.team.displayName.includes(homeTeam) && homeScore > awayScore) homeWins++;
+      if (away.team.displayName.includes(homeTeam) && awayScore > homeScore) homeWins++;
+      
+      totalMargin += Math.abs(homeScore - awayScore);
+      totalPoints += homeScore + awayScore;
+    });
+    
+    return {
+      games: h2hGames.length,
+      homeRecord: `${homeWins}-${h2hGames.length - homeWins}`,
+      avgMargin: (totalMargin / h2hGames.length).toFixed(1),
+      avgTotal: (totalPoints / h2hGames.length).toFixed(1)
+    };
+  } catch (error) {
+    console.error(`Error fetching H2H for ${homeTeam} vs ${awayTeam}:`, error.message);
+    return null;
+  }
+}
+
+async function fetchPaceData(teamName) {
+  try {
+    const teamId = nbaTeamIds[teamName];
+    if (!teamId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const events = response.data.events || [];
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
+    
+    if (completedGames.length === 0) return null;
+    
+    let totalPoints = 0;
+    completedGames.forEach(game => {
+      const comp = game.competitions[0];
+      const home = comp.competitors.find(c => c.homeAway === 'home');
+      const away = comp.competitors.find(c => c.homeAway === 'away');
+      totalPoints += parseInt(home.score) + parseInt(away.score);
+    });
+    
+    const avgTotal = totalPoints / completedGames.length;
+    let pace = 'Average';
+    if (avgTotal > 225) pace = 'Fast';
+    else if (avgTotal < 215) pace = 'Slow';
+    
+    return {
+      avgTotal: avgTotal.toFixed(1),
+      pace: pace
+    };
+  } catch (error) {
+    console.error(`Error fetching pace data for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+async function fetchTeamRatings(teamName) {
+  try {
+    const teamId = nbaTeamIds[teamName];
+    if (!teamId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const events = response.data.events || [];
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
+    
+    if (completedGames.length === 0) return null;
+    
+    let totalOffRtg = 0;
+    let totalDefRtg = 0;
+    
+    completedGames.forEach(game => {
+      const comp = game.competitions[0];
+      const home = comp.competitors.find(c => c.homeAway === 'home');
+      const away = comp.competitors.find(c => c.homeAway === 'away');
+      const isHome = home.team.id == teamId;
+      const teamScore = isHome ? parseInt(home.score) : parseInt(away.score);
+      const oppScore = isHome ? parseInt(away.score) : parseInt(home.score);
+      
+      // Rough estimation: points per 100 possessions
+      // Actual calculation would need possession data
+      const estimatedPoss = 100;
+      totalOffRtg += (teamScore / estimatedPoss) * 100;
+      totalDefRtg += (oppScore / estimatedPoss) * 100;
+    });
+    
+    const offRtg = (totalOffRtg / completedGames.length).toFixed(1);
+    const defRtg = (totalDefRtg / completedGames.length).toFixed(1);
+    const netRtg = (offRtg - defRtg).toFixed(1);
+    
+    return {
+      offRtg: parseFloat(offRtg),
+      defRtg: parseFloat(defRtg),
+      netRtg: parseFloat(netRtg)
+    };
+  } catch (error) {
+    console.error(`Error fetching ratings for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 3959; // Earth radius in miles
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+async function fetchTravelData(awayTeam, homeTeam, gameTime) {
+  try {
+    const awayLoc = nbaTeamLocations[awayTeam];
+    const homeLoc = nbaTeamLocations[homeTeam];
+    
+    if (!awayLoc || !homeLoc) return null;
+    
+    const miles = calculateDistance(awayLoc.lat, awayLoc.lon, homeLoc.lat, homeLoc.lon);
+    const tzChange = Math.abs(awayLoc.tz - homeLoc.tz);
+    
+    let impact = 'None';
+    let adjustment = 0;
+    
+    if (miles > 2000 || tzChange >= 3) {
+      impact = 'Severe';
+      adjustment = -3;
+    } else if (miles > 1000 || tzChange >= 2) {
+      impact = 'Moderate';
+      adjustment = -2;
+    } else if (miles > 500) {
+      impact = 'Minor';
+      adjustment = -1;
+    }
+    
+    // West to East early game penalty
+    const gameHour = new Date(gameTime).getHours();
+    if (awayLoc.tz < homeLoc.tz && gameHour < 13) {
+      adjustment -= 1;
+      impact += ' + Early Game';
+    }
+    
+    return {
+      miles: Math.round(miles),
+      tzChange,
+      impact,
+      adjustment
+    };
+  } catch (error) {
+    console.error(`Error calculating travel data:`, error.message);
+    return null;
+  }
+}
+
+async function fetchStartingLineup(teamName) {
+  try {
+    // ESPN doesn't have a direct starting lineup API
+    // This would require scraping or a paid service
+    // Placeholder for now
+    return {
+      confirmed: false,
+      injuries: [],
+      lastMinuteChanges: []
+    };
+  } catch (error) {
+    console.error(`Error fetching lineup for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+function calculateProjectedTotal(homePace, awayPace) {
+  const homeAvg = parseFloat(homePace?.avgTotal || 220);
+  const awayAvg = parseFloat(awayPace?.avgTotal || 220);
+  return ((homeAvg + awayAvg) / 2).toFixed(1);
+}
+
+// ============================================================================
+// ODDS API FUNCTIONS
+// ============================================================================
+
+async function fetchOdds(sport) {
+  try {
+    const apiKey = process.env.ODDS_API_KEY;
+    if (!apiKey) {
+      console.log('No ODDS_API_KEY found - using mock odds');
+      return null;
+    }
+    
+    const sportMap = {
+      'nba': 'basketball_nba',
+      'nfl': 'americanfootball_nfl',
+      'nhl': 'icehockey_nhl',
+      'mlb': 'baseball_mlb',
+      'cbb': 'basketball_ncaab'
+    };
+    
+    const sportKey = sportMap[sport];
+    if (!sportKey) return null;
+    
+    const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?apiKey=${apiKey}&regions=us&markets=spreads,totals,h2h&oddsFormat=american`;
+    const response = await axios.get(url, { timeout: 10000 });
+    
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching odds:', error.message);
+    return null;
+  }
+}
+
+function findArbitrageOpportunities(oddsData) {
+  if (!oddsData) return [];
+  
+  const opportunities = [];
+  
+  oddsData.forEach(game => {
+    const bookmakers = game.bookmakers || [];
+    
+    // Check for arbitrage on moneylines
+    let bestHome = -Infinity;
+    let bestAway = -Infinity;
+    
+    bookmakers.forEach(book => {
+      const h2h = book.markets?.find(m => m.key === 'h2h');
+      if (h2h && h2h.outcomes) {
+        h2h.outcomes.forEach(outcome => {
+          const odds = outcome.price;
+          if (outcome.name === game.home_team) {
+            bestHome = Math.max(bestHome, odds);
+          } else {
+            bestAway = Math.max(bestAway, odds);
+          }
+        });
+      }
+    });
+    
+    if (bestHome !== -Infinity && bestAway !== -Infinity) {
+      const homeImplied = bestHome > 0 ? 100 / (bestHome + 100) : Math.abs(bestHome) / (Math.abs(bestHome) + 100);
+      const awayImplied = bestAway > 0 ? 100 / (bestAway + 100) : Math.abs(bestAway) / (Math.abs(bestAway) + 100);
+      const totalImplied = homeImplied + awayImplied;
+      
+      if (totalImplied < 1) {
+        const profit = ((1 - totalImplied) * 100).toFixed(2);
+        opportunities.push({
+          homeTeam: game.home_team,
+          awayTeam: game.away_team,
+          profit: profit,
+          description: `Bet ${game.away_team} at ${bestAway} and ${game.home_team} at ${bestHome}`
+        });
+      }
+    }
+  });
+  
   return opportunities;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// CORE PREDICTION ENDPOINT
-// ══════════════════════════════════════════════════════════════════════════════
-app.post("/api/predictions", rateLimitMiddleware, async (req, res) => {
-  const { sport } = req.body;
+// ============================================================================
+// MAIN PREDICTION ENDPOINT
+// ============================================================================
 
+app.post('/api/predictions', async (req, res) => {
   try {
-    const oddsData = await fetchOddsData(sport);
-
-    if (!oddsData || oddsData.length === 0) {
+    const { sport } = req.body;
+    
+    if (!sport) {
+      return res.status(400).json({ error: 'Sport parameter required' });
+    }
+    
+    console.log(`Fetching predictions for ${sport.toUpperCase()}...`);
+    
+    // Fetch odds from API
+    const oddsData = await fetchOdds(sport);
+    const arbitrageAlerts = findArbitrageOpportunities(oddsData);
+    
+    // For now, focus on NBA
+    if (sport !== 'nba') {
       return res.json({
-        games: [],
-        lastUpdated: new Date().toISOString(),
         sport: sport.toUpperCase(),
+        games: [],
+        arbitrageAlerts: [],
+        message: 'Only NBA is currently supported with full data integration'
       });
     }
-
-    const injuries = await fetchInjuryData(sport);
-
-    let gamesToAnalyze = oddsData.slice(0, 15);
-
-    if (gamesToAnalyze.length === 0) {
+    
+    // Fetch today's NBA games from ESPN
+    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${today}`;
+    const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
+    const events = scoreboardResponse.data.events || [];
+    
+    if (events.length === 0) {
       return res.json({
+        sport: 'NBA',
         games: [],
-        lastUpdated: new Date().toISOString(),
-        sport: sport.toUpperCase(),
-        message: "No games found",
+        arbitrageAlerts: [],
+        message: 'No NBA games scheduled for today'
       });
     }
-
-    const gamesFormatted = [];
-    const allArbitrageOpps = [];
-
-    for (const game of gamesToAnalyze) {
-      const bookmaker = game.bookmakers?.[0];
-      const spreads = bookmaker?.markets?.find((m) => m.key === "spreads");
-      const totals = bookmaker?.markets?.find((m) => m.key === "totals");
-      const h2h = bookmaker?.markets?.find((m) => m.key === "h2h");
-
-      const homeSpread = spreads?.outcomes?.find((o) => o.name === game.home_team)?.point || 0;
-      const totalLine = totals?.outcomes?.[0]?.point || 0;
-      const homeML = h2h?.outcomes?.find((o) => o.name === game.home_team)?.price || -110;
-      const awayML = h2h?.outcomes?.find((o) => o.name === game.away_team)?.price || -110;
-
-      const homeFavorite = homeML < awayML;
-      const favorite = homeFavorite ? game.home_team : game.away_team;
-      const favoriteML = homeFavorite ? homeML : awayML;
-
-      const lineMovement = trackLineMovement(game.id, homeSpread, totalLine, homeML);
-      const bestLines = findBestLines(game);
-      const arbOpps = detectArbitrage(game);
-      allArbitrageOpps.push(...arbOpps);
-
-      const homeInjuries = injuries.filter((inj) =>
-        game.home_team.toLowerCase().includes(inj.team.toLowerCase().split(" ").pop())
-      );
-      const awayInjuries = injuries.filter((inj) =>
-        game.away_team.toLowerCase().includes(inj.team.toLowerCase().split(" ").pop())
-      );
-
-      let weather = null;
-      if (outdoorSports.includes(sport)) {
-        const coords = stadiumCoords[game.home_team];
-        if (coords) {
-          weather = await fetchWeatherData(coords.lat, coords.lon);
-        }
-      }
-
-      gamesFormatted.push({
-        id: game.id,
-        homeTeam: game.home_team,
-        awayTeam: game.away_team,
-        gameTime: game.commence_time,
-        spread: homeSpread,
-        total: totalLine,
-        homeML: homeML,
-        awayML: awayML,
-        favorite: favorite,
-        favoriteML: favoriteML,
-        lineMovement: lineMovement,
-        bestLines: bestLines,
-        arbitrage: arbOpps.length > 0 ? arbOpps[0] : null,
-        injuries: {
-          home: homeInjuries.slice(0, 5),
-          away: awayInjuries.slice(0, 5),
+    
+    // Process each game with comprehensive stats
+    const gamesWithStats = await Promise.all(events.map(async (event) => {
+      const comp = event.competitions[0];
+      const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+      const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+      const homeTeamName = homeTeam.team.displayName.split(' ').pop();
+      const awayTeamName = awayTeam.team.displayName.split(' ').pop();
+      
+      // Fetch all data sources
+      const [
+        homeStats,
+        awayStats,
+        homeForm,
+        awayForm,
+        homeRest,
+        awayRest,
+        h2h,
+        homePace,
+        awayPace,
+        homeRatings,
+        awayRatings,
+        travelData,
+        homeATS,
+        awayATS,
+        homeLineup,
+        awayLineup
+      ] = await Promise.all([
+        fetchNBATeamStats(homeTeamName),
+        fetchNBATeamStats(awayTeamName),
+        fetchRecentGames(homeTeamName),
+        fetchRecentGames(awayTeamName),
+        fetchRestDays(homeTeamName, event.date),
+        fetchRestDays(awayTeamName, event.date),
+        fetchHeadToHead(homeTeamName, awayTeamName),
+        fetchPaceData(homeTeamName),
+        fetchPaceData(awayTeamName),
+        fetchTeamRatings(homeTeamName),
+        fetchTeamRatings(awayTeamName),
+        fetchTravelData(awayTeamName, homeTeamName, event.date),
+        Promise.resolve(getATSRecord(homeTeamName)),
+        Promise.resolve(getATSRecord(awayTeamName)),
+        fetchStartingLineup(homeTeamName),
+        fetchStartingLineup(awayTeamName)
+      ]);
+      
+      const projectedTotal = calculateProjectedTotal(homePace, awayPace);
+      
+      return {
+        homeTeam: homeTeam.team.displayName,
+        awayTeam: awayTeam.team.displayName,
+        gameTime: new Date(event.date).toLocaleString(),
+        homeData: homeStats,
+        awayData: awayStats,
+        homeForm: homeForm,
+        awayForm: awayForm,
+        restData: {
+          homeRestDays: homeRest?.restDays,
+          homeB2B: homeRest?.isB2B,
+          home3in4: homeRest?.is3in4,
+          awayRestDays: awayRest?.restDays,
+          awayB2B: awayRest?.isB2B,
+          away3in4: awayRest?.is3in4
         },
-        weather: weather,
+        h2h: h2h,
+        pace: {
+          homeAvgTotal: homePace?.avgTotal,
+          homePace: homePace?.pace,
+          awayAvgTotal: awayPace?.avgTotal,
+          awayPace: awayPace?.pace,
+          projectedTotal: projectedTotal
+        },
+        ratings: {
+          homeOffRtg: homeRatings?.offRtg,
+          homeDefRtg: homeRatings?.defRtg,
+          homeNetRtg: homeRatings?.netRtg,
+          awayOffRtg: awayRatings?.offRtg,
+          awayDefRtg: awayRatings?.defRtg,
+          awayNetRtg: awayRatings?.netRtg
+        },
+        travel: travelData,
+        ats: {
+          home: homeATS,
+          away: awayATS
+        },
+        lineups: {
+          home: homeLineup,
+          away: awayLineup
+        },
+        odds: null // Will be filled from odds API
+      };
+    }));
+    
+    // Match odds data to games
+    if (oddsData && oddsData.length > 0) {
+      gamesWithStats.forEach(game => {
+        const matchingOdds = oddsData.find(o => 
+          o.home_team === game.homeTeam || o.away_team === game.awayTeam
+        );
+        
+        if (matchingOdds && matchingOdds.bookmakers?.length > 0) {
+          const bookmaker = matchingOdds.bookmakers[0];
+          const spreads = bookmaker.markets?.find(m => m.key === 'spreads');
+          const totals = bookmaker.markets?.find(m => m.key === 'totals');
+          const h2h = bookmaker.markets?.find(m => m.key === 'h2h');
+          
+          game.odds = {
+            spread: spreads?.outcomes?.find(o => o.name === game.homeTeam)?.point || null,
+            total: totals?.outcomes?.[0]?.point || null,
+            homeML: h2h?.outcomes?.find(o => o.name === game.homeTeam)?.price || null,
+            awayML: h2h?.outcomes?.find(o => o.name === game.awayTeam)?.price || null
+          };
+        }
       });
     }
+    
+    // Send to Claude for predictions
+    const prompt = `You are an expert NBA sports analyst and sharp bettor. Analyze the following games and provide predictions.
 
-    const simplifiedGames = gamesFormatted.map(g => ({
-      id: g.id,
-      home: g.homeTeam,
-      away: g.awayTeam,
-      spread: g.spread,
-      total: g.total,
-      homeML: g.homeML,
-      awayML: g.awayML,
-      fav: g.favorite
-    }));
+GAMES DATA:
+${JSON.stringify(gamesWithStats, null, 2)}
 
-    const prompt = `Analyze ${sport.toUpperCase()} games and return betting predictions as JSON.
+DATA EXPLANATION:
+- homeData/awayData: Season records, home/away splits
+- homeForm/awayForm: Recent performance (L5, L10, streaks, avg scored/allowed in last 10)
+- restData: Days since last game, back-to-back detection, 3 games in 4 nights
+- h2h: Head-to-head matchup history this season
+- pace: Team tempo and projected total based on pace
+- ratings: Offensive/Defensive ratings (points per 100 possessions), Net Rating
+- travel: Distance traveled, timezone changes, fatigue impact
+- ats: Against The Spread records (overall, home/away, as favorite/underdog)
+- lineups: Starting lineup status and injuries
+- odds: Current betting lines (spread, total, moneylines)
 
-GAMES:
-${JSON.stringify(simplifiedGames)}
+ANALYSIS METHODOLOGY:
 
-RULES:
-1. Predict realistic final scores for each game
-2. spreadPick MUST match predicted score (if you predict home wins by 6 and spread is -3.5, pick home team)
-3. totalPick MUST match predicted score (if predicted total is 210 and line is 220, pick UNDER 220)
-4. Calculate edge as percentage difference between your prediction and the line
-5. kellySpread and kellyTotal = (edge / 100) * 0.5 (half Kelly), return as NUMBER not string
-6. confidence: High if edge >= 3%, Medium if 1-3%, Low if < 1%
+1. REST & FATIGUE IMPACT:
+   - Back-to-back (B2B): -3 to -5 points expected performance drop
+   - 3 games in 4 nights: Additional -1 to -2 points
+   - Well-rested (3+ days): +1 to +2 points boost
 
-Return this exact JSON structure:
+2. TRAVEL IMPACT:
+   - 2000+ miles OR 3+ timezone changes: -3 points (Severe)
+   - 1000-2000 miles OR 2 timezone changes: -2 points (Moderate)
+   - 500-1000 miles: -1 point (Minor)
+   - West→East early games (<1pm ET): Additional -1 point
+
+3. MATCHUP ANALYSIS (Offense vs Defense):
+   - Elite Offense (OffRtg >115) vs Poor Defense (DefRtg >115): Expect high scoring, lean OVER
+   - Elite Offense vs Elite Defense (DefRtg <105): Balanced, use pace factor
+   - Poor Offense (OffRtg <108) vs Elite Defense: Expect low scoring, lean UNDER
+   - Poor Offense vs Poor Defense: Pace-dependent, could go either way
+
+4. PACE FACTOR (Total Predictions):
+   - Fast (>225 avg) + Fast: Strong OVER (+4-6 points to projected total)
+   - Fast + Average (215-225): Slight OVER (+2-3 points)
+   - Average + Average: Use projected total as baseline
+   - Slow (<215) + Average: Slight UNDER (-2-3 points)
+   - Slow + Slow: Strong UNDER (-4-6 points to projected total)
+
+5. HEAD-TO-HEAD HISTORY:
+   - Use avgTotal from H2H as baseline for total prediction
+   - Use avgMargin to inform spread prediction
+   - Recent series dominance (e.g., 3-0) = stronger confidence in favorite
+
+6. NET RATING DIFFERENTIAL:
+   - Every +10 point NetRtg difference ≈ 3-4 point spread advantage
+   - Example: Team A NetRtg +8, Team B NetRtg -4 = 12 point difference = ~4.5 point edge for Team A
+
+7. ATS PERFORMANCE:
+   - Team with 55%+ ATS record = trust them to cover more
+   - Team with <45% ATS record = fade them covering
+   - Check home/away ATS splits (some teams only cover at home)
+   - Favorite/Underdog ATS splits (some teams better as dogs)
+
+8. RECENT FORM:
+   - W5+ streak: +2 confidence boost
+   - L5+ streak: -2 confidence penalty
+   - Consider avg points scored/allowed in L10 for scoring trends
+
+9. EDGE CALCULATION:
+   - Compare your predicted score to betting line
+   - Edge = |Your Prediction - Line| as percentage
+   - 3%+ edge = Value Bet
+   - 5%+ edge = Strong Value Bet
+
+10. KELLY CRITERION:
+    - Half Kelly = (Edge% × 0.5)
+    - Example: 6% edge = 3% half-kelly bet size
+
+RESPONSE FORMAT (JSON):
 {
   "games": [
     {
-      "id": "game_id",
-      "homeTeam": "Full Team Name",
-      "awayTeam": "Full Team Name", 
-      "gameTime": "ISO datetime",
-      "spread": -4.5,
-      "total": 220.5,
-      "homeML": -180,
-      "awayML": 155,
-      "favorite": "Team Name",
-      "predictedScore": {"home": 112, "away": 108},
-      "spreadPick": "Team Name -4.5",
-      "spreadEdge": 2.5,
-      "totalPick": "OVER 220.5",
-      "totalEdge": 1.8,
-      "kellySpread": 1.25,
-      "kellyTotal": 0.9,
-      "confidence": "High",
-      "keyFactors": ["factor1", "factor2"]
-    }
-  ],
-  "lastUpdated": "${new Date().toISOString()}",
-  "sport": "${sport.toUpperCase()}"
-}
-
-Return ONLY valid JSON, no markdown.`;
-
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 8192,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    let textContent = "";
-    for (const block of message.content) {
-      if (block.type === "text") {
-        textContent += block.text;
+      "homeTeam": "Lakers",
+      "awayTeam": "Celtics",
+      "gameTime": "7:00 PM ET",
+      "spread": "-5.5",
+      "total": "225.5",
+      "homeML": "-220",
+      "awayML": "+180",
+      "favorite": "Lakers -5.5",
+      "predictedScore": { "home": 115, "away": 108 },
+      "spreadPick": "Lakers -5.5",
+      "spreadEdge": 3.2,
+      "totalPick": "OVER 225.5",
+      "totalEdge": -1.5,
+      "kellySpread": 1.6,
+      "kellyTotal": 0,
+      "confidence": "Medium",
+      "keyFactors": [
+        "Celtics on B2B after West Coast trip (-3 pts)",
+        "Lakers elite defense (108.5 DefRtg) vs Celtics average offense",
+        "Slow pace matchup suggests UNDER (-3 pts to total)"
+      ],
+      "lineMovement": {
+        "spreadMove": -0.5,
+        "totalMove": 2.0
       }
     }
+  ]
+}
 
-    console.log("Claude response:", textContent.substring(0, 500));
+CRITICAL RULES:
+- Only recommend picks where edge ≥ 2%
+- If edge < 2%, set pick to "No edge" and edge to 0
+- Be honest about uncertainty - assign "Low" confidence when data is mixed
+- Factor in ALL data sources - rest, travel, pace, matchups, ATS, H2H
+- For totals, pace factor is critical - don't ignore it
+- Back-to-back games are HUGE - always apply -3 to -5 point adjustment`;
 
-    let jsonText = textContent.trim();
-    if (jsonText.startsWith("```")) {
-      jsonText = jsonText.replace(/```json\s*/g, "").replace(/```\s*/g, "");
-    }
-
-    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("No JSON found in response");
-
-    const data = JSON.parse(jsonMatch[0]);
-
-    if (data.games) {
-      data.games = data.games.map(game => {
-        const originalGame = gamesFormatted.find(g => g.id === game.id);
-        if (originalGame) {
-          return {
-            ...game,
-            weather: originalGame.weather,
-            lineMovement: originalGame.lineMovement,
-            bestLines: originalGame.bestLines,
-            injuries: originalGame.injuries
-          };
-        }
-        return game;
-      });
-    }
-
-    data.arbitrageAlerts = allArbitrageOpps;
-
-    res.json(data);
-  } catch (err) {
-    console.error(`Error fetching ${sport} predictions:`, err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ARBITRAGE ENDPOINT (standalone)
-// ══════════════════════════════════════════════════════════════════════════════
-app.get("/api/arbitrage/:sport", rateLimitMiddleware, async (req, res) => {
-  const { sport } = req.params;
-
-  try {
-    const oddsData = await fetchOddsData(sport);
-    const opportunities = [];
-
-    for (const game of oddsData) {
-      const arbOpps = detectArbitrage(game);
-      opportunities.push(...arbOpps);
-    }
-
-    res.json({
-      sport: sport.toUpperCase(),
-      opportunities: opportunities,
-      count: opportunities.length,
-      lastUpdated: new Date().toISOString(),
+    console.log('Sending data to Claude for predictions...');
+    
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      messages: [{
+        role: 'user',
+        content: prompt
+      }]
     });
-  } catch (err) {
-    console.error(`Arbitrage error for ${sport}:`, err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
-// INJURIES ENDPOINT (standalone)
-// ══════════════════════════════════════════════════════════════════════════════
-app.get("/api/injuries/:sport", async (req, res) => {
-  const { sport } = req.params;
-
-  try {
-    const injuries = await fetchInjuryData(sport);
-    res.json({
-      sport: sport.toUpperCase(),
-      injuries: injuries,
-      count: injuries.length,
-      lastUpdated: new Date().toISOString(),
-    });
-  } catch (err) {
-    console.error(`Injuries error for ${sport}:`, err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
-// BEST LINES ENDPOINT (standalone)
-// ══════════════════════════════════════════════════════════════════════════════
-app.get("/api/best-lines/:sport", rateLimitMiddleware, async (req, res) => {
-  const { sport } = req.params;
-
-  try {
-    const oddsData = await fetchOddsData(sport);
-    const gamesWithBestLines = [];
-
-    for (const game of oddsData.slice(0, 15)) {
-      const bestLines = findBestLines(game);
-      gamesWithBestLines.push({
-        id: game.id,
-        homeTeam: game.home_team,
-        awayTeam: game.away_team,
-        gameTime: game.commence_time,
-        bestLines: bestLines,
-        bookmakerCount: game.bookmakers?.length || 0,
-      });
+    
+    const responseText = message.content[0].text;
+    console.log('Claude response received');
+    
+    // Parse Claude's JSON response
+    let predictions;
+    try {
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        predictions = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON found in response');
+      }
+    } catch (parseError) {
+      console.error('Error parsing Claude response:', parseError);
+      return res.status(500).json({ error: 'Failed to parse predictions' });
     }
-
+    
+    // Format for frontend
+    const formattedGames = predictions.games.map(game => ({
+      homeTeam: game.homeTeam,
+      awayTeam: game.awayTeam,
+      gameTime: game.gameTime,
+      spread: game.spread,
+      total: game.total,
+      homeML: game.homeML,
+      awayML: game.awayML,
+      favorite: game.favorite,
+      predictedScore: game.predictedScore,
+      spreadPick: game.spreadPick,
+      spreadEdge: game.spreadEdge,
+      totalPick: game.totalPick,
+      totalEdge: game.totalEdge,
+      kellySpread: game.kellySpread,
+      kellyTotal: game.kellyTotal,
+      confidence: game.confidence,
+      keyFactors: game.keyFactors,
+      lineMovement: game.lineMovement,
+      stats: gamesWithStats.find(g => 
+        g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam
+      )
+    }));
+    
     res.json({
-      sport: sport.toUpperCase(),
-      games: gamesWithBestLines,
-      lastUpdated: new Date().toISOString(),
+      sport: 'NBA',
+      games: formattedGames,
+      arbitrageAlerts: arbitrageAlerts
     });
-  } catch (err) {
-    console.error(`Best lines error for ${sport}:`, err.message);
-    res.status(500).json({ error: err.message });
+    
+  } catch (error) {
+    console.error('Prediction error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// HEALTH CHECK
-// ══════════════════════════════════════════════════════════════════════════════
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// START SERVER
-// ══════════════════════════════════════════════════════════════════════════════
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Sports Prediction Agent running on port ${PORT}`);
-  console.log(`Features enabled: Line Movement, Multi-Book Comparison, Arbitrage Detection, Injuries, Weather`);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
