@@ -996,6 +996,20 @@ app.post('/api/predictions', async (req, res) => {
       return await handleNHLPredictions(res, arbitrageAlerts);
     } else if (sport === 'mlb') {
       return await handleMLBPredictions(res, arbitrageAlerts);
+    } else if (sport === 'nfl') {
+      return res.json({
+        sport: 'NFL',
+        games: [],
+        arbitrageAlerts: [],
+        message: 'NFL support coming soon! Will include: weather impact, injury analysis, home field advantage, rest days, and game script predictions.'
+      });
+    } else if (sport === 'cbb') {
+      return res.json({
+        sport: 'CBB',
+        games: [],
+        arbitrageAlerts: [],
+        message: 'College Basketball support coming soon!'
+      });
     } else {
       return res.json({
         sport: sport.toUpperCase(),
