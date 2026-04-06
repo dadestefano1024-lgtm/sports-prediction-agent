@@ -589,10 +589,17 @@ app.post('/api/predictions', async (req, res) => {
       });
     }
     
-    // Fetch current NBA games from ESPN (no date filter = gets current/upcoming games)
-    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard`;
+    // Fetch NBA games from ESPN - get games from last 24 hours to catch live games
+    // ESPN returns live, completed, and upcoming games
+    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?limit=50`;
     const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
-    const events = scoreboardResponse.data.events || [];
+    let events = scoreboardResponse.data.events || [];
+    
+    // Filter to only include live and upcoming games (exclude completed)
+    events = events.filter(e => {
+      const status = e.competitions?.[0]?.status?.type?.state;
+      return status === 'pre' || status === 'in'; // pre = upcoming, in = live
+    });
     
     if (events.length === 0) {
       return res.json({
