@@ -57,6 +57,55 @@ const nbaTeamLocations = {
 };
 
 // ============================================================================
+// NHL TEAM IDS & LOCATIONS
+// ============================================================================
+
+const nhlTeamIds = {
+  'Bruins': 6, 'Sabres': 7, 'Red Wings': 17, 'Panthers': 13, 'Canadiens': 8,
+  'Senators': 9, 'Lightning': 14, 'Maple Leafs': 10, 'Hurricanes': 12, 'Blue Jackets': 29,
+  'Devils': 1, 'Islanders': 2, 'Rangers': 3, 'Flyers': 4, 'Penguins': 5,
+  'Capitals': 15, 'Blackhawks': 16, 'Avalanche': 21, 'Stars': 25, 'Wild': 30,
+  'Predators': 18, 'Blues': 19, 'Jets': 52, 'Ducks': 24, 'Flames': 20,
+  'Oilers': 22, 'Kings': 26, 'Sharks': 28, 'Kraken': 55, 'Canucks': 23,
+  'Golden Knights': 54, 'Coyotes': 53
+};
+
+const nhlTeamLocations = {
+  'Bruins': { lat: 42.3662, lon: -71.0621, tz: -5 },
+  'Sabres': { lat: 42.8750, lon: -78.8764, tz: -5 },
+  'Red Wings': { lat: 42.3410, lon: -83.0550, tz: -5 },
+  'Panthers': { lat: 26.1583, lon: -80.3256, tz: -5 },
+  'Canadiens': { lat: 45.4960, lon: -73.5694, tz: -5 },
+  'Senators': { lat: 45.2968, lon: -75.9274, tz: -5 },
+  'Lightning': { lat: 27.9425, lon: -82.4517, tz: -5 },
+  'Maple Leafs': { lat: 43.6435, lon: -79.3791, tz: -5 },
+  'Hurricanes': { lat: 35.8032, lon: -78.7219, tz: -5 },
+  'Blue Jackets': { lat: 39.9693, lon: -83.0061, tz: -5 },
+  'Devils': { lat: 40.7336, lon: -74.1710, tz: -5 },
+  'Islanders': { lat: 40.7225, lon: -73.5907, tz: -5 },
+  'Rangers': { lat: 40.7505, lon: -73.9934, tz: -5 },
+  'Flyers': { lat: 39.9012, lon: -75.1720, tz: -5 },
+  'Penguins': { lat: 40.4396, lon: -79.9892, tz: -5 },
+  'Capitals': { lat: 38.8981, lon: -77.0209, tz: -5 },
+  'Blackhawks': { lat: 41.8807, lon: -87.6742, tz: -6 },
+  'Avalanche': { lat: 39.7487, lon: -104.8769, tz: -7 },
+  'Stars': { lat: 32.7905, lon: -96.8103, tz: -6 },
+  'Wild': { lat: 44.9795, lon: -93.2760, tz: -6 },
+  'Predators': { lat: 36.1591, lon: -86.7784, tz: -6 },
+  'Blues': { lat: 38.6266, lon: -90.2026, tz: -6 },
+  'Jets': { lat: 49.8928, lon: -97.1436, tz: -6 },
+  'Ducks': { lat: 33.8078, lon: -117.8764, tz: -8 },
+  'Flames': { lat: 51.0373, lon: -114.0519, tz: -7 },
+  'Oilers': { lat: 53.5467, lon: -113.4969, tz: -7 },
+  'Kings': { lat: 34.0430, lon: -118.2673, tz: -8 },
+  'Sharks': { lat: 37.3327, lon: -121.9010, tz: -8 },
+  'Kraken': { lat: 47.6221, lon: -122.3540, tz: -8 },
+  'Canucks': { lat: 49.2778, lon: -123.1089, tz: -8 },
+  'Golden Knights': { lat: 36.0909, lon: -115.1833, tz: -8 },
+  'Coyotes': { lat: 33.5318, lon: -112.2611, tz: -7 }
+};
+
+// ============================================================================
 // ATS TRACKING (IN-MEMORY - WOULD USE DATABASE IN PRODUCTION)
 // ============================================================================
 
@@ -483,6 +532,147 @@ function calculateProjectedTotal(homePace, awayPace) {
 }
 
 // ============================================================================
+// NHL API FUNCTIONS
+// ============================================================================
+
+async function fetchNHLTeamStats(teamName) {
+  try {
+    const teamId = nhlTeamIds[teamName];
+    if (!teamId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/${teamId}`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const team = response.data.team;
+    const record = team.record?.items?.find(r => r.type === 'total');
+    const homeRecord = team.record?.items?.find(r => r.type === 'home');
+    const awayRecord = team.record?.items?.find(r => r.type === 'road');
+    
+    return {
+      record: record?.summary || 'N/A',
+      homeRecord: homeRecord?.summary || 'N/A',
+      awayRecord: awayRecord?.summary || 'N/A',
+      wins: record?.stats?.find(s => s.name === 'wins')?.value || 0,
+      losses: record?.stats?.find(s => s.name === 'losses')?.value || 0,
+      otLosses: record?.stats?.find(s => s.name === 'otLosses')?.value || 0
+    };
+  } catch (error) {
+    console.error(`Error fetching NHL stats for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+async function fetchNHLRecentGames(teamName) {
+  try {
+    const teamId = nhlTeamIds[teamName];
+    if (!teamId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/${teamId}/schedule`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const events = response.data.events || [];
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+    const recent10 = completedGames.slice(0, 10);
+    const recent5 = recent10.slice(0, 5);
+    
+    const analyzeGames = (games) => {
+      let wins = 0;
+      let totalGoalsFor = 0;
+      let totalGoalsAgainst = 0;
+      
+      games.forEach(game => {
+        const comp = game.competitions[0];
+        const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+        const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+        const isHome = homeTeam.team.id == teamId;
+        const teamScore = isHome ? parseInt(homeTeam.score) : parseInt(awayTeam.score);
+        const oppScore = isHome ? parseInt(awayTeam.score) : parseInt(homeTeam.score);
+        
+        if (teamScore > oppScore) wins++;
+        totalGoalsFor += teamScore;
+        totalGoalsAgainst += oppScore;
+      });
+      
+      return {
+        record: `${wins}-${games.length - wins}`,
+        avgGoalsFor: games.length > 0 ? (totalGoalsFor / games.length).toFixed(1) : 0,
+        avgGoalsAgainst: games.length > 0 ? (totalGoalsAgainst / games.length).toFixed(1) : 0
+      };
+    };
+    
+    const streak = calculateNHLStreak(recent10, teamId);
+    const last10Data = analyzeGames(recent10);
+    const last5Data = analyzeGames(recent5);
+    
+    return {
+      last10: last10Data.record,
+      last5: last5Data.record,
+      streak: streak,
+      avgGoalsFor: last10Data.avgGoalsFor,
+      avgGoalsAgainst: last10Data.avgGoalsAgainst
+    };
+  } catch (error) {
+    console.error(`Error fetching NHL recent games for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+function calculateNHLStreak(games, teamId) {
+  if (!games || games.length === 0) return 'N/A';
+  
+  let streak = 0;
+  let streakType = null;
+  
+  for (const game of games) {
+    const comp = game.competitions[0];
+    const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+    const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+    const isHome = homeTeam.team.id == teamId;
+    const won = isHome ? homeTeam.winner : awayTeam.winner;
+    
+    if (streakType === null) {
+      streakType = won ? 'W' : 'L';
+      streak = 1;
+    } else if ((won && streakType === 'W') || (!won && streakType === 'L')) {
+      streak++;
+    } else {
+      break;
+    }
+  }
+  
+  return `${streakType}${streak}`;
+}
+
+async function fetchNHLGoalieStats(teamName) {
+  try {
+    // Goalie stats would require additional ESPN endpoints
+    // For now, return placeholder that can be enhanced later
+    return {
+      starter: 'TBD',
+      savePct: 'N/A',
+      gaa: 'N/A'
+    };
+  } catch (error) {
+    console.error(`Error fetching goalie stats for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+async function fetchNHLSpecialTeams(teamName) {
+  try {
+    // Special teams stats (power play, penalty kill)
+    // Would need additional ESPN endpoints
+    return {
+      powerPlayPct: 'N/A',
+      penaltyKillPct: 'N/A'
+    };
+  } catch (error) {
+    console.error(`Error fetching special teams for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+// ============================================================================
 // ODDS API FUNCTIONS
 // ============================================================================
 
@@ -579,16 +769,35 @@ app.post('/api/predictions', async (req, res) => {
     const oddsData = await fetchOdds(sport);
     const arbitrageAlerts = findArbitrageOpportunities(oddsData);
     
-    // For now, focus on NBA
-    if (sport !== 'nba') {
+    // Handle different sports
+    if (sport === 'nba') {
+      return await handleNBAPredictions(res, arbitrageAlerts);
+    } else if (sport === 'nhl') {
+      return await handleNHLPredictions(res, arbitrageAlerts);
+    } else {
       return res.json({
         sport: sport.toUpperCase(),
         games: [],
         arbitrageAlerts: [],
-        message: 'Only NBA is currently supported with full data integration'
+        message: `${sport.toUpperCase()} support coming soon. Currently available: NBA, NHL`
       });
     }
     
+  } catch (error) {
+    console.error('Prediction error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// ============================================================================
+// NBA PREDICTION HANDLER
+// ============================================================================
+
+async function handleNBAPredictions(res, arbitrageAlerts) {
+  try {
     // Fetch NBA games from ESPN - get games from last 24 hours to catch live games
     // ESPN returns live, completed, and upcoming games
     const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?limit=50`;
@@ -893,20 +1102,287 @@ CRITICAL RULES:
       )
     }));
     
-    res.json({
+    return res.json({
       sport: 'NBA',
       games: formattedGames,
       arbitrageAlerts: arbitrageAlerts
     });
     
   } catch (error) {
-    console.error('Prediction error:', error);
-    res.status(500).json({ 
+    console.error('NBA Prediction error:', error);
+    return res.status(500).json({ 
       error: error.message,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
-});
+}
+
+// ============================================================================
+// NHL PREDICTION HANDLER  
+// ============================================================================
+
+async function handleNHLPredictions(res, arbitrageAlerts) {
+  try {
+    // Fetch NHL games from ESPN
+    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?limit=50`;
+    const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
+    let events = scoreboardResponse.data.events || [];
+    
+    // Filter to only include live and upcoming games
+    events = events.filter(e => {
+      const status = e.competitions?.[0]?.status?.type?.state;
+      return status === 'pre' || status === 'in';
+    });
+    
+    if (events.length === 0) {
+      return res.json({
+        sport: 'NHL',
+        games: [],
+        arbitrageAlerts: [],
+        message: 'No NHL games scheduled for today'
+      });
+    }
+    
+    // Process each NHL game with comprehensive stats
+    const gamesWithStats = await Promise.all(events.map(async (event) => {
+      const comp = event.competitions[0];
+      const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+      const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+      const homeTeamName = homeTeam.team.displayName.split(' ').pop();
+      const awayTeamName = awayTeam.team.displayName.split(' ').pop();
+      
+      // Fetch all NHL data sources
+      const [
+        homeStats,
+        awayStats,
+        homeForm,
+        awayForm,
+        homeRest,
+        awayRest,
+        travelData,
+        homeGoalie,
+        awayGoalie,
+        homeSpecialTeams,
+        awaySpecialTeams,
+        homeATS,
+        awayATS
+      ] = await Promise.all([
+        fetchNHLTeamStats(homeTeamName),
+        fetchNHLTeamStats(awayTeamName),
+        fetchNHLRecentGames(homeTeamName),
+        fetchNHLRecentGames(awayTeamName),
+        fetchRestDays(homeTeamName, event.date),
+        fetchRestDays(awayTeamName, event.date),
+        fetchTravelData(awayTeamName, homeTeamName, event.date),
+        fetchNHLGoalieStats(homeTeamName),
+        fetchNHLGoalieStats(awayTeamName),
+        fetchNHLSpecialTeams(homeTeamName),
+        fetchNHLSpecialTeams(awayTeamName),
+        Promise.resolve(getATSRecord(homeTeamName)),
+        Promise.resolve(getATSRecord(awayTeamName))
+      ]);
+      
+      return {
+        homeTeam: homeTeam.team.displayName,
+        awayTeam: awayTeam.team.displayName,
+        gameTime: new Date(event.date).toLocaleString(),
+        homeData: homeStats,
+        awayData: awayStats,
+        homeForm: homeForm,
+        awayForm: awayForm,
+        restData: {
+          homeRestDays: homeRest?.restDays,
+          homeB2B: homeRest?.isB2B,
+          home3in4: homeRest?.is3in4,
+          awayRestDays: awayRest?.restDays,
+          awayB2B: awayRest?.isB2B,
+          away3in4: awayRest?.is3in4
+        },
+        travel: travelData,
+        goalies: {
+          home: homeGoalie,
+          away: awayGoalie
+        },
+        specialTeams: {
+          home: homeSpecialTeams,
+          away: awaySpecialTeams
+        },
+        ats: {
+          home: homeATS,
+          away: awayATS
+        },
+        odds: null
+      };
+    }));
+    
+    // Send to Claude for NHL predictions
+    const prompt = `You are an expert NHL sports analyst and sharp bettor. Analyze the following games and provide predictions.
+
+GAMES DATA:
+${JSON.stringify(gamesWithStats, null, 2)}
+
+DATA EXPLANATION:
+- homeData/awayData: Season records (W-L-OTL), home/away splits
+- homeForm/awayForm: Recent performance (L5, L10, streaks, avg goals for/against in last 10)
+- restData: Days since last game, back-to-back detection, 3 games in 4 nights
+- travel: Distance traveled, timezone changes, fatigue impact
+- goalies: Starting goalie stats (placeholder for now - will be enhanced)
+- specialTeams: Power play % and penalty kill % (placeholder - will be enhanced)
+- ats: Against The Spread records
+- odds: Current betting lines (spread/puck line, total, moneylines)
+
+NHL-SPECIFIC ANALYSIS METHODOLOGY:
+
+1. REST & FATIGUE IMPACT:
+   - Back-to-back (B2B): -0.5 to -1.0 goals expected
+   - NHL teams play 82 games, fatigue is CRITICAL
+   - Well-rested (3+ days): +0.3 to +0.5 goals boost
+
+2. TRAVEL IMPACT:
+   - 2000+ miles OR 3+ timezone changes: -0.5 goals (Severe)
+   - 1000-2000 miles OR 2 timezone changes: -0.3 goals (Moderate)
+   - West→East early games: Additional -0.2 goals
+
+3. GOALIE MATCHUPS:
+   - Elite goalie (placeholder) vs weak offense: lean UNDER
+   - Backup goalies: typically +0.5 goals against
+   - Goalie on B2B: +0.3 to +0.5 goals against
+
+4. SPECIAL TEAMS:
+   - Elite PP vs weak PK: +0.5 goals lean OVER
+   - Poor PP vs elite PK: -0.3 goals lean UNDER
+   - Special teams score ~20% of NHL goals
+
+5. HOME ICE ADVANTAGE:
+   - NHL home ice worth ~0.3 goals
+   - Some buildings (Edmonton, Vegas) worth more
+   - Last line change = matchup advantage
+
+6. SCORING TRENDS:
+   - Use avgGoalsFor and avgGoalsAgainst from recent form
+   - High-scoring teams (>3.5 GPG) vs low-scoring (<2.5 GPG)
+   - Defensive teams (<2.5 GA/G) suppress totals
+
+7. PUCK LINE (1.5 GOALS):
+   - Favorites -1.5 = must win by 2+ (risky, empty net scenarios)
+   - Underdogs +1.5 = can lose by 1 in regulation
+   - Close games common in NHL - puck line value on heavy favorites
+
+8. OVERTIME/SHOOTOUT:
+   - ~25% of NHL games go to OT
+   - Affects totals (extra 5 min 3v3 = goals)
+   - Check OT record in team stats
+
+9. EDGE CALCULATION:
+   - Compare predicted score to betting line
+   - Edge = |Your Prediction - Line| as percentage
+   - 5%+ edge = Value Bet (NHL has tighter margins than NBA)
+
+10. KELLY CRITERION:
+    - Half Kelly = (Edge% × 0.5)
+
+RESPONSE FORMAT (JSON):
+{
+  "games": [
+    {
+      "homeTeam": "Bruins",
+      "awayTeam": "Maple Leafs",
+      "gameTime": "7:00 PM ET",
+      "puckLine": "-1.5 (+180)",
+      "total": "6.5",
+      "homeML": "-150",
+      "awayML": "+130",
+      "predictedScore": { "home": 4, "away": 2 },
+      "puckLinePick": "Bruins -1.5",
+      "puckLineEdge": 3.5,
+      "totalPick": "OVER 6.5",
+      "totalEdge": 2.1,
+      "kellyPuckLine": 1.75,
+      "kellyTotal": 1.05,
+      "confidence": "Medium",
+      "keyFactors": [
+        "Maple Leafs on B2B with travel (-0.5 goals)",
+        "Bruins strong home record",
+        "Both teams trending over in recent games"
+      ]
+    }
+  ]
+}
+
+CRITICAL RULES FOR NHL:
+- Only recommend picks where edge ≥ 3% (tighter than NBA)
+- If edge < 3%, set pick to "No edge" and edge to 0
+- Goalie matchups are HUGE - factor heavily when available
+- Back-to-back games matter MORE in NHL than NBA
+- Home ice = ~0.3 goal advantage
+- Totals in NHL typically 5.5-6.5 (much lower than NBA)
+- Empty net goals affect puck line heavily`;
+
+    console.log('Sending NHL data to Claude for predictions...');
+    
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      messages: [{
+        role: 'user',
+        content: prompt
+      }]
+    });
+    
+    const responseText = message.content[0].text;
+    console.log('Claude NHL response received');
+    
+    // Parse Claude's JSON response
+    let predictions;
+    try {
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        predictions = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON found in response');
+      }
+    } catch (parseError) {
+      console.error('Error parsing Claude NHL response:', parseError);
+      return res.status(500).json({ error: 'Failed to parse NHL predictions' });
+    }
+    
+    // Format for frontend
+    const formattedGames = predictions.games.map(game => ({
+      homeTeam: game.homeTeam,
+      awayTeam: game.awayTeam,
+      gameTime: game.gameTime,
+      spread: game.puckLine,
+      total: game.total,
+      homeML: game.homeML,
+      awayML: game.awayML,
+      predictedScore: game.predictedScore,
+      spreadPick: game.puckLinePick,
+      spreadEdge: game.puckLineEdge,
+      totalPick: game.totalPick,
+      totalEdge: game.totalEdge,
+      kellySpread: game.kellyPuckLine,
+      kellyTotal: game.kellyTotal,
+      confidence: game.confidence,
+      keyFactors: game.keyFactors,
+      stats: gamesWithStats.find(g => 
+        g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam
+      )
+    }));
+    
+    return res.json({
+      sport: 'NHL',
+      games: formattedGames,
+      arbitrageAlerts: arbitrageAlerts
+    });
+    
+  } catch (error) {
+    console.error('NHL Prediction error:', error);
+    return res.status(500).json({ 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+}
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
