@@ -589,9 +589,8 @@ app.post('/api/predictions', async (req, res) => {
       });
     }
     
-    // Fetch today's NBA games from ESPN
-    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
-    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${today}`;
+    // Fetch current NBA games from ESPN (no date filter = gets current/upcoming games)
+    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard`;
     const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
     const events = scoreboardResponse.data.events || [];
     
