@@ -1004,12 +1004,71 @@ app.post('/api/predictions', async (req, res) => {
         message: 'NFL support coming soon! Will include: weather impact, injury analysis, home field advantage, rest days, and game script predictions.'
       });
     } else if (sport === 'cbb') {
-      return res.json({
-        sport: 'CBB',
-        games: [],
-        arbitrageAlerts: [],
-        message: 'College Basketball support coming soon!'
-      });
+      // Quick CBB support for March Madness
+      try {
+        const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?limit=50`;
+        const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
+        let events = scoreboardResponse.data.events || [];
+        
+        events = events.filter(e => {
+          const status = e.competitions?.[0]?.status?.type?.state;
+          return status === 'pre' || status === 'in';
+        });
+        
+        if (events.length === 0) {
+          return res.json({
+            sport: 'CBB',
+            games: [],
+            arbitrageAlerts: [],
+            message: 'No college basketball games scheduled right now'
+          });
+        }
+        
+        // Basic game info without deep stats
+        const games = events.map(event => {
+          const comp = event.competitions[0];
+          const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+          const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+          
+          return {
+            homeTeam: homeTeam.team.displayName,
+            awayTeam: awayTeam.team.displayName,
+            gameTime: new Date(event.date).toLocaleString(),
+            spread: 'N/A',
+            total: 'N/A',
+            homeML: 'N/A',
+            awayML: 'N/A',
+            predictedScore: { home: '?', away: '?' },
+            spreadPick: 'Full CBB analysis coming soon',
+            spreadEdge: 0,
+            totalPick: 'Watch the game!',
+            totalEdge: 0,
+            kellySpread: 0,
+            kellyTotal: 0,
+            confidence: 'N/A',
+            keyFactors: [
+              'College Basketball support in development',
+              event.name || 'Game scheduled',
+              'Enjoy March Madness! 🏀'
+            ]
+          };
+        });
+        
+        return res.json({
+          sport: 'CBB',
+          games: games,
+          arbitrageAlerts: [],
+          message: `Showing ${games.length} college basketball game(s). Full analysis coming soon!`
+        });
+      } catch (error) {
+        console.error('CBB fetch error:', error);
+        return res.json({
+          sport: 'CBB',
+          games: [],
+          arbitrageAlerts: [],
+          message: 'Error fetching college basketball games'
+        });
+      }
     } else {
       return res.json({
         sport: sport.toUpperCase(),
