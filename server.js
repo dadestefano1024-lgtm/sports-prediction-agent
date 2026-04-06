@@ -106,6 +106,72 @@ const nhlTeamLocations = {
 };
 
 // ============================================================================
+// MLB TEAM IDS & LOCATIONS
+// ============================================================================
+
+const mlbTeamIds = {
+  'Diamondbacks': 29, 'Braves': 15, 'Orioles': 1, 'Red Sox': 2, 'Cubs': 16,
+  'White Sox': 4, 'Reds': 17, 'Guardians': 5, 'Rockies': 27, 'Tigers': 6,
+  'Astros': 18, 'Royals': 7, 'Angels': 3, 'Dodgers': 19, 'Marlins': 28,
+  'Brewers': 8, 'Twins': 9, 'Mets': 21, 'Yankees': 10, 'Athletics': 11,
+  'Phillies': 22, 'Pirates': 23, 'Padres': 25, 'Giants': 26, 'Mariners': 12,
+  'Cardinals': 24, 'Rays': 30, 'Rangers': 13, 'Blue Jays': 14, 'Nationals': 20
+};
+
+const mlbTeamLocations = {
+  'Diamondbacks': { lat: 33.4453, lon: -112.0667, tz: -7 },
+  'Braves': { lat: 33.8907, lon: -84.4677, tz: -5 },
+  'Orioles': { lat: 39.2839, lon: -76.6216, tz: -5 },
+  'Red Sox': { lat: 42.3467, lon: -71.0972, tz: -5 },
+  'Cubs': { lat: 41.9484, lon: -87.6553, tz: -6 },
+  'White Sox': { lat: 35.3345, lon: -89.9521, tz: -6 },
+  'Reds': { lat: 39.0974, lon: -84.5061, tz: -5 },
+  'Guardians': { lat: 41.4962, lon: -81.6852, tz: -5 },
+  'Rockies': { lat: 39.7559, lon: -104.9942, tz: -7 },
+  'Tigers': { lat: 42.3390, lon: -83.0485, tz: -5 },
+  'Astros': { lat: 29.7572, lon: -95.3555, tz: -6 },
+  'Royals': { lat: 39.0517, lon: -94.4803, tz: -6 },
+  'Angels': { lat: 33.8003, lon: -117.8827, tz: -8 },
+  'Dodgers': { lat: 34.0739, lon: -118.2400, tz: -8 },
+  'Marlins': { lat: 25.7781, lon: -80.2197, tz: -5 },
+  'Brewers': { lat: 43.0280, lon: -87.9712, tz: -6 },
+  'Twins': { lat: 44.9817, lon: -93.2776, tz: -6 },
+  'Mets': { lat: 40.7571, lon: -73.8458, tz: -5 },
+  'Yankees': { lat: 40.8296, lon: -73.9262, tz: -5 },
+  'Athletics': { lat: 37.7516, lon: -122.2005, tz: -8 },
+  'Phillies': { lat: 39.9061, lon: -75.1665, tz: -5 },
+  'Pirates': { lat: 40.4469, lon: -80.0057, tz: -5 },
+  'Padres': { lat: 32.7073, lon: -117.1566, tz: -8 },
+  'Giants': { lat: 37.7786, lon: -122.3893, tz: -8 },
+  'Mariners': { lat: 47.5914, lon: -122.3325, tz: -8 },
+  'Cardinals': { lat: 38.6226, lon: -90.1928, tz: -6 },
+  'Rays': { lat: 27.7682, lon: -82.6534, tz: -5 },
+  'Rangers': { lat: 32.7512, lon: -97.0826, tz: -6 },
+  'Blue Jays': { lat: 43.6414, lon: -79.3894, tz: -5 },
+  'Nationals': { lat: 38.8730, lon: -77.0074, tz: -5 }
+};
+
+// Ballpark factors (runs per game multiplier)
+const ballparkFactors = {
+  'Coors Field': 1.25,        // Rockies - thin air, massive offense boost
+  'Great American Ball Park': 1.15, // Reds - hitter friendly
+  'Camden Yards': 1.10,       // Orioles - short porches
+  'Globe Life Field': 1.10,   // Rangers - new park, hitter friendly
+  'Fenway Park': 1.08,        // Red Sox - Green Monster
+  'Yankee Stadium': 1.08,     // Yankees - short right porch
+  'Citizens Bank Park': 1.08, // Phillies - hitter friendly
+  'Truist Park': 1.05,        // Braves - neutral-slight hitter
+  'Chase Field': 1.05,        // Diamondbacks - dome
+  'Wrigley Field': 1.05,      // Cubs - wind dependent
+  'T-Mobile Park': 0.92,      // Mariners - pitcher friendly
+  'Oracle Park': 0.90,        // Giants - marine layer, big dimensions
+  'Petco Park': 0.90,         // Padres - pitcher friendly
+  'Tropicana Field': 0.95,    // Rays - dome, pitcher friendly
+  'Marlins Park': 0.95        // Marlins - dome, pitcher friendly
+  // Default: 1.0 for unlisted parks
+};
+
+// ============================================================================
 // ATS TRACKING (IN-MEMORY - WOULD USE DATABASE IN PRODUCTION)
 // ============================================================================
 
@@ -673,6 +739,160 @@ async function fetchNHLSpecialTeams(teamName) {
 }
 
 // ============================================================================
+// MLB API FUNCTIONS
+// ============================================================================
+
+async function fetchMLBTeamStats(teamName) {
+  try {
+    const teamId = mlbTeamIds[teamName];
+    if (!teamId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams/${teamId}`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const team = response.data.team;
+    const record = team.record?.items?.find(r => r.type === 'total');
+    const homeRecord = team.record?.items?.find(r => r.type === 'home');
+    const awayRecord = team.record?.items?.find(r => r.type === 'road');
+    
+    return {
+      record: record?.summary || 'N/A',
+      homeRecord: homeRecord?.summary || 'N/A',
+      awayRecord: awayRecord?.summary || 'N/A',
+      wins: record?.stats?.find(s => s.name === 'wins')?.value || 0,
+      losses: record?.stats?.find(s => s.name === 'losses')?.value || 0
+    };
+  } catch (error) {
+    console.error(`Error fetching MLB stats for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+async function fetchMLBRecentGames(teamName) {
+  try {
+    const teamId = mlbTeamIds[teamName];
+    if (!teamId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams/${teamId}/schedule`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const events = response.data.events || [];
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+    const recent10 = completedGames.slice(0, 10);
+    const recent5 = recent10.slice(0, 5);
+    
+    const analyzeGames = (games) => {
+      let wins = 0;
+      let totalRunsFor = 0;
+      let totalRunsAgainst = 0;
+      
+      games.forEach(game => {
+        const comp = game.competitions[0];
+        const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+        const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+        const isHome = homeTeam.team.id == teamId;
+        const teamScore = isHome ? parseInt(homeTeam.score) : parseInt(awayTeam.score);
+        const oppScore = isHome ? parseInt(awayTeam.score) : parseInt(homeTeam.score);
+        
+        if (teamScore > oppScore) wins++;
+        totalRunsFor += teamScore;
+        totalRunsAgainst += oppScore;
+      });
+      
+      return {
+        record: `${wins}-${games.length - wins}`,
+        avgRunsFor: games.length > 0 ? (totalRunsFor / games.length).toFixed(1) : 0,
+        avgRunsAgainst: games.length > 0 ? (totalRunsAgainst / games.length).toFixed(1) : 0
+      };
+    };
+    
+    const streak = calculateMLBStreak(recent10, teamId);
+    const last10Data = analyzeGames(recent10);
+    const last5Data = analyzeGames(recent5);
+    
+    return {
+      last10: last10Data.record,
+      last5: last5Data.record,
+      streak: streak,
+      avgRunsFor: last10Data.avgRunsFor,
+      avgRunsAgainst: last10Data.avgRunsAgainst
+    };
+  } catch (error) {
+    console.error(`Error fetching MLB recent games for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+function calculateMLBStreak(games, teamId) {
+  if (!games || games.length === 0) return 'N/A';
+  
+  let streak = 0;
+  let streakType = null;
+  
+  for (const game of games) {
+    const comp = game.competitions[0];
+    const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+    const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+    const isHome = homeTeam.team.id == teamId;
+    const won = isHome ? homeTeam.winner : awayTeam.winner;
+    
+    if (streakType === null) {
+      streakType = won ? 'W' : 'L';
+      streak = 1;
+    } else if ((won && streakType === 'W') || (!won && streakType === 'L')) {
+      streak++;
+    } else {
+      break;
+    }
+  }
+  
+  return `${streakType}${streak}`;
+}
+
+async function fetchMLBPitcherStats(teamName) {
+  try {
+    // Pitcher stats require game-specific data
+    // Would need to fetch probable pitchers from today's game
+    // Placeholder for now - can be enhanced with roster API
+    return {
+      starter: 'TBD',
+      era: 'N/A',
+      whip: 'N/A',
+      k9: 'N/A'
+    };
+  } catch (error) {
+    console.error(`Error fetching pitcher stats for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+function getBallparkFactor(venueName) {
+  // Match venue name to ballpark factor
+  for (const [park, factor] of Object.entries(ballparkFactors)) {
+    if (venueName && venueName.includes(park.split(' ')[0])) {
+      return factor;
+    }
+  }
+  return 1.0; // Neutral park
+}
+
+async function fetchMLBWeather(gameId) {
+  try {
+    // Weather is crucial for MLB totals
+    // Wind blowing out = OVER, wind blowing in = UNDER
+    // Would need weather API integration
+    return {
+      temp: 'N/A',
+      wind: 'N/A',
+      conditions: 'N/A'
+    };
+  } catch (error) {
+    console.error(`Error fetching MLB weather:`, error.message);
+    return null;
+  }
+}
+
+// ============================================================================
 // ODDS API FUNCTIONS
 // ============================================================================
 
@@ -774,12 +994,14 @@ app.post('/api/predictions', async (req, res) => {
       return await handleNBAPredictions(res, arbitrageAlerts);
     } else if (sport === 'nhl') {
       return await handleNHLPredictions(res, arbitrageAlerts);
+    } else if (sport === 'mlb') {
+      return await handleMLBPredictions(res, arbitrageAlerts);
     } else {
       return res.json({
         sport: sport.toUpperCase(),
         games: [],
         arbitrageAlerts: [],
-        message: `${sport.toUpperCase()} support coming soon. Currently available: NBA, NHL`
+        message: `${sport.toUpperCase()} support coming soon. Currently available: NBA, NHL, MLB`
       });
     }
     
@@ -1377,6 +1599,263 @@ CRITICAL RULES FOR NHL:
     
   } catch (error) {
     console.error('NHL Prediction error:', error);
+    return res.status(500).json({ 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+}
+
+// ============================================================================
+// MLB PREDICTION HANDLER
+// ============================================================================
+
+async function handleMLBPredictions(res, arbitrageAlerts) {
+  try {
+    // Fetch MLB games from ESPN
+    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?limit=50`;
+    const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
+    let events = scoreboardResponse.data.events || [];
+    
+    // Filter to only include live and upcoming games
+    events = events.filter(e => {
+      const status = e.competitions?.[0]?.status?.type?.state;
+      return status === 'pre' || status === 'in';
+    });
+    
+    if (events.length === 0) {
+      return res.json({
+        sport: 'MLB',
+        games: [],
+        arbitrageAlerts: [],
+        message: 'No MLB games scheduled for today'
+      });
+    }
+    
+    // Process each MLB game with comprehensive stats
+    const gamesWithStats = await Promise.all(events.map(async (event) => {
+      const comp = event.competitions[0];
+      const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+      const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+      const homeTeamName = homeTeam.team.displayName.split(' ').pop();
+      const awayTeamName = awayTeam.team.displayName.split(' ').pop();
+      const venueName = comp.venue?.fullName || '';
+      
+      // Fetch all MLB data sources
+      const [
+        homeStats,
+        awayStats,
+        homeForm,
+        awayForm,
+        homePitcher,
+        awayPitcher,
+        weather,
+        homeATS,
+        awayATS
+      ] = await Promise.all([
+        fetchMLBTeamStats(homeTeamName),
+        fetchMLBTeamStats(awayTeamName),
+        fetchMLBRecentGames(homeTeamName),
+        fetchMLBRecentGames(awayTeamName),
+        fetchMLBPitcherStats(homeTeamName),
+        fetchMLBPitcherStats(awayTeamName),
+        fetchMLBWeather(event.id),
+        Promise.resolve(getATSRecord(homeTeamName)),
+        Promise.resolve(getATSRecord(awayTeamName))
+      ]);
+      
+      const ballparkFactor = getBallparkFactor(venueName);
+      
+      return {
+        homeTeam: homeTeam.team.displayName,
+        awayTeam: awayTeam.team.displayName,
+        gameTime: new Date(event.date).toLocaleString(),
+        venue: venueName,
+        ballparkFactor: ballparkFactor,
+        homeData: homeStats,
+        awayData: awayStats,
+        homeForm: homeForm,
+        awayForm: awayForm,
+        pitchers: {
+          home: homePitcher,
+          away: awayPitcher
+        },
+        weather: weather,
+        ats: {
+          home: homeATS,
+          away: awayATS
+        },
+        odds: null
+      };
+    }));
+    
+    // Send to Claude for MLB predictions
+    const prompt = `You are an expert MLB sports analyst and sharp bettor. Analyze the following games and provide predictions.
+
+GAMES DATA:
+${JSON.stringify(gamesWithStats, null, 2)}
+
+DATA EXPLANATION:
+- homeData/awayData: Season records, home/away splits
+- homeForm/awayForm: Recent performance (L5, L10, streaks, avg runs for/against in last 10)
+- pitchers: Starting pitcher stats (placeholder - will be enhanced with probable starters)
+- weather: Temperature, wind speed/direction, conditions (placeholder - will be enhanced)
+- ballparkFactor: Run environment multiplier (1.0 = neutral, >1.0 = hitter friendly, <1.0 = pitcher friendly)
+- venue: Stadium name
+- ats: Against The Spread records (runline performance)
+
+MLB-SPECIFIC ANALYSIS METHODOLOGY:
+
+1. PITCHER MATCHUPS (MOST IMPORTANT):
+   - Ace vs weak lineup: -1.5 to -2.0 runs, lean UNDER
+   - Two aces: Strong UNDER lean (-1.0 runs)
+   - Weak starter vs elite offense: +1.5 to +2.0 runs, lean OVER
+   - Bullpen games: More volatile, check bullpen ERA
+   - Day game after night game: Tired bullpen = OVER risk
+
+2. BALLPARK FACTORS (CRITICAL FOR TOTALS):
+   - Coors Field (1.25x): Add +2.5 runs to total projection
+   - Great American (1.15x): Add +1.5 runs
+   - Oracle Park/Petco (0.90x): Subtract -1.0 runs
+   - Dome vs outdoor: Weather not a factor in dome
+
+3. WEATHER IMPACT:
+   - Wind blowing OUT 10+ mph: +1.0 to +1.5 runs (OVER)
+   - Wind blowing IN 10+ mph: -1.0 runs (UNDER)
+   - Hot weather (85°F+): +0.5 runs (ball carries better)
+   - Cold weather (<50°F): -0.5 runs (dead ball)
+   - Rain forecast: Possible postponement, avoid
+
+4. HOME FIELD ADVANTAGE:
+   - Worth ~0.2 runs in MLB (less than other sports)
+   - Last at-bat = walk-off potential
+   - Familiar with ballpark dimensions
+
+5. RECENT FORM & STREAKS:
+   - Hot team (6+ game win streak): Riding momentum
+   - Cold team (5+ game losing streak): Fade them
+   - Runs per game trending up/down
+
+6. RUNLINE (Usually ±1.5):
+   - Favorites -1.5: Need to win by 2+ (risky, ~45% hit rate)
+   - Underdogs +1.5: High hit rate (~65%), lower payout
+   - Alternative: Look at -2.5/+2.5 for value
+
+7. TOTALS PROJECTION:
+   - Start with league average: ~9.0 runs
+   - Apply ballpark factor
+   - Adjust for pitcher quality (±1.5 runs each)
+   - Adjust for weather/wind
+   - Check recent team totals (over/under trends)
+
+8. DIVISION GAMES:
+   - Teams know each other well = lower scoring
+   - Rivalry games can go either way
+
+9. EDGE CALCULATION:
+   - Compare predicted total to betting line
+   - MLB totals typically 7.5-9.5 runs
+   - 5%+ edge = Value Bet
+
+10. KELLY CRITERION:
+    - Half Kelly = (Edge% × 0.5)
+
+RESPONSE FORMAT (JSON):
+{
+  "games": [
+    {
+      "homeTeam": "Yankees",
+      "awayTeam": "Red Sox",
+      "gameTime": "7:00 PM ET",
+      "runLine": "-1.5 (+140)",
+      "total": "9.0",
+      "homeML": "-180",
+      "awayML": "+155",
+      "predictedScore": { "home": 5, "away": 3 },
+      "runLinePick": "Yankees -1.5",
+      "runLineEdge": 4.2,
+      "totalPick": "UNDER 9.0",
+      "totalEdge": 5.5,
+      "kellyRunLine": 2.1,
+      "kellyTotal": 2.75,
+      "confidence": "High",
+      "keyFactors": [
+        "Ace pitcher (2.50 ERA) vs struggling Red Sox offense",
+        "Wind blowing IN at 12 mph - strong UNDER indicator",
+        "Fenway Park neutral factor (1.08x)"
+      ]
+    }
+  ]
+}
+
+CRITICAL RULES FOR MLB:
+- Pitcher matchup is #1 factor - weight heavily
+- Ballpark factor is #2 - Coors Field games are VERY different than Oracle Park
+- Wind direction matters MORE than wind speed
+- Only recommend picks where edge ≥ 4% (MLB has variance)
+- Day games after night games = tired bullpens
+- Check if it's a series finale (teams might rest starters)
+- First inning lines can offer value (starting pitcher only)`;
+
+    console.log('Sending MLB data to Claude for predictions...');
+    
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      messages: [{
+        role: 'user',
+        content: prompt
+      }]
+    });
+    
+    const responseText = message.content[0].text;
+    console.log('Claude MLB response received');
+    
+    // Parse Claude's JSON response
+    let predictions;
+    try {
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        predictions = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON found in response');
+      }
+    } catch (parseError) {
+      console.error('Error parsing Claude MLB response:', parseError);
+      return res.status(500).json({ error: 'Failed to parse MLB predictions' });
+    }
+    
+    // Format for frontend
+    const formattedGames = predictions.games.map(game => ({
+      homeTeam: game.homeTeam,
+      awayTeam: game.awayTeam,
+      gameTime: game.gameTime,
+      spread: game.runLine,
+      total: game.total,
+      homeML: game.homeML,
+      awayML: game.awayML,
+      predictedScore: game.predictedScore,
+      spreadPick: game.runLinePick,
+      spreadEdge: game.runLineEdge,
+      totalPick: game.totalPick,
+      totalEdge: game.totalEdge,
+      kellySpread: game.kellyRunLine,
+      kellyTotal: game.kellyTotal,
+      confidence: game.confidence,
+      keyFactors: game.keyFactors,
+      stats: gamesWithStats.find(g => 
+        g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam
+      )
+    }));
+    
+    return res.json({
+      sport: 'MLB',
+      games: formattedGames,
+      arbitrageAlerts: arbitrageAlerts
+    });
+    
+  } catch (error) {
+    console.error('MLB Prediction error:', error);
     return res.status(500).json({ 
       error: error.message,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
