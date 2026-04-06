@@ -172,6 +172,26 @@ const ballparkFactors = {
 };
 
 // ============================================================================
+// NCAAMB (College Basketball) TEAM IDS
+// ============================================================================
+
+const ncaambTeamIds = {
+  // Top programs - expand as needed
+  'Duke': 150, 'North Carolina': 153, 'Kansas': 2305, 'Kentucky': 96,
+  'Michigan': 130, 'UConn': 41, 'Gonzaga': 2250, 'Villanova': 222,
+  'UCLA': 26, 'Arizona': 12, 'Purdue': 2509, 'Houston': 248,
+  'Tennessee': 2633, 'Alabama': 333, 'Baylor': 239, 'Texas': 251,
+  'Illinois': 356, 'Marquette': 269, 'Creighton': 156, 'Xavier': 2752,
+  'Arkansas': 8, 'Auburn': 2, 'Florida': 57, 'South Carolina': 2579,
+  'Iowa State': 66, 'Wisconsin': 275, 'Maryland': 120, 'Indiana': 84,
+  'Michigan State': 127, 'Ohio State': 194, 'Texas Tech': 2641, 'Virginia': 258,
+  'Oregon': 2483, 'San Diego State': 21, 'Saint Mary\'s': 2608, 'BYU': 252,
+  'TCU': 2628, 'West Virginia': 277, 'Oklahoma': 201, 'Kansas State': 2306,
+  'Iowa': 2294, 'Memphis': 235, 'Florida Atlantic': 2226, 'Miami': 2390,
+  'Providence': 2507, 'USC': 30, 'Northwestern': 77, 'Rutgers': 164
+};
+
+// ============================================================================
 // ATS TRACKING (IN-MEMORY - WOULD USE DATABASE IN PRODUCTION)
 // ============================================================================
 
@@ -893,6 +913,117 @@ async function fetchMLBWeather(gameId) {
 }
 
 // ============================================================================
+// NCAAMB (COLLEGE BASKETBALL) API FUNCTIONS
+// ============================================================================
+
+async function fetchNCAAMBTeamStats(teamName) {
+  try {
+    const teamId = ncaambTeamIds[teamName];
+    if (!teamId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const team = response.data.team;
+    const record = team.record?.items?.find(r => r.type === 'total');
+    const homeRecord = team.record?.items?.find(r => r.type === 'home');
+    const awayRecord = team.record?.items?.find(r => r.type === 'road');
+    
+    return {
+      record: record?.summary || 'N/A',
+      homeRecord: homeRecord?.summary || 'N/A',
+      awayRecord: awayRecord?.summary || 'N/A',
+      wins: record?.stats?.find(s => s.name === 'wins')?.value || 0,
+      losses: record?.stats?.find(s => s.name === 'losses')?.value || 0
+    };
+  } catch (error) {
+    console.error(`Error fetching NCAAMB stats for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+async function fetchNCAAMBRecentGames(teamName) {
+  try {
+    const teamId = ncaambTeamIds[teamName];
+    if (!teamId) return null;
+    
+    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}/schedule`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const events = response.data.events || [];
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+    const recent10 = completedGames.slice(0, 10);
+    const recent5 = recent10.slice(0, 5);
+    
+    const analyzeGames = (games) => {
+      let wins = 0;
+      let totalScored = 0;
+      let totalAllowed = 0;
+      
+      games.forEach(game => {
+        const comp = game.competitions[0];
+        const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+        const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+        const isHome = homeTeam.team.id == teamId;
+        const teamScore = isHome ? parseInt(homeTeam.score) : parseInt(awayTeam.score);
+        const oppScore = isHome ? parseInt(awayTeam.score) : parseInt(homeTeam.score);
+        
+        if (teamScore > oppScore) wins++;
+        totalScored += teamScore;
+        totalAllowed += oppScore;
+      });
+      
+      return {
+        record: `${wins}-${games.length - wins}`,
+        avgScored: games.length > 0 ? (totalScored / games.length).toFixed(1) : 0,
+        avgAllowed: games.length > 0 ? (totalAllowed / games.length).toFixed(1) : 0
+      };
+    };
+    
+    const streak = calculateNCAAMBStreak(recent10, teamId);
+    const last10Data = analyzeGames(recent10);
+    const last5Data = analyzeGames(recent5);
+    
+    return {
+      last10: last10Data.record,
+      last5: last5Data.record,
+      streak: streak,
+      avgScored: last10Data.avgScored,
+      avgAllowed: last10Data.avgAllowed
+    };
+  } catch (error) {
+    console.error(`Error fetching NCAAMB recent games for ${teamName}:`, error.message);
+    return null;
+  }
+}
+
+function calculateNCAAMBStreak(games, teamId) {
+  if (!games || games.length === 0) return 'N/A';
+  
+  let streak = 0;
+  let streakType = null;
+  
+  for (const game of games) {
+    const comp = game.competitions[0];
+    const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+    const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+    const isHome = homeTeam.team.id == teamId;
+    const won = isHome ? homeTeam.winner : awayTeam.winner;
+    
+    if (streakType === null) {
+      streakType = won ? 'W' : 'L';
+      streak = 1;
+    } else if ((won && streakType === 'W') || (!won && streakType === 'L')) {
+      streak++;
+    } else {
+      break;
+    }
+  }
+  
+  return `${streakType}${streak}`;
+}
+
+// ============================================================================
 // ODDS API FUNCTIONS
 // ============================================================================
 
@@ -1004,71 +1135,7 @@ app.post('/api/predictions', async (req, res) => {
         message: 'NFL support coming soon! Will include: weather impact, injury analysis, home field advantage, rest days, and game script predictions.'
       });
     } else if (sport === 'cbb') {
-      // Quick CBB support for March Madness
-      try {
-        const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?limit=50`;
-        const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
-        let events = scoreboardResponse.data.events || [];
-        
-        events = events.filter(e => {
-          const status = e.competitions?.[0]?.status?.type?.state;
-          return status === 'pre' || status === 'in';
-        });
-        
-        if (events.length === 0) {
-          return res.json({
-            sport: 'CBB',
-            games: [],
-            arbitrageAlerts: [],
-            message: 'No college basketball games scheduled right now'
-          });
-        }
-        
-        // Basic game info without deep stats
-        const games = events.map(event => {
-          const comp = event.competitions[0];
-          const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
-          const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-          
-          return {
-            homeTeam: homeTeam.team.displayName,
-            awayTeam: awayTeam.team.displayName,
-            gameTime: new Date(event.date).toLocaleString(),
-            spread: 'N/A',
-            total: 'N/A',
-            homeML: 'N/A',
-            awayML: 'N/A',
-            predictedScore: { home: '?', away: '?' },
-            spreadPick: 'Full CBB analysis coming soon',
-            spreadEdge: 0,
-            totalPick: 'Watch the game!',
-            totalEdge: 0,
-            kellySpread: 0,
-            kellyTotal: 0,
-            confidence: 'N/A',
-            keyFactors: [
-              'College Basketball support in development',
-              event.name || 'Game scheduled',
-              'Enjoy March Madness! 🏀'
-            ]
-          };
-        });
-        
-        return res.json({
-          sport: 'CBB',
-          games: games,
-          arbitrageAlerts: [],
-          message: `Showing ${games.length} college basketball game(s). Full analysis coming soon!`
-        });
-      } catch (error) {
-        console.error('CBB fetch error:', error);
-        return res.json({
-          sport: 'CBB',
-          games: [],
-          arbitrageAlerts: [],
-          message: 'Error fetching college basketball games'
-        });
-      }
+      return await handleNCAAMBPredictions(res, arbitrageAlerts);
     } else {
       return res.json({
         sport: sport.toUpperCase(),
@@ -1929,6 +1996,242 @@ CRITICAL RULES FOR MLB:
     
   } catch (error) {
     console.error('MLB Prediction error:', error);
+    return res.status(500).json({ 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+}
+
+// ============================================================================
+// NCAAMB (COLLEGE BASKETBALL) PREDICTION HANDLER
+// ============================================================================
+
+async function handleNCAAMBPredictions(res, arbitrageAlerts) {
+  try {
+    // Fetch NCAAMB games from ESPN
+    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?limit=50&groups=50`;
+    const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
+    let events = scoreboardResponse.data.events || [];
+    
+    // Filter to live and upcoming games
+    events = events.filter(e => {
+      const status = e.competitions?.[0]?.status?.type?.state;
+      return status === 'pre' || status === 'in';
+    });
+    
+    if (events.length === 0) {
+      return res.json({
+        sport: 'CBB',
+        games: [],
+        arbitrageAlerts: [],
+        message: 'No college basketball games scheduled right now'
+      });
+    }
+    
+    // Process each game
+    const gamesWithStats = await Promise.all(events.map(async (event) => {
+      const comp = event.competitions[0];
+      const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+      const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+      
+      // Extract team names (last word typically)
+      const homeTeamName = homeTeam.team.displayName.split(' ').pop();
+      const awayTeamName = awayTeam.team.displayName.split(' ').pop();
+      
+      // Fetch stats
+      const [
+        homeStats,
+        awayStats,
+        homeForm,
+        awayForm,
+        homeATS,
+        awayATS
+      ] = await Promise.all([
+        fetchNCAAMBTeamStats(homeTeamName),
+        fetchNCAAMBTeamStats(awayTeamName),
+        fetchNCAAMBRecentGames(homeTeamName),
+        fetchNCAAMBRecentGames(awayTeamName),
+        Promise.resolve(getATSRecord(homeTeamName)),
+        Promise.resolve(getATSRecord(awayTeamName))
+      ]);
+      
+      return {
+        homeTeam: homeTeam.team.displayName,
+        awayTeam: awayTeam.team.displayName,
+        gameTime: new Date(event.date).toLocaleString(),
+        homeData: homeStats,
+        awayData: awayStats,
+        homeForm: homeForm,
+        awayForm: awayForm,
+        ats: {
+          home: homeATS,
+          away: awayATS
+        },
+        tournament: event.name?.includes('NCAA') || event.name?.includes('Final Four') || event.name?.includes('Championship'),
+        odds: null
+      };
+    }));
+    
+    // Send to Claude
+    const prompt = `You are an expert college basketball analyst and sharp bettor. Analyze the following games and provide predictions.
+
+GAMES DATA:
+${JSON.stringify(gamesWithStats, null, 2)}
+
+DATA EXPLANATION:
+- homeData/awayData: Season records, home/away splits
+- homeForm/awayForm: Recent performance (L5, L10, streaks, avg points scored/allowed)
+- tournament: Is this an NCAA Tournament game?
+- ats: Against The Spread records
+
+COLLEGE BASKETBALL ANALYSIS METHODOLOGY:
+
+1. HOME COURT ADVANTAGE (MASSIVE IN COLLEGE):
+   - Worth 3-5 points (bigger than NBA/NHL/MLB)
+   - Student sections matter
+   - Familiar rims, depth perception
+   - Tournament games = NEUTRAL COURT (no home advantage)
+
+2. TOURNAMENT CONTEXT:
+   - March Madness = single elimination, high variance
+   - Upsets are common (seed doesn't guarantee outcome)
+   - Experience matters (teams that have "been there")
+   - Coaching critical in tournament
+
+3. RECENT FORM & MOMENTUM:
+   - Teams on 5+ game win streaks have confidence
+   - Coming off big wins = momentum
+   - Teams that lost in conference tournament = extra rest or rust?
+
+4. PACE & TEMPO:
+   - Fast-paced teams (75+ possessions) = higher totals
+   - Slow-paced teams (65- possessions) = lower totals
+   - Use avgScored to infer pace
+
+5. DEFENSIVE IDENTITY:
+   - Elite defense (allow <65 PPG) suppresses totals
+   - High-scoring offenses (80+ PPG) push totals up
+   - Check avgAllowed from recent form
+
+6. SPREADS IN COLLEGE BASKETBALL:
+   - Much higher variance than NBA
+   - Double-digit spreads common
+   - Blowouts happen more frequently
+   - Close games also very common (down to final possession)
+
+7. TOTALS RANGE:
+   - College typically 130-150 points
+   - Tournament games often UNDER (tighter defense, nerves)
+   - Regular season = more scoring
+
+8. INTANGIBLES:
+   - Star player impact (one player can dominate college game)
+   - Foul trouble (college has only 5 fouls vs NBA's 6)
+   - Free throw shooting matters late game
+   - Three-point variance (hot/cold shooting)
+
+9. EDGE CALCULATION:
+   - Compare predicted score to betting line
+   - 4%+ edge = Value Bet (high variance sport)
+
+10. KELLY CRITERION:
+    - Half Kelly = (Edge% × 0.5)
+
+RESPONSE FORMAT (JSON):
+{
+  "games": [
+    {
+      "homeTeam": "UConn",
+      "awayTeam": "Michigan",
+      "gameTime": "9:00 PM ET",
+      "spread": "-4.5",
+      "total": "140.5",
+      "homeML": "-180",
+      "awayML": "+155",
+      "predictedScore": { "home": 73, "away": 68 },
+      "spreadPick": "UConn -4.5",
+      "spreadEdge": 5.2,
+      "totalPick": "UNDER 140.5",
+      "totalEdge": 3.8,
+      "kellySpread": 2.6,
+      "kellyTotal": 1.9,
+      "confidence": "Medium",
+      "keyFactors": [
+        "National Championship - neutral court, no home advantage",
+        "UConn elite defense, tournament experience",
+        "Tournament games trend UNDER - tight defense, nerves"
+      ]
+    }
+  ]
+}
+
+CRITICAL RULES:
+- Tournament games = NEUTRAL COURT (no home court edge)
+- Only recommend picks where edge ≥ 4%
+- College basketball is HIGH VARIANCE
+- One hot shooter can swing a game
+- Defense wins championships`;
+
+    console.log('Sending NCAAMB data to Claude for predictions...');
+    
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      messages: [{
+        role: 'user',
+        content: prompt
+      }]
+    });
+    
+    const responseText = message.content[0].text;
+    console.log('Claude NCAAMB response received');
+    
+    // Parse response
+    let predictions;
+    try {
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        predictions = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON found in response');
+      }
+    } catch (parseError) {
+      console.error('Error parsing Claude NCAAMB response:', parseError);
+      return res.status(500).json({ error: 'Failed to parse NCAAMB predictions' });
+    }
+    
+    // Format for frontend
+    const formattedGames = predictions.games.map(game => ({
+      homeTeam: game.homeTeam,
+      awayTeam: game.awayTeam,
+      gameTime: game.gameTime,
+      spread: game.spread,
+      total: game.total,
+      homeML: game.homeML,
+      awayML: game.awayML,
+      predictedScore: game.predictedScore,
+      spreadPick: game.spreadPick,
+      spreadEdge: game.spreadEdge,
+      totalPick: game.totalPick,
+      totalEdge: game.totalEdge,
+      kellySpread: game.kellySpread,
+      kellyTotal: game.kellyTotal,
+      confidence: game.confidence,
+      keyFactors: game.keyFactors,
+      stats: gamesWithStats.find(g => 
+        g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam
+      )
+    }));
+    
+    return res.json({
+      sport: 'CBB',
+      games: formattedGames,
+      arbitrageAlerts: arbitrageAlerts
+    });
+    
+  } catch (error) {
+    console.error('NCAAMB Prediction error:', error);
     return res.status(500).json({ 
       error: error.message,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
