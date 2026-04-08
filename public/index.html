@@ -539,6 +539,43 @@
         }
 
         const factors = (g.keyFactors || []).map(f => `<div class="factor-item">${f}</div>`).join('');
+        
+        // INJURY REPORT DISPLAY
+        let injuriesHTML = '';
+        if (g.stats?.injuries) {
+          const homeInjuries = g.stats.injuries.home || [];
+          const awayInjuries = g.stats.injuries.away || [];
+          
+          if (homeInjuries.length > 0 || awayInjuries.length > 0) {
+            injuriesHTML = '<div class="factors"><div class="factors-label">🏥 Injury Report</div>';
+            
+            if (homeInjuries.length > 0) {
+              injuriesHTML += `<div style="margin-top: 6px; padding: 6px 0; border-top: 1px solid #21262d;">`;
+              injuriesHTML += `<div style="font-size: 11px; color: #58a6ff; font-weight: 600; margin-bottom: 4px;">${g.homeTeam}</div>`;
+              homeInjuries.forEach(inj => {
+                const statusColor = inj.status === 'OUT' ? '#f85149' : inj.status === 'Q' ? '#d29922' : '#8b949e';
+                injuriesHTML += `<div style="font-size: 11px; color: #8b949e; padding: 2px 0;">
+                  <span style="color: ${statusColor}; font-weight: 700;">[${inj.status}]</span> ${inj.player} (${inj.position}) - ${inj.type}
+                </div>`;
+              });
+              injuriesHTML += '</div>';
+            }
+            
+            if (awayInjuries.length > 0) {
+              injuriesHTML += `<div style="margin-top: 6px; padding: 6px 0; border-top: 1px solid #21262d;">`;
+              injuriesHTML += `<div style="font-size: 11px; color: #58a6ff; font-weight: 600; margin-bottom: 4px;">${g.awayTeam}</div>`;
+              awayInjuries.forEach(inj => {
+                const statusColor = inj.status === 'OUT' ? '#f85149' : inj.status === 'Q' ? '#d29922' : '#8b949e';
+                injuriesHTML += `<div style="font-size: 11px; color: #8b949e; padding: 2px 0;">
+                  <span style="color: ${statusColor}; font-weight: 700;">[${inj.status}]</span> ${inj.player} (${inj.position}) - ${inj.type}
+                </div>`;
+              });
+              injuriesHTML += '</div>';
+            }
+            
+            injuriesHTML += '</div>';
+          }
+        }
 
         return `
           <div class="game-card ${valueBet ? 'value-bet' : ''}">
@@ -563,6 +600,7 @@
               ${picksHTML}
               ${recommendationHTML}
               ${factors ? `<div class="factors"><div class="factors-label">Key Factors</div>${factors}</div>` : ''}
+              ${injuriesHTML}
             </div>
           </div>`;
       }).join('');
