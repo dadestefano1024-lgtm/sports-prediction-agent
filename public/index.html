@@ -386,14 +386,16 @@
     }
 
     function formatEdge(val) {
-      const num = safeNum(val);
-      if (num === null) return 'N/A';
+      if (val === null || val === undefined) return 'N/A';
+      const num = parseFloat(val);
+      if (isNaN(num)) return 'N/A';
       return (num > 0 ? '+' : '') + num.toFixed(1) + '%';
     }
 
     function formatKelly(val) {
-      const num = safeNum(val);
-      if (num === null) return '0%';
+      if (val === null || val === undefined) return '0%';
+      const num = parseFloat(val);
+      if (isNaN(num)) return '0%';
       return num.toFixed(1) + '%';
     }
 
@@ -412,9 +414,11 @@
     }
 
     function formatMovement(val) {
-      if (!val || val === 0) return { text: '—', cls: 'neutral' };
-      if (val > 0) return { text: '+' + val.toFixed(1), cls: 'up' };
-      return { text: val.toFixed(1), cls: 'down' };
+      if (!val || val === 0 || val === null || val === undefined || isNaN(val)) return { text: '—', cls: 'neutral' };
+      const num = parseFloat(val);
+      if (isNaN(num)) return { text: '—', cls: 'neutral' };
+      if (num > 0) return { text: '+' + num.toFixed(1), cls: 'up' };
+      return { text: num.toFixed(1), cls: 'down' };
     }
 
     function renderArbitrageAlerts(arbs) {
@@ -526,7 +530,7 @@
             bestEdge = totalEdgeNum;
           }
           
-          if (bestPick && bestEdge !== null) {
+          if (bestPick && bestEdge !== null && bestEdge !== undefined && !isNaN(bestEdge)) {
             recommendationHTML = `
               <div class="recommendation">
                 <div>
