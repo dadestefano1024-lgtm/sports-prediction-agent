@@ -1050,32 +1050,33 @@ async function fetchInjuries(teamName, sport) {
     
     if (!teamId) return [];
     
-    // Fetch team roster with injury status
-    const url = `https://site.api.espn.com/apis/site/v2/sports/${sportKey}/teams/${teamId}`;
-    const response = await axios.get(url, { timeout: 5000 });
-    
-    // Look for injuries in team data
+    // Try to fetch roster data which may include injury status
     const injuries = [];
     
-    // Check if there's an injuries endpoint
-    const injuryUrl = `https://site.api.espn.com/apis/site/v2/sports/${sportKey}/teams/${teamId}/injuries`;
     try {
-      const injuryResponse = await axios.get(injuryUrl, { timeout: 3000 });
-      const injuryData = injuryResponse.data;
+      const rosterUrl = `https://site.api.espn.com/apis/site/v2/sports/${sportKey}/teams/${teamId}/roster`;
+      const rosterResponse = await axios.get(rosterUrl, { timeout: 5000 });
       
-      if (injuryData.injuries && Array.isArray(injuryData.injuries)) {
-        injuryData.injuries.forEach(injury => {
-          injuries.push({
-            player: injury.athlete?.displayName || 'Unknown',
-            position: injury.athlete?.position?.abbreviation || '',
-            status: injury.status || 'Unknown',
-            type: injury.details?.type || injury.longComment || 'Undisclosed'
-          });
+      // Check athletes for injury status
+      const athletes = rosterResponse.data.athletes || [];
+      athletes.forEach(athleteGroup => {
+        const items = athleteGroup.items || [];
+        items.forEach(athlete => {
+          // Check if athlete has injury info
+          if (athlete.injuries && athlete.injuries.length > 0) {
+            athlete.injuries.forEach(injury => {
+              injuries.push({
+                player: athlete.displayName || athlete.fullName || 'Unknown',
+                position: athlete.position?.abbreviation || '',
+                status: injury.status || 'Unknown',
+                type: injury.longComment || injury.details?.type || 'Undisclosed'
+              });
+            });
+          }
         });
-      }
-    } catch (injuryError) {
-      // Injuries endpoint might not exist for this team/sport
-      console.log(`No injury data available for ${teamName}`);
+      });
+    } catch (rosterError) {
+      console.log(`No roster/injury data available for ${teamName}`);
     }
     
     return injuries;
