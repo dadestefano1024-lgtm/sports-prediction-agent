@@ -362,6 +362,17 @@
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 
+        // DEBUG: Log the full response to see injury data
+        console.log('API Response:', data);
+        if (data.games && data.games.length > 0) {
+          console.log('First game stats:', data.games[0].stats);
+          if (data.games[0].stats?.injuries) {
+            console.log('Injuries found:', data.games[0].stats.injuries);
+          } else {
+            console.log('No injuries in stats object');
+          }
+        }
+
         cache[currentSport] = data;
         renderGames(data);
         document.getElementById('last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
