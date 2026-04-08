@@ -1024,6 +1024,82 @@ function calculateNCAAMBStreak(games, teamId) {
 }
 
 // ============================================================================
+// INJURY REPORT FUNCTIONS (ALL SPORTS)
+// ============================================================================
+
+async function fetchInjuries(teamName, sport) {
+  try {
+    // Map sport to ESPN sport key
+    const sportMap = {
+      'nba': 'basketball/nba',
+      'nhl': 'hockey/nhl',
+      'mlb': 'baseball/mlb',
+      'nfl': 'football/nfl',
+      'cbb': 'basketball/mens-college-basketball'
+    };
+    
+    const sportKey = sportMap[sport];
+    if (!sportKey) return [];
+    
+    // Get team ID based on sport
+    let teamId;
+    if (sport === 'nba') teamId = nbaTeamIds[teamName];
+    else if (sport === 'nhl') teamId = nhlTeamIds[teamName];
+    else if (sport === 'mlb') teamId = mlbTeamIds[teamName];
+    else if (sport === 'cbb') teamId = ncaambTeamIds[teamName];
+    
+    if (!teamId) return [];
+    
+    // Fetch team roster with injury status
+    const url = `https://site.api.espn.com/apis/site/v2/sports/${sportKey}/teams/${teamId}`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    // Look for injuries in team data
+    const injuries = [];
+    
+    // Check if there's an injuries endpoint
+    const injuryUrl = `https://site.api.espn.com/apis/site/v2/sports/${sportKey}/teams/${teamId}/injuries`;
+    try {
+      const injuryResponse = await axios.get(injuryUrl, { timeout: 3000 });
+      const injuryData = injuryResponse.data;
+      
+      if (injuryData.injuries && Array.isArray(injuryData.injuries)) {
+        injuryData.injuries.forEach(injury => {
+          injuries.push({
+            player: injury.athlete?.displayName || 'Unknown',
+            position: injury.athlete?.position?.abbreviation || '',
+            status: injury.status || 'Unknown',
+            type: injury.details?.type || injury.longComment || 'Undisclosed'
+          });
+        });
+      }
+    } catch (injuryError) {
+      // Injuries endpoint might not exist for this team/sport
+      console.log(`No injury data available for ${teamName}`);
+    }
+    
+    return injuries;
+  } catch (error) {
+    console.error(`Error fetching injuries for ${teamName}:`, error.message);
+    return [];
+  }
+}
+
+function formatInjuryStatus(status) {
+  // Standardize injury status labels
+  const statusMap = {
+    'out': 'OUT',
+    'questionable': 'Q',
+    'doubtful': 'D',
+    'probable': 'P',
+    'day-to-day': 'DTD'
+  };
+  
+  const normalized = status.toLowerCase();
+  return statusMap[normalized] || status.toUpperCase();
+}
+
+// ============================================================================
 // ODDS API FUNCTIONS
 // ============================================================================
 
@@ -1206,7 +1282,9 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
         homeATS,
         awayATS,
         homeLineup,
-        awayLineup
+        awayLineup,
+        homeInjuries,
+        awayInjuries
       ] = await Promise.all([
         fetchNBATeamStats(homeTeamName),
         fetchNBATeamStats(awayTeamName),
@@ -1223,7 +1301,9 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
         Promise.resolve(getATSRecord(homeTeamName)),
         Promise.resolve(getATSRecord(awayTeamName)),
         fetchStartingLineup(homeTeamName),
-        fetchStartingLineup(awayTeamName)
+        fetchStartingLineup(awayTeamName),
+        fetchInjuries(homeTeamName, 'nba'),
+        fetchInjuries(awayTeamName, 'nba')
       ]);
       
       const projectedTotal = calculateProjectedTotal(homePace, awayPace);
@@ -1268,6 +1348,10 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
         lineups: {
           home: homeLineup,
           away: awayLineup
+        },
+        injuries: {
+          home: homeInjuries,
+          away: awayInjuries
         },
         odds: null // Will be filled from odds API
       };
@@ -1527,7 +1611,9 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
         homeSpecialTeams,
         awaySpecialTeams,
         homeATS,
-        awayATS
+        awayATS,
+        homeInjuries,
+        awayInjuries
       ] = await Promise.all([
         fetchNHLTeamStats(homeTeamName),
         fetchNHLTeamStats(awayTeamName),
@@ -1541,7 +1627,9 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
         fetchNHLSpecialTeams(homeTeamName),
         fetchNHLSpecialTeams(awayTeamName),
         Promise.resolve(getATSRecord(homeTeamName)),
-        Promise.resolve(getATSRecord(awayTeamName))
+        Promise.resolve(getATSRecord(awayTeamName)),
+        fetchInjuries(homeTeamName, 'nhl'),
+        fetchInjuries(awayTeamName, 'nhl')
       ]);
       
       return {
@@ -1572,6 +1660,10 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
         ats: {
           home: homeATS,
           away: awayATS
+        },
+        injuries: {
+          home: homeInjuries,
+          away: awayInjuries
         },
         odds: null
       };
@@ -1791,7 +1883,9 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
         awayPitcher,
         weather,
         homeATS,
-        awayATS
+        awayATS,
+        homeInjuries,
+        awayInjuries
       ] = await Promise.all([
         fetchMLBTeamStats(homeTeamName),
         fetchMLBTeamStats(awayTeamName),
@@ -1801,7 +1895,9 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
         fetchMLBPitcherStats(awayTeamName),
         fetchMLBWeather(event.id),
         Promise.resolve(getATSRecord(homeTeamName)),
-        Promise.resolve(getATSRecord(awayTeamName))
+        Promise.resolve(getATSRecord(awayTeamName)),
+        fetchInjuries(homeTeamName, 'mlb'),
+        fetchInjuries(awayTeamName, 'mlb')
       ]);
       
       const ballparkFactor = getBallparkFactor(venueName);
@@ -1824,6 +1920,10 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
         ats: {
           home: homeATS,
           away: awayATS
+        },
+        injuries: {
+          home: homeInjuries,
+          away: awayInjuries
         },
         odds: null
       };
@@ -2046,14 +2146,18 @@ async function handleNCAAMBPredictions(res, arbitrageAlerts, oddsData) {
         homeForm,
         awayForm,
         homeATS,
-        awayATS
+        awayATS,
+        homeInjuries,
+        awayInjuries
       ] = await Promise.all([
         fetchNCAAMBTeamStats(homeTeamName),
         fetchNCAAMBTeamStats(awayTeamName),
         fetchNCAAMBRecentGames(homeTeamName),
         fetchNCAAMBRecentGames(awayTeamName),
         Promise.resolve(getATSRecord(homeTeamName)),
-        Promise.resolve(getATSRecord(awayTeamName))
+        Promise.resolve(getATSRecord(awayTeamName)),
+        fetchInjuries(homeTeamName, 'cbb'),
+        fetchInjuries(awayTeamName, 'cbb')
       ]);
       
       return {
@@ -2067,6 +2171,10 @@ async function handleNCAAMBPredictions(res, arbitrageAlerts, oddsData) {
         ats: {
           home: homeATS,
           away: awayATS
+        },
+        injuries: {
+          home: homeInjuries,
+          away: awayInjuries
         },
         tournament: event.name?.includes('NCAA') || event.name?.includes('Final Four') || event.name?.includes('Championship'),
         odds: null
