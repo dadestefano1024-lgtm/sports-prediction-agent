@@ -1050,33 +1050,28 @@ async function fetchInjuries(teamName, sport) {
     
     if (!teamId) return [];
     
-    // Try to fetch roster data which may include injury status
     const injuries = [];
     
+    // ESPN has a league-wide injuries endpoint
     try {
-      const rosterUrl = `https://site.api.espn.com/apis/site/v2/sports/${sportKey}/teams/${teamId}/roster`;
-      const rosterResponse = await axios.get(rosterUrl, { timeout: 5000 });
+      const injuriesUrl = `http://site.api.espn.com/apis/site/v2/sports/${sportKey}/injuries`;
+      const injResponse = await axios.get(injuriesUrl, { timeout: 5000 });
       
-      // Check athletes for injury status
-      const athletes = rosterResponse.data.athletes || [];
-      athletes.forEach(athleteGroup => {
-        const items = athleteGroup.items || [];
-        items.forEach(athlete => {
-          // Check if athlete has injury info
-          if (athlete.injuries && athlete.injuries.length > 0) {
-            athlete.injuries.forEach(injury => {
-              injuries.push({
-                player: athlete.displayName || athlete.fullName || 'Unknown',
-                position: athlete.position?.abbreviation || '',
-                status: injury.status || 'Unknown',
-                type: injury.longComment || injury.details?.type || 'Undisclosed'
-              });
-            });
-          }
+      // Find injuries for this specific team
+      const teamInjuries = injResponse.data.injuries?.find(t => t.team?.id == teamId);
+      
+      if (teamInjuries && teamInjuries.injuries) {
+        teamInjuries.injuries.forEach(injury => {
+          injuries.push({
+            player: injury.athlete?.displayName || injury.athlete?.fullName || 'Unknown',
+            position: injury.athlete?.position?.abbreviation || '',
+            status: injury.status || 'Unknown',
+            type: injury.details?.type || injury.longComment || 'Undisclosed'
+          });
         });
-      });
-    } catch (rosterError) {
-      console.log(`No roster/injury data available for ${teamName}`);
+      }
+    } catch (injuryError) {
+      console.log(`No injury data available for ${teamName}: ${injuryError.message}`);
     }
     
     return injuries;
