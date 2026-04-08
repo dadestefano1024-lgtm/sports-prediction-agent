@@ -1122,11 +1122,11 @@ app.post('/api/predictions', async (req, res) => {
     
     // Handle different sports
     if (sport === 'nba') {
-      return await handleNBAPredictions(res, arbitrageAlerts);
+      return await handleNBAPredictions(res, arbitrageAlerts, oddsData);
     } else if (sport === 'nhl') {
-      return await handleNHLPredictions(res, arbitrageAlerts);
+      return await handleNHLPredictions(res, arbitrageAlerts, oddsData);
     } else if (sport === 'mlb') {
-      return await handleMLBPredictions(res, arbitrageAlerts);
+      return await handleMLBPredictions(res, arbitrageAlerts, oddsData);
     } else if (sport === 'nfl') {
       return res.json({
         sport: 'NFL',
@@ -1135,7 +1135,7 @@ app.post('/api/predictions', async (req, res) => {
         message: 'NFL support coming soon! Will include: weather impact, injury analysis, home field advantage, rest days, and game script predictions.'
       });
     } else if (sport === 'cbb') {
-      return await handleNCAAMBPredictions(res, arbitrageAlerts);
+      return await handleNCAAMBPredictions(res, arbitrageAlerts, oddsData);
     } else {
       return res.json({
         sport: sport.toUpperCase(),
@@ -1158,7 +1158,7 @@ app.post('/api/predictions', async (req, res) => {
 // NBA PREDICTION HANDLER
 // ============================================================================
 
-async function handleNBAPredictions(res, arbitrageAlerts) {
+async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
   try {
     // Fetch NBA games from ESPN - get games from last 24 hours to catch live games
     // ESPN returns live, completed, and upcoming games
@@ -1483,7 +1483,7 @@ CRITICAL RULES:
 // NHL PREDICTION HANDLER  
 // ============================================================================
 
-async function handleNHLPredictions(res, arbitrageAlerts) {
+async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
   try {
     // Fetch NHL games from ESPN
     const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?limit=50`;
@@ -1750,7 +1750,7 @@ CRITICAL RULES FOR NHL:
 // MLB PREDICTION HANDLER
 // ============================================================================
 
-async function handleMLBPredictions(res, arbitrageAlerts) {
+async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
   try {
     // Fetch MLB games from ESPN
     const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?limit=50`;
@@ -2007,7 +2007,7 @@ CRITICAL RULES FOR MLB:
 // NCAAMB (COLLEGE BASKETBALL) PREDICTION HANDLER
 // ============================================================================
 
-async function handleNCAAMBPredictions(res, arbitrageAlerts) {
+async function handleNCAAMBPredictions(res, arbitrageAlerts, oddsData) {
   try {
     // Fetch NCAAMB games from ESPN
     const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?limit=50&groups=50`;
