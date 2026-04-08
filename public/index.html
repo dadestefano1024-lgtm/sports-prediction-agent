@@ -368,6 +368,8 @@
           console.log('First game stats:', data.games[0].stats);
           if (data.games[0].stats?.injuries) {
             console.log('Injuries found:', data.games[0].stats.injuries);
+            console.log('Home injuries:', data.games[0].stats.injuries.home);
+            console.log('Away injuries:', data.games[0].stats.injuries.away);
           } else {
             console.log('No injuries in stats object');
           }
