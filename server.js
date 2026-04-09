@@ -1029,49 +1029,84 @@ function calculateNCAAMBStreak(games, teamId) {
 
 async function fetchInjuries(teamName, sport) {
   try {
-    // Map sport to ESPN sport key
+    const apiKey = process.env.SPORTSDATA_API_KEY;
+    if (!apiKey) {
+      console.log('No SPORTSDATA_API_KEY found - skipping injuries');
+      return [];
+    }
+    
+    // Map sport to SportsData.io endpoints
     const sportMap = {
-      'nba': 'basketball/nba',
-      'nhl': 'hockey/nhl',
-      'mlb': 'baseball/mlb',
-      'nfl': 'football/nfl',
-      'cbb': 'basketball/mens-college-basketball'
+      'nba': 'nba',
+      'nhl': 'nhl',
+      'mlb': 'mlb',
+      'nfl': 'nfl',
+      'cbb': 'cbb'  // College basketball
     };
     
     const sportKey = sportMap[sport];
     if (!sportKey) return [];
     
-    // Get team ID based on sport
-    let teamId;
-    if (sport === 'nba') teamId = nbaTeamIds[teamName];
-    else if (sport === 'nhl') teamId = nhlTeamIds[teamName];
-    else if (sport === 'mlb') teamId = mlbTeamIds[teamName];
-    else if (sport === 'cbb') teamId = ncaambTeamIds[teamName];
+    // Get team abbreviation for SportsData.io
+    const teamAbbrevMap = {
+      // NBA
+      'Hawks': 'ATL', 'Celtics': 'BOS', 'Nets': 'BKN', 'Hornets': 'CHA', 'Bulls': 'CHI',
+      'Cavaliers': 'CLE', 'Mavericks': 'DAL', 'Nuggets': 'DEN', 'Pistons': 'DET', 'Warriors': 'GSW',
+      'Rockets': 'HOU', 'Pacers': 'IND', 'Clippers': 'LAC', 'Lakers': 'LAL', 'Grizzlies': 'MEM',
+      'Heat': 'MIA', 'Bucks': 'MIL', 'Timberwolves': 'MIN', 'Pelicans': 'NOP', 'Knicks': 'NYK',
+      'Thunder': 'OKC', 'Magic': 'ORL', 'Sixers': 'PHI', 'Suns': 'PHX', 'Trail Blazers': 'POR',
+      'Kings': 'SAC', 'Spurs': 'SAS', 'Raptors': 'TOR', 'Jazz': 'UTA', 'Wizards': 'WAS',
+      // NHL
+      'Ducks': 'ANA', 'Bruins': 'BOS', 'Sabres': 'BUF', 'Flames': 'CGY', 'Hurricanes': 'CAR',
+      'Blackhawks': 'CHI', 'Avalanche': 'COL', 'Blue Jackets': 'CBJ', 'Stars': 'DAL', 'Red Wings': 'DET',
+      'Oilers': 'EDM', 'Panthers': 'FLA', 'Kings': 'LAK', 'Wild': 'MIN', 'Canadiens': 'MTL',
+      'Predators': 'NSH', 'Devils': 'NJD', 'Islanders': 'NYI', 'Rangers': 'NYR', 'Senators': 'OTT',
+      'Flyers': 'PHI', 'Penguins': 'PIT', 'Sharks': 'SJS', 'Kraken': 'SEA', 'Blues': 'STL',
+      'Lightning': 'TBL', 'Maple Leafs': 'TOR', 'Canucks': 'VAN', 'Golden Knights': 'VGK', 'Capitals': 'WSH',
+      'Jets': 'WPG', 'Coyotes': 'ARI',
+      // MLB
+      'Diamondbacks': 'ARI', 'Braves': 'ATL', 'Orioles': 'BAL', 'Red Sox': 'BOS', 'Cubs': 'CHC',
+      'White Sox': 'CHW', 'Reds': 'CIN', 'Guardians': 'CLE', 'Rockies': 'COL', 'Tigers': 'DET',
+      'Astros': 'HOU', 'Royals': 'KC', 'Angels': 'LAA', 'Dodgers': 'LAD', 'Marlins': 'MIA',
+      'Brewers': 'MIL', 'Twins': 'MIN', 'Mets': 'NYM', 'Yankees': 'NYY', 'Athletics': 'OAK',
+      'Phillies': 'PHI', 'Pirates': 'PIT', 'Padres': 'SD', 'Giants': 'SF', 'Mariners': 'SEA',
+      'Cardinals': 'STL', 'Rays': 'TB', 'Rangers': 'TEX', 'Blue Jays': 'TOR', 'Nationals': 'WSH'
+    };
     
-    if (!teamId) return [];
+    const teamAbbrev = teamAbbrevMap[teamName];
+    if (!teamAbbrev) {
+      console.log(`No team abbreviation mapping for ${teamName}`);
+      return [];
+    }
     
     const injuries = [];
     
-    // ESPN has a league-wide injuries endpoint
     try {
-      const injuriesUrl = `http://site.api.espn.com/apis/site/v2/sports/${sportKey}/injuries`;
-      const injResponse = await axios.get(injuriesUrl, { timeout: 5000 });
+      // SportsData.io injuries endpoint - using 2025 season
+      const season = '2025';
+      const url = `https://api.sportsdata.io/v3/${sportKey}/scores/json/Injuries/${season}?key=${apiKey}`;
       
-      // Find injuries for this specific team
-      const teamInjuries = injResponse.data.injuries?.find(t => t.team?.id == teamId);
+      const response = await axios.get(url, { timeout: 5000 });
+      const allInjuries = response.data || [];
       
-      if (teamInjuries && teamInjuries.injuries) {
-        teamInjuries.injuries.forEach(injury => {
-          injuries.push({
-            player: injury.athlete?.displayName || injury.athlete?.fullName || 'Unknown',
-            position: injury.athlete?.position?.abbreviation || '',
-            status: injury.status || 'Unknown',
-            type: injury.details?.type || injury.longComment || 'Undisclosed'
-          });
+      // Filter injuries for this specific team
+      const teamInjuries = allInjuries.filter(injury => injury.Team === teamAbbrev);
+      
+      teamInjuries.forEach(injury => {
+        injuries.push({
+          player: injury.Name || 'Unknown',
+          position: injury.Position || '',
+          status: injury.Status || 'Unknown',
+          type: injury.BodyPart ? `${injury.BodyPart}` : 'Undisclosed'
         });
+      });
+      
+      if (injuries.length > 0) {
+        console.log(`Found ${injuries.length} injuries for ${teamName}`);
       }
-    } catch (injuryError) {
-      console.log(`No injury data available for ${teamName}: ${injuryError.message}`);
+      
+    } catch (apiError) {
+      console.log(`SportsData.io error for ${teamName}: ${apiError.message}`);
     }
     
     return injuries;
