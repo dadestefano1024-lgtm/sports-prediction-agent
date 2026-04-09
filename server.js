@@ -1082,43 +1082,39 @@ async function fetchInjuries(teamName, sport) {
     const injuries = [];
     
     try {
-      // SportsData.io injuries endpoint with season
+      // Try different endpoint paths - free trial may have limited access
       let url;
       
       if (sport === 'nba') {
-        // NBA current season is 2025 (2024-2025 season)
-        url = `https://api.sportsdata.io/v3/nba/scores/json/Injuries?key=${apiKey}`;
+        // Try stats endpoint instead of scores
+        url = `https://api.sportsdata.io/v3/nba/stats/json/Players?key=${apiKey}`;
       } else if (sport === 'nfl') {
-        url = `https://api.sportsdata.io/v3/nfl/scores/json/Injuries?key=${apiKey}`;
+        url = `https://api.sportsdata.io/v3/nfl/stats/json/Players?key=${apiKey}`;
       } else if (sport === 'mlb') {
-        url = `https://api.sportsdata.io/v3/mlb/scores/json/Injuries?key=${apiKey}`;
+        url = `https://api.sportsdata.io/v3/mlb/stats/json/Players?key=${apiKey}`;
       } else if (sport === 'nhl') {
-        url = `https://api.sportsdata.io/v3/nhl/scores/json/Injuries?key=${apiKey}`;
+        url = `https://api.sportsdata.io/v3/nhl/stats/json/Players?key=${apiKey}`;
       } else {
         return [];
       }
       
+      console.log(`Trying SportsData.io endpoint: ${url.replace(apiKey, 'KEY_HIDDEN')}`);
+      
       const response = await axios.get(url, { timeout: 5000 });
-      const allInjuries = response.data || [];
       
-      // Filter for this specific team
-      const teamInjuries = allInjuries.filter(inj => inj.Team === teamAbbrev);
+      // If we get here, the endpoint works - log what we got
+      console.log(`SportsData.io response for ${sport}: ${response.status}`);
       
-      teamInjuries.forEach(injury => {
-        injuries.push({
-          player: injury.Name || 'Unknown',
-          position: injury.Position || '',
-          status: injury.Status || 'Unknown',
-          type: injury.BodyPart ? `${injury.BodyPart}` : 'Undisclosed'
-        });
-      });
-      
-      if (injuries.length > 0) {
-        console.log(`Found ${injuries.length} injuries for ${teamName} (${teamAbbrev})`);
-      }
+      // For now, just return empty until we know the data structure
+      return [];
       
     } catch (apiError) {
-      console.log(`SportsData.io error for ${teamName}: ${apiError.message}`);
+      console.log(`SportsData.io error for ${teamName}: ${apiError.response?.status || apiError.message}`);
+      if (apiError.response?.status === 401) {
+        console.log('Authentication error - check API key');
+      } else if (apiError.response?.status === 403) {
+        console.log('Access forbidden - endpoint may not be in your plan');
+      }
     }
     
     return injuries;
