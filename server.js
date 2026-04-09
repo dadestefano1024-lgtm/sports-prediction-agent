@@ -1082,38 +1082,33 @@ async function fetchInjuries(teamName, sport) {
     const injuries = [];
     
     try {
-      // Use the Players endpoint which includes injury status
+      // Use the InjuredPlayers endpoint from the projections API
       let url;
       
       if (sport === 'nba') {
-        url = `https://api.sportsdata.io/v3/nba/stats/json/Players?key=${apiKey}`;
+        url = `https://api.sportsdata.io/v3/nba/projections/json/InjuredPlayers?key=${apiKey}`;
       } else if (sport === 'nfl') {
-        url = `https://api.sportsdata.io/v3/nfl/stats/json/Players?key=${apiKey}`;
+        url = `https://api.sportsdata.io/v3/nfl/projections/json/InjuredPlayers?key=${apiKey}`;
       } else if (sport === 'mlb') {
-        url = `https://api.sportsdata.io/v3/mlb/stats/json/Players?key=${apiKey}`;
+        url = `https://api.sportsdata.io/v3/mlb/projections/json/InjuredPlayers?key=${apiKey}`;
       } else if (sport === 'nhl') {
-        url = `https://api.sportsdata.io/v3/nhl/stats/json/Players?key=${apiKey}`;
+        url = `https://api.sportsdata.io/v3/nhl/projections/json/InjuredPlayers?key=${apiKey}`;
       } else {
         return [];
       }
       
       const response = await axios.get(url, { timeout: 10000 });
-      const allPlayers = response.data || [];
+      const allInjuredPlayers = response.data || [];
       
-      // Filter for players on this team who have injury status
-      const teamPlayers = allPlayers.filter(player => 
-        player.Team === teamAbbrev && 
-        player.InjuryStatus && 
-        player.InjuryStatus !== 'None' &&
-        player.InjuryStatus !== 'Healthy'
-      );
+      // Filter for players on this team
+      const teamPlayers = allInjuredPlayers.filter(player => player.Team === teamAbbrev);
       
       teamPlayers.forEach(player => {
         injuries.push({
           player: player.FirstName && player.LastName ? `${player.FirstName} ${player.LastName}` : player.Name || 'Unknown',
           position: player.Position || '',
-          status: player.InjuryStatus || 'Unknown',
-          type: player.InjuryBodyPart || 'Undisclosed'
+          status: player.Status || 'Unknown',
+          type: player.BodyPart || player.InjuryBodyPart || 'Undisclosed'
         });
       });
       
