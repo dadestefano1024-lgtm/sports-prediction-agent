@@ -1082,11 +1082,10 @@ async function fetchInjuries(teamName, sport) {
     const injuries = [];
     
     try {
-      // Try different endpoint paths - free trial may have limited access
+      // Use the Players endpoint which includes injury status
       let url;
       
       if (sport === 'nba') {
-        // Try stats endpoint instead of scores
         url = `https://api.sportsdata.io/v3/nba/stats/json/Players?key=${apiKey}`;
       } else if (sport === 'nfl') {
         url = `https://api.sportsdata.io/v3/nfl/stats/json/Players?key=${apiKey}`;
@@ -1098,23 +1097,32 @@ async function fetchInjuries(teamName, sport) {
         return [];
       }
       
-      console.log(`Trying SportsData.io endpoint: ${url.replace(apiKey, 'KEY_HIDDEN')}`);
+      const response = await axios.get(url, { timeout: 10000 });
+      const allPlayers = response.data || [];
       
-      const response = await axios.get(url, { timeout: 5000 });
+      // Filter for players on this team who have injury status
+      const teamPlayers = allPlayers.filter(player => 
+        player.Team === teamAbbrev && 
+        player.InjuryStatus && 
+        player.InjuryStatus !== 'None' &&
+        player.InjuryStatus !== 'Healthy'
+      );
       
-      // If we get here, the endpoint works - log what we got
-      console.log(`SportsData.io response for ${sport}: ${response.status}`);
+      teamPlayers.forEach(player => {
+        injuries.push({
+          player: player.FirstName && player.LastName ? `${player.FirstName} ${player.LastName}` : player.Name || 'Unknown',
+          position: player.Position || '',
+          status: player.InjuryStatus || 'Unknown',
+          type: player.InjuryBodyPart || 'Undisclosed'
+        });
+      });
       
-      // For now, just return empty until we know the data structure
-      return [];
+      if (injuries.length > 0) {
+        console.log(`Found ${injuries.length} injuries for ${teamName} (${teamAbbrev})`);
+      }
       
     } catch (apiError) {
       console.log(`SportsData.io error for ${teamName}: ${apiError.response?.status || apiError.message}`);
-      if (apiError.response?.status === 401) {
-        console.log('Authentication error - check API key');
-      } else if (apiError.response?.status === 403) {
-        console.log('Access forbidden - endpoint may not be in your plan');
-      }
     }
     
     return injuries;
