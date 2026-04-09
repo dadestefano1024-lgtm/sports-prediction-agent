@@ -1082,15 +1082,24 @@ async function fetchInjuries(teamName, sport) {
     const injuries = [];
     
     try {
-      // SportsData.io injuries endpoint - using 2025 season
-      const season = '2025';
-      const url = `https://api.sportsdata.io/v3/${sportKey}/scores/json/Injuries/${season}?key=${apiKey}`;
+      // SportsData.io uses different endpoint format per sport
+      let url;
+      
+      if (sport === 'nba') {
+        // NBA uses current season injuries endpoint
+        url = `https://api.sportsdata.io/v3/nba/scores/json/InjuriesByTeam/${teamAbbrev}?key=${apiKey}`;
+      } else if (sport === 'nfl') {
+        url = `https://api.sportsdata.io/v3/nfl/scores/json/InjuriesByTeam/${teamAbbrev}?key=${apiKey}`;
+      } else if (sport === 'mlb') {
+        url = `https://api.sportsdata.io/v3/mlb/scores/json/InjuriesByTeam/${teamAbbrev}?key=${apiKey}`;
+      } else if (sport === 'nhl') {
+        url = `https://api.sportsdata.io/v3/nhl/scores/json/InjuriesByTeam/${teamAbbrev}?key=${apiKey}`;
+      } else {
+        return [];
+      }
       
       const response = await axios.get(url, { timeout: 5000 });
-      const allInjuries = response.data || [];
-      
-      // Filter injuries for this specific team
-      const teamInjuries = allInjuries.filter(injury => injury.Team === teamAbbrev);
+      const teamInjuries = response.data || [];
       
       teamInjuries.forEach(injury => {
         injuries.push({
