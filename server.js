@@ -1352,8 +1352,12 @@ async function fetchOdds(sport) {
     const sportKey = sportMap[sport];
     if (!sportKey) return null;
     
+    console.log(`Fetching odds for ${sport} (${sportKey})...`);
+    
     const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?apiKey=${apiKey}&regions=us&markets=spreads,totals,h2h&oddsFormat=american`;
     const response = await axios.get(url, { timeout: 10000 });
+    
+    console.log(`Received ${response.data?.length || 0} games with odds for ${sport}`);
     
     return response.data;
   } catch (error) {
