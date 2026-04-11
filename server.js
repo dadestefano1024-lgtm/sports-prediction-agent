@@ -1196,6 +1196,140 @@ function formatInjuryStatus(status) {
 }
 
 // ============================================================================
+// LINE MOVEMENT / SHARP MONEY TRACKING
+// ============================================================================
+
+async function fetchLineMovement(games, sport) {
+  try {
+    const oddsApiKey = process.env.ODDS_API_KEY;
+    if (!oddsApiKey) {
+      console.log('No ODDS_API_KEY - skipping line movement');
+      return {};
+    }
+
+    const sportKeys = {
+      'nba': 'basketball_nba',
+      'nhl': 'icehockey_nhl',
+      'mlb': 'baseball_mlb',
+      'nfl': 'americanfootball_nfl'
+    };
+
+    const sportKey = sportKeys[sport];
+    if (!sportKey) return {};
+
+    // Get historical odds data (opening lines)
+    const lineMovement = {};
+    
+    for (const game of games) {
+      try {
+        // Fetch odds history for this game from multiple bookmakers
+        const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events/${game.id}/odds?apiKey=${oddsApiKey}&regions=us&markets=spreads,totals&oddsFormat=american`;
+        
+        const response = await axios.get(url, { timeout: 5000 });
+        const data = response.data;
+        
+        if (data && data.bookmakers && data.bookmakers.length > 0) {
+          // Track consensus opening vs current
+          const spreadData = [];
+          const totalData = [];
+          
+          data.bookmakers.forEach(book => {
+            book.markets.forEach(market => {
+              if (market.key === 'spreads') {
+                market.outcomes.forEach(outcome => {
+                  spreadData.push({
+                    bookmaker: book.title,
+                    team: outcome.name,
+                    line: outcome.point,
+                    odds: outcome.price,
+                    timestamp: market.last_update
+                  });
+                });
+              } else if (market.key === 'totals') {
+                market.outcomes.forEach(outcome => {
+                  totalData.push({
+                    bookmaker: book.title,
+                    type: outcome.name,
+                    line: outcome.point,
+                    odds: outcome.price,
+                    timestamp: market.last_update
+                  });
+                });
+              }
+            });
+          });
+          
+          // Calculate line movement (simplified - compare early vs recent timestamps)
+          const spreadMovement = calculateMovement(spreadData);
+          const totalMovement = calculateMovement(totalData);
+          
+          lineMovement[game.id] = {
+            spread: spreadMovement,
+            total: totalMovement,
+            sharpIndicators: determineSharpSide(spreadMovement, totalMovement)
+          };
+        }
+        
+      } catch (gameError) {
+        console.log(`Line movement error for game ${game.id}: ${gameError.message}`);
+      }
+    }
+    
+    return lineMovement;
+    
+  } catch (error) {
+    console.error('Error fetching line movement:', error.message);
+    return {};
+  }
+}
+
+function calculateMovement(data) {
+  if (data.length === 0) return null;
+  
+  // Sort by timestamp
+  data.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  
+  // Get opening (earliest) and current (latest) lines
+  const opening = data[0];
+  const current = data[data.length - 1];
+  
+  return {
+    opening: opening.line,
+    current: current.line,
+    movement: current.line - opening.line,
+    direction: current.line > opening.line ? 'up' : current.line < opening.line ? 'down' : 'no movement'
+  };
+}
+
+function determineSharpSide(spreadMovement, totalMovement) {
+  const indicators = [];
+  
+  // Sharp money indicators:
+  // 1. Line moves against public (public loves favorites/overs, so reverse line movement = sharp)
+  // 2. Significant movement (>1 point spread, >0.5 total)
+  
+  if (spreadMovement && Math.abs(spreadMovement.movement) >= 1) {
+    indicators.push({
+      type: 'spread',
+      side: spreadMovement.movement > 0 ? 'favorite' : 'underdog',
+      confidence: Math.abs(spreadMovement.movement) >= 2 ? 'high' : 'medium',
+      movement: spreadMovement.movement
+    });
+  }
+  
+  if (totalMovement && Math.abs(totalMovement.movement) >= 0.5) {
+    indicators.push({
+      type: 'total',
+      side: totalMovement.movement > 0 ? 'over' : 'under',
+      confidence: Math.abs(totalMovement.movement) >= 1 ? 'high' : 'medium',
+      movement: totalMovement.movement
+    });
+  }
+  
+  return indicators;
+}
+
+// ============================================================================
 // ODDS API FUNCTIONS
 // ============================================================================
 
@@ -2442,6 +2576,47 @@ CRITICAL RULES:
     });
   }
 }
+
+}
+
+// Sharp money tracking function
+async function fetchSharpMoney(sport, gameId) {
+  try {
+    // Note: Sharp money data requires premium betting feeds
+    // Free APIs don't typically provide this data
+    // This is a placeholder for future enhancement
+    
+    return {
+      movement: null,
+      public_pct: null,
+      sharp_action: 'Premium feature - upgrade for sharp money tracking',
+      note: 'Requires paid betting feeds (SportsData.io, Action Network, etc.)'
+    };
+  } catch (error) {
+    console.error('Sharp money fetch error:', error);
+    return {
+      movement: null,
+      public_pct: null,
+      sharp_action: 'Unknown'
+    };
+  }
+}
+
+// Sharp money tracking endpoint
+app.get('/api/sharp-money/:sport/:gameId', async (req, res) => {
+  try {
+    const { sport, gameId } = req.params;
+    const sharpData = await fetchSharpMoney(sport, gameId);
+    res.json(sharpData);
+  } catch (error) {
+    console.error('Sharp money error:', error);
+    res.json({ 
+      movement: null, 
+      public_pct: null, 
+      sharp_action: 'Unknown' 
+    });
+  }
+});
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
