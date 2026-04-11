@@ -1029,95 +1029,83 @@ function calculateNCAAMBStreak(games, teamId) {
 
 async function fetchInjuries(teamName, sport) {
   try {
-    const apiKey = process.env.SPORTSDATA_API_KEY;
-    if (!apiKey) {
-      console.log('No SPORTSDATA_API_KEY found - skipping injuries');
-      return [];
-    }
-    
-    // Map sport to SportsData.io endpoints
-    const sportMap = {
-      'nba': 'nba',
-      'nhl': 'nhl',
-      'mlb': 'mlb',
-      'nfl': 'nfl',
-      'cbb': 'cbb'  // College basketball
-    };
-    
-    const sportKey = sportMap[sport];
-    if (!sportKey) return [];
-    
-    // Get team abbreviation for SportsData.io
-    const teamAbbrevMap = {
-      // NBA
-      'Hawks': 'ATL', 'Celtics': 'BOS', 'Nets': 'BKN', 'Hornets': 'CHA', 'Bulls': 'CHI',
-      'Cavaliers': 'CLE', 'Mavericks': 'DAL', 'Nuggets': 'DEN', 'Pistons': 'DET', 'Warriors': 'GSW',
-      'Rockets': 'HOU', 'Pacers': 'IND', 'Clippers': 'LAC', 'Lakers': 'LAL', 'Grizzlies': 'MEM',
-      'Heat': 'MIA', 'Bucks': 'MIL', 'Timberwolves': 'MIN', 'Pelicans': 'NOP', 'Knicks': 'NYK',
-      'Thunder': 'OKC', 'Magic': 'ORL', 'Sixers': 'PHI', 'Suns': 'PHX', 'Trail Blazers': 'POR',
-      'Kings': 'SAC', 'Spurs': 'SAS', 'Raptors': 'TOR', 'Jazz': 'UTA', 'Wizards': 'WAS',
-      // NHL
-      'Ducks': 'ANA', 'Bruins': 'BOS', 'Sabres': 'BUF', 'Flames': 'CGY', 'Hurricanes': 'CAR',
-      'Blackhawks': 'CHI', 'Avalanche': 'COL', 'Blue Jackets': 'CBJ', 'Stars': 'DAL', 'Red Wings': 'DET',
-      'Oilers': 'EDM', 'Panthers': 'FLA', 'Kings': 'LAK', 'Wild': 'MIN', 'Canadiens': 'MTL',
-      'Predators': 'NSH', 'Devils': 'NJD', 'Islanders': 'NYI', 'Rangers': 'NYR', 'Senators': 'OTT',
-      'Flyers': 'PHI', 'Penguins': 'PIT', 'Sharks': 'SJS', 'Kraken': 'SEA', 'Blues': 'STL',
-      'Lightning': 'TBL', 'Maple Leafs': 'TOR', 'Canucks': 'VAN', 'Golden Knights': 'VGK', 'Capitals': 'WSH',
-      'Jets': 'WPG', 'Coyotes': 'ARI',
-      // MLB
-      'Diamondbacks': 'ARI', 'Braves': 'ATL', 'Orioles': 'BAL', 'Red Sox': 'BOS', 'Cubs': 'CHC',
-      'White Sox': 'CHW', 'Reds': 'CIN', 'Guardians': 'CLE', 'Rockies': 'COL', 'Tigers': 'DET',
-      'Astros': 'HOU', 'Royals': 'KC', 'Angels': 'LAA', 'Dodgers': 'LAD', 'Marlins': 'MIA',
-      'Brewers': 'MIL', 'Twins': 'MIN', 'Mets': 'NYM', 'Yankees': 'NYY', 'Athletics': 'OAK',
-      'Phillies': 'PHI', 'Pirates': 'PIT', 'Padres': 'SD', 'Giants': 'SF', 'Mariners': 'SEA',
-      'Cardinals': 'STL', 'Rays': 'TB', 'Rangers': 'TEX', 'Blue Jays': 'TOR', 'Nationals': 'WSH'
-    };
-    
-    const teamAbbrev = teamAbbrevMap[teamName];
-    if (!teamAbbrev) {
-      console.log(`No team abbreviation mapping for ${teamName}`);
-      return [];
-    }
-    
+    // ESPN injury scraper - fetches real current injury data from ESPN's public pages
     const injuries = [];
     
+    // Map sport to ESPN URLs
+    const sportUrls = {
+      'nba': 'https://www.espn.com/nba/injuries',
+      'nfl': 'https://www.espn.com/nfl/injuries',
+      'nhl': 'https://www.espn.com/nhl/injuries',
+      'mlb': 'https://www.espn.com/mlb/injuries'
+    };
+    
+    const url = sportUrls[sport];
+    if (!url) return [];
+    
     try {
-      // Use SportsData.io Replay API (fly.sportsdata.io) for real unscrambled data
-      let url;
+      // Fetch ESPN's injury page
+      const response = await axios.get(url, { 
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
       
-      if (sport === 'nba') {
-        url = `https://fly.sportsdata.io/v3/nba/projections/json/InjuredPlayers?key=${apiKey}`;
-      } else if (sport === 'nfl') {
-        url = `https://fly.sportsdata.io/v3/nfl/projections/json/InjuredPlayers?key=${apiKey}`;
-      } else if (sport === 'mlb') {
-        url = `https://fly.sportsdata.io/v3/mlb/projections/json/InjuredPlayers?key=${apiKey}`;
-      } else if (sport === 'nhl') {
-        url = `https://fly.sportsdata.io/v3/nhl/projections/json/InjuredPlayers?key=${apiKey}`;
-      } else {
+      const html = response.data;
+      
+      // Parse HTML to extract injuries for this team
+      // ESPN's injury page has a consistent structure we can parse
+      
+      // Look for team section in the HTML
+      const teamRegex = new RegExp(`<div[^>]*class="[^"]*Table__Title[^"]*"[^>]*>([^<]*${teamName}[^<]*)<`, 'i');
+      const teamMatch = html.match(teamRegex);
+      
+      if (!teamMatch) {
+        console.log(`No injuries found for ${teamName} on ESPN`);
         return [];
       }
       
-      const response = await axios.get(url, { timeout: 10000 });
-      const allInjuredPlayers = response.data || [];
+      // Find the injury table for this team
+      const teamSectionStart = html.indexOf(teamMatch[0]);
+      const nextTeamStart = html.indexOf('Table__Title', teamSectionStart + 1);
+      const teamSection = html.substring(teamSectionStart, nextTeamStart > 0 ? nextTeamStart : teamSectionStart + 5000);
       
-      // Filter for players on this team
-      const teamPlayers = allInjuredPlayers.filter(player => player.Team === teamAbbrev);
+      // Extract player rows
+      const rowRegex = /<tr[^>]*class="[^"]*Table__TR[^"]*"[^>]*>(.*?)<\/tr>/gs;
+      const rows = [...teamSection.matchAll(rowRegex)];
       
-      teamPlayers.forEach(player => {
-        injuries.push({
-          player: player.FirstName && player.LastName ? `${player.FirstName} ${player.LastName}` : player.Name || 'Unknown',
-          position: player.Position || '',
-          status: player.Status || 'Unknown',
-          type: player.BodyPart || player.InjuryBodyPart || 'Undisclosed'
-        });
+      rows.forEach(row => {
+        const rowHtml = row[1];
+        
+        // Extract player name, position, status, and injury details
+        const nameMatch = rowHtml.match(/<a[^>]*>([^<]+)<\/a>/);
+        const posMatch = rowHtml.match(/<span[^>]*class="[^"]*athleteCell__position[^"]*"[^>]*>([^<]+)<\/span>/);
+        const statusMatch = rowHtml.match(/<span[^>]*class="[^"]*status[^"]*"[^>]*>([^<]+)<\/span>/);
+        const detailsMatch = rowHtml.match(/<div[^>]*class="[^"]*injuries__detail[^"]*"[^>]*>([^<]+)<\/div>/);
+        
+        if (nameMatch) {
+          const status = statusMatch ? statusMatch[1].trim() : 'Unknown';
+          const details = detailsMatch ? detailsMatch[1].trim() : 'Undisclosed';
+          
+          // Only add if they're actually injured (not healthy)
+          if (status.toLowerCase() !== 'active' && status.toLowerCase() !== 'healthy') {
+            injuries.push({
+              player: nameMatch[1].trim(),
+              position: posMatch ? posMatch[1].trim() : '',
+              status: status,
+              type: details
+            });
+          }
+        }
       });
       
       if (injuries.length > 0) {
-        console.log(`Found ${injuries.length} real injuries for ${teamName} (${teamAbbrev})`);
+        console.log(`Found ${injuries.length} real injuries for ${teamName} from ESPN`);
       }
       
-    } catch (apiError) {
-      console.log(`SportsData.io error for ${teamName}: ${apiError.response?.status || apiError.message}`);
+    } catch (scrapeError) {
+      console.log(`ESPN scraping error for ${teamName}: ${scrapeError.message}`);
     }
     
     return injuries;
