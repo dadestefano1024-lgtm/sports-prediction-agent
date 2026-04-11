@@ -2577,8 +2577,6 @@ CRITICAL RULES:
   }
 }
 
-}
-
 // Sharp money tracking function
 async function fetchSharpMoney(sport, gameId) {
   try {
