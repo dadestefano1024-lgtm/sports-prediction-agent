@@ -1125,9 +1125,43 @@ async function fetchInjuries(teamName, sport) {
             }
           });
         } catch (parseErr) {
-          // Fallback to HTML parsing if JSON fails
-          console.log(`JSON parse failed for ${teamName}, trying HTML parse`);
+          console.log(`JSON parse failed for ${teamName}: ${parseErr.message}`);
         }
+      }
+      
+      // HTML parsing fallback if JSON didn't work
+      if (injuries.length === 0) {
+        const rowMatches = [...teamSection.matchAll(/<tr[^>]*>(.*?)<\/tr>/gs)];
+        
+        rowMatches.forEach(match => {
+          const rowHtml = match[1];
+          
+          // Skip header rows
+          if (rowHtml.includes('<th') || rowHtml.includes('NAME')) return;
+          
+          // Extract cell data
+          const cells = [];
+          const cellMatches = [...rowHtml.matchAll(/<td[^>]*>(.*?)<\/td>/gs)];
+          
+          cellMatches.forEach(cell => {
+            const text = cell[1].replace(/<[^>]*>/g, '').trim();
+            if (text) cells.push(text);
+          });
+          
+          // Typical ESPN format: [Name, Position, Status, Comment]
+          if (cells.length >= 3) {
+            const status = cells[2];
+            // Only add if actually injured
+            if (status && status.toLowerCase() !== 'active') {
+              injuries.push({
+                player: cells[0],
+                position: cells[1] || '',
+                status: status,
+                type: cells[3] || 'Undisclosed'
+              });
+            }
+          }
+        });
       }
       
       if (injuries.length > 0) {
