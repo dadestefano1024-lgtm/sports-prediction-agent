@@ -1082,17 +1082,17 @@ async function fetchInjuries(teamName, sport) {
     const injuries = [];
     
     try {
-      // Use the InjuredPlayers endpoint from the projections API
+      // Use SportsData.io Replay API (fly.sportsdata.io) for real unscrambled data
       let url;
       
       if (sport === 'nba') {
-        url = `https://api.sportsdata.io/v3/nba/projections/json/InjuredPlayers?key=${apiKey}`;
+        url = `https://fly.sportsdata.io/v3/nba/projections/json/InjuredPlayers?key=${apiKey}`;
       } else if (sport === 'nfl') {
-        url = `https://api.sportsdata.io/v3/nfl/projections/json/InjuredPlayers?key=${apiKey}`;
+        url = `https://fly.sportsdata.io/v3/nfl/projections/json/InjuredPlayers?key=${apiKey}`;
       } else if (sport === 'mlb') {
-        url = `https://api.sportsdata.io/v3/mlb/projections/json/InjuredPlayers?key=${apiKey}`;
+        url = `https://fly.sportsdata.io/v3/mlb/projections/json/InjuredPlayers?key=${apiKey}`;
       } else if (sport === 'nhl') {
-        url = `https://api.sportsdata.io/v3/nhl/projections/json/InjuredPlayers?key=${apiKey}`;
+        url = `https://fly.sportsdata.io/v3/nhl/projections/json/InjuredPlayers?key=${apiKey}`;
       } else {
         return [];
       }
@@ -1113,7 +1113,7 @@ async function fetchInjuries(teamName, sport) {
       });
       
       if (injuries.length > 0) {
-        console.log(`Found ${injuries.length} injuries for ${teamName} (${teamAbbrev})`);
+        console.log(`Found ${injuries.length} real injuries for ${teamName} (${teamAbbrev})`);
       }
       
     } catch (apiError) {
