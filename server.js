@@ -1043,6 +1043,31 @@ async function fetchInjuries(teamName, sport) {
     const url = sportUrls[sport];
     if (!url) return [];
     
+    // Map team nicknames to full names for better matching
+    const teamFullNames = {
+      // NHL
+      'Senators': 'Ottawa', 'Maple Leafs': 'Toronto', 'Canadiens': 'Montreal',
+      'Jets': 'Winnipeg', 'Flames': 'Calgary', 'Oilers': 'Edmonton', 'Canucks': 'Vancouver',
+      'Bruins': 'Boston', 'Sabres': 'Buffalo', 'Red Wings': 'Detroit', 'Panthers': 'Florida',
+      'Lightning': 'Tampa Bay', 'Capitals': 'Washington', 'Hurricanes': 'Carolina',
+      'Blue Jackets': 'Columbus', 'Devils': 'New Jersey', 'Islanders': 'NY Islanders',
+      'Rangers': 'NY Rangers', 'Flyers': 'Philadelphia', 'Penguins': 'Pittsburgh',
+      'Blackhawks': 'Chicago', 'Avalanche': 'Colorado', 'Stars': 'Dallas', 'Wild': 'Minnesota',
+      'Predators': 'Nashville', 'Blues': 'St. Louis', 'Ducks': 'Anaheim', 'Coyotes': 'Arizona',
+      'Golden Knights': 'Vegas', 'Kings': 'Los Angeles', 'Sharks': 'San Jose', 'Kraken': 'Seattle',
+      // NBA
+      'Celtics': 'Boston', 'Nets': 'Brooklyn', 'Knicks': 'New York', 'Sixers': 'Philadelphia',
+      '76ers': 'Philadelphia', 'Raptors': 'Toronto', 'Bulls': 'Chicago', 'Cavaliers': 'Cleveland',
+      'Pistons': 'Detroit', 'Pacers': 'Indiana', 'Bucks': 'Milwaukee', 'Hawks': 'Atlanta',
+      'Hornets': 'Charlotte', 'Heat': 'Miami', 'Magic': 'Orlando', 'Wizards': 'Washington',
+      'Nuggets': 'Denver', 'Timberwolves': 'Minnesota', 'Thunder': 'Oklahoma City',
+      'Trail Blazers': 'Portland', 'Jazz': 'Utah', 'Warriors': 'Golden State', 'Clippers': 'LA Clippers',
+      'Lakers': 'LA Lakers', 'Suns': 'Phoenix', 'Kings': 'Sacramento', 'Mavericks': 'Dallas',
+      'Rockets': 'Houston', 'Grizzlies': 'Memphis', 'Pelicans': 'New Orleans', 'Spurs': 'San Antonio'
+    };
+    
+    const searchName = teamFullNames[teamName] || teamName;
+    
     try {
       // Fetch ESPN's injury page
       const response = await axios.get(url, { 
@@ -1054,54 +1079,61 @@ async function fetchInjuries(teamName, sport) {
       
       const html = response.data;
       
-      // Parse HTML to extract injuries for this team
-      // ESPN's injury page has a consistent structure we can parse
+      // Look for team section - try multiple patterns
+      const patterns = [
+        new RegExp(`>${searchName}[^<]*<`, 'i'),
+        new RegExp(`>${teamName}[^<]*<`, 'i'),
+        new RegExp(`"teamName":"[^"]*${searchName}[^"]*"`, 'i'),
+        new RegExp(`"teamName":"[^"]*${teamName}[^"]*"`, 'i')
+      ];
       
-      // Look for team section in the HTML
-      const teamRegex = new RegExp(`<div[^>]*class="[^"]*Table__Title[^"]*"[^>]*>([^<]*${teamName}[^<]*)<`, 'i');
-      const teamMatch = html.match(teamRegex);
+      let teamMatch = null;
+      for (const pattern of patterns) {
+        teamMatch = html.match(pattern);
+        if (teamMatch) break;
+      }
       
       if (!teamMatch) {
-        console.log(`No injuries found for ${teamName} on ESPN`);
+        console.log(`No injuries found for ${teamName} (${searchName}) on ESPN`);
         return [];
       }
       
       // Find the injury table for this team
       const teamSectionStart = html.indexOf(teamMatch[0]);
-      const nextTeamStart = html.indexOf('Table__Title', teamSectionStart + 1);
-      const teamSection = html.substring(teamSectionStart, nextTeamStart > 0 ? nextTeamStart : teamSectionStart + 5000);
+      const nextTeamStart = html.indexOf('ResponsiveTable', teamSectionStart + 500);
+      const teamSection = html.substring(teamSectionStart, nextTeamStart > 0 ? nextTeamStart : teamSectionStart + 3000);
       
-      // Extract player rows
-      const rowRegex = /<tr[^>]*class="[^"]*Table__TR[^"]*"[^>]*>(.*?)<\/tr>/gs;
-      const rows = [...teamSection.matchAll(rowRegex)];
+      // Extract player data - ESPN uses JSON embedded in the page
+      const jsonPattern = /"athletes":\[(.*?)\]/;
+      const jsonMatch = teamSection.match(jsonPattern);
       
-      rows.forEach(row => {
-        const rowHtml = row[1];
-        
-        // Extract player name, position, status, and injury details
-        const nameMatch = rowHtml.match(/<a[^>]*>([^<]+)<\/a>/);
-        const posMatch = rowHtml.match(/<span[^>]*class="[^"]*athleteCell__position[^"]*"[^>]*>([^<]+)<\/span>/);
-        const statusMatch = rowHtml.match(/<span[^>]*class="[^"]*status[^"]*"[^>]*>([^<]+)<\/span>/);
-        const detailsMatch = rowHtml.match(/<div[^>]*class="[^"]*injuries__detail[^"]*"[^>]*>([^<]+)<\/div>/);
-        
-        if (nameMatch) {
-          const status = statusMatch ? statusMatch[1].trim() : 'Unknown';
-          const details = detailsMatch ? detailsMatch[1].trim() : 'Undisclosed';
+      if (jsonMatch) {
+        try {
+          const athletesJson = '[' + jsonMatch[1] + ']';
+          const athletes = JSON.parse(athletesJson);
           
-          // Only add if they're actually injured (not healthy)
-          if (status.toLowerCase() !== 'active' && status.toLowerCase() !== 'healthy') {
-            injuries.push({
-              player: nameMatch[1].trim(),
-              position: posMatch ? posMatch[1].trim() : '',
-              status: status,
-              type: details
-            });
-          }
+          athletes.forEach(athlete => {
+            if (athlete.injuries && athlete.injuries.length > 0) {
+              athlete.injuries.forEach(injury => {
+                injuries.push({
+                  player: athlete.displayName || athlete.name || 'Unknown',
+                  position: athlete.position?.abbreviation || '',
+                  status: injury.status || 'Unknown',
+                  type: injury.longComment || injury.type || 'Undisclosed'
+                });
+              });
+            }
+          });
+        } catch (parseErr) {
+          // Fallback to HTML parsing if JSON fails
+          console.log(`JSON parse failed for ${teamName}, trying HTML parse`);
         }
-      });
+      }
       
       if (injuries.length > 0) {
         console.log(`Found ${injuries.length} real injuries for ${teamName} from ESPN`);
+      } else {
+        console.log(`No injuries found for ${teamName} on ESPN (team section found but no injured players)`);
       }
       
     } catch (scrapeError) {
