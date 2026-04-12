@@ -63,7 +63,7 @@
     .btn-primary:hover { background: #2ea043; }
     .btn-primary:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
     .refresh-info { font-size: 12px; color: #8b949e; }
-    
+
     .arb-alert {
       background: linear-gradient(90deg, #1a0a2e 0%, #2d1b4e 100%);
       border: 1px solid #8b5cf6;
@@ -79,7 +79,7 @@
     .arb-alert-title { font-weight: 700; color: #a78bfa; font-size: 14px; }
     .arb-alert-desc { font-size: 12px; color: #c4b5fd; margin-top: 2px; }
     .arb-profit { font-size: 18px; font-weight: 800; color: #10b981; }
-    
+
     .content { padding: 0 24px 24px; }
     .loading { text-align: center; padding: 60px; color: #8b949e; }
     .spinner {
@@ -100,7 +100,7 @@
     }
     .games-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
       gap: 16px;
     }
     .game-card {
@@ -134,7 +134,7 @@
       margin-right: 4px;
     }
     .card-body { padding: 14px 16px; }
-    
+
     .weather-badge {
       display: inline-flex;
       align-items: center;
@@ -146,7 +146,7 @@
       padding: 3px 8px;
       border-radius: 4px;
     }
-    
+
     .lines-row {
       display: flex;
       gap: 12px;
@@ -157,7 +157,84 @@
     .line-label { font-size: 10px; color: #8b949e; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
     .line-value { font-size: 15px; font-weight: 700; }
     .line-value.favorite { color: #3fb950; }
-    
+
+    /* ============================================================ */
+    /* LINE MOVEMENT TABLE — full-detail Open vs Current vs Move    */
+    /* ============================================================ */
+    .movement-section {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+    .movement-title {
+      font-size: 10px;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .movement-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .movement-table th {
+      text-align: left;
+      font-size: 10px;
+      color: #8b949e;
+      font-weight: 600;
+      text-transform: uppercase;
+      padding: 4px 6px 6px;
+      border-bottom: 1px solid #21262d;
+    }
+    .movement-table td {
+      padding: 6px;
+      border-bottom: 1px solid #1a1f26;
+    }
+    .movement-table tr:last-child td { border-bottom: none; }
+    .movement-table .market-name {
+      font-weight: 700;
+      color: #e6edf3;
+    }
+    .movement-table .num-cell {
+      font-family: 'SF Mono', Menlo, monospace;
+      font-weight: 600;
+    }
+    .move-up { color: #f85149; font-weight: 700; }
+    .move-down { color: #3fb950; font-weight: 700; }
+    .move-flat { color: #8b949e; }
+
+    .sharp-signals {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #21262d;
+    }
+    .sharp-signal-item {
+      font-size: 11px;
+      padding: 4px 8px;
+      margin-top: 4px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .sharp-signal-item.strong {
+      background: #2d1500;
+      border: 1px solid #d29922;
+      color: #f0c674;
+    }
+    .sharp-signal-item.moderate {
+      background: #1a1a0a;
+      border: 1px solid #6b5b00;
+      color: #d29922;
+    }
+    .sharp-icon { font-size: 13px; }
+
     .prediction-row {
       background: #0d1117;
       border-radius: 6px;
@@ -200,7 +277,7 @@
     }
     .kelly-label { font-size: 10px; color: #8b949e; margin-bottom: 2px; text-transform: uppercase; }
     .kelly-val { font-size: 14px; font-weight: 800; color: #d2a679; }
-    
+
     .picks-row {
       display: flex;
       gap: 10px;
@@ -221,7 +298,7 @@
     .pick-label { font-size: 10px; color: #8b949e; margin-bottom: 4px; text-transform: uppercase; }
     .pick-value { font-size: 14px; font-weight: 800; color: #3fb950; }
     .pick-chip.weak .pick-value { color: #8b949e; }
-    
+
     .recommendation {
       background: linear-gradient(90deg, #0f2a1a 0%, #1a3d2a 100%);
       border: 1px solid #2ea043;
@@ -235,23 +312,7 @@
     .rec-label { font-size: 10px; color: #8b949e; text-transform: uppercase; margin-bottom: 2px; }
     .rec-value { font-size: 16px; font-weight: 800; color: #3fb950; }
     .rec-edge { font-size: 14px; font-weight: 700; color: #3fb950; background: #2ea04333; padding: 4px 10px; border-radius: 4px; }
-    
-    .line-movement {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-      font-size: 11px;
-    }
-    .movement-chip {
-      background: #1c2128;
-      border: 1px solid #30363d;
-      border-radius: 4px;
-      padding: 4px 8px;
-    }
-    .movement-chip.up { color: #f85149; }
-    .movement-chip.down { color: #3fb950; }
-    .movement-chip.neutral { color: #8b949e; }
-    
+
     .confidence {
       font-size: 12px;
       font-weight: 600;
@@ -286,7 +347,7 @@
       color: #8b949e;
       font-size: 15px;
     }
-    
+
     @media (max-width: 500px) {
       .games-grid { grid-template-columns: 1fr; }
       .tabs { padding: 12px 16px 0; }
@@ -294,6 +355,8 @@
       .controls { padding: 12px 16px; }
       .content { padding: 0 16px 16px; }
       header { padding: 12px 16px; }
+      .movement-table { font-size: 11px; }
+      .movement-table th, .movement-table td { padding: 4px; }
     }
   </style>
 </head>
@@ -362,17 +425,12 @@
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 
-        // DEBUG: Log the full response to see injury data
+        // DEBUG: Log the full response
         console.log('API Response:', data);
         if (data.games && data.games.length > 0) {
-          console.log('First game stats:', data.games[0].stats);
-          if (data.games[0].stats?.injuries) {
-            console.log('Injuries found:', data.games[0].stats.injuries);
-            console.log('Home injuries:', data.games[0].stats.injuries.home);
-            console.log('Away injuries:', data.games[0].stats.injuries.away);
-          } else {
-            console.log('No injuries in stats object');
-          }
+          console.log('First game:', data.games[0]);
+          console.log('Line movement:', data.games[0].lineMovement);
+          console.log('Sharp signals:', data.games[0].sharpSignals);
         }
 
         cache[currentSport] = data;
@@ -426,12 +484,112 @@
       return Math.abs(spreadEdge || 0) >= 3 || Math.abs(totalEdge || 0) >= 3;
     }
 
-    function formatMovement(val) {
-      if (!val || val === 0 || val === null || val === undefined || isNaN(val)) return { text: '—', cls: 'neutral' };
+    // Format a single number for the movement table — handles null, plus signs, etc.
+    function fmtNum(val, withPlus) {
+      if (val === null || val === undefined || isNaN(val)) return '—';
       const num = parseFloat(val);
-      if (isNaN(num)) return { text: '—', cls: 'neutral' };
-      if (num > 0) return { text: '+' + num.toFixed(1), cls: 'up' };
-      return { text: num.toFixed(1), cls: 'down' };
+      if (withPlus && num > 0) return '+' + num;
+      return String(num);
+    }
+
+    // Format a movement value with color and arrow
+    function fmtMovement(val) {
+      if (val === null || val === undefined || isNaN(val) || val === 0) {
+        return { text: 'no move', cls: 'move-flat' };
+      }
+      const num = parseFloat(val);
+      if (num > 0) return { text: '↑ +' + num.toFixed(1), cls: 'move-up' };
+      return { text: '↓ ' + num.toFixed(1), cls: 'move-down' };
+    }
+
+    // ========================================================================
+    // NEW: Render the full-detail line movement section
+    // Shows: market | open | current | movement, plus sharp signals below
+    // ========================================================================
+    function renderLineMovement(game) {
+      const lm = game.lineMovement;
+      if (!lm) return '';
+
+      // Bail if we don't have any meaningful data
+      const hasSpread = lm.openSpread !== null && lm.openSpread !== undefined;
+      const hasTotal = lm.openTotal !== null && lm.openTotal !== undefined;
+      const hasML = lm.homeML !== null && lm.homeML !== undefined;
+      if (!hasSpread && !hasTotal && !hasML) return '';
+
+      const bookmakerLabel = game.bookmaker ? `via ${game.bookmaker}` : 'via ESPN/DraftKings';
+
+      let rows = '';
+
+      if (hasSpread) {
+        const spreadMov = fmtMovement(lm.spreadMovement);
+        rows += `
+          <tr>
+            <td class="market-name">Spread</td>
+            <td class="num-cell">${fmtNum(lm.openSpread, true)}</td>
+            <td class="num-cell">${fmtNum(lm.currentSpread, true)}</td>
+            <td class="num-cell ${spreadMov.cls}">${spreadMov.text}</td>
+          </tr>`;
+      }
+
+      if (hasTotal) {
+        const totalMov = fmtMovement(lm.totalMovement);
+        rows += `
+          <tr>
+            <td class="market-name">Total</td>
+            <td class="num-cell">${fmtNum(lm.openTotal)}</td>
+            <td class="num-cell">${fmtNum(lm.currentTotal)}</td>
+            <td class="num-cell ${totalMov.cls}">${totalMov.text}</td>
+          </tr>`;
+      }
+
+      // Money lines: we only have current from ESPN scrape, not opening — show as a single row
+      if (hasML) {
+        rows += `
+          <tr>
+            <td class="market-name">ML (current)</td>
+            <td class="num-cell" colspan="2">Home ${fmtNum(lm.homeML, true)} / Away ${fmtNum(lm.awayML, true)}</td>
+            <td class="move-flat">—</td>
+          </tr>`;
+      }
+
+      // Sharp signals section
+      let signalsHTML = '';
+      if (game.sharpSignals && game.sharpSignals.length > 0) {
+        signalsHTML = '<div class="sharp-signals">';
+        game.sharpSignals.forEach(sig => {
+          const icon = sig.magnitude === 'strong' ? '🚨' : '⚠️';
+          const label = sig.magnitude === 'strong' ? 'STRONG' : 'Moderate';
+          const moveStr = sig.movement > 0 ? '+' + sig.movement : sig.movement;
+          signalsHTML += `
+            <div class="sharp-signal-item ${sig.magnitude}">
+              <span class="sharp-icon">${icon}</span>
+              <span><strong>${label} ${sig.market} signal:</strong> moved ${moveStr} ${sig.direction}</span>
+            </div>`;
+        });
+        signalsHTML += '</div>';
+      }
+
+      return `
+        <div class="movement-section">
+          <div class="movement-title">
+            <span>📈 Line Movement (Open → Current)</span>
+            <span style="color:#6e7681; font-size:10px; text-transform:none;">${bookmakerLabel}</span>
+          </div>
+          <table class="movement-table">
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th>Open</th>
+                <th>Current</th>
+                <th>Move</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows}
+            </tbody>
+          </table>
+          ${signalsHTML}
+        </div>`;
     }
 
     function renderArbitrageAlerts(arbs) {
@@ -455,43 +613,33 @@
     function renderGames(data) {
       const games = data.games || [];
       renderArbitrageAlerts(data.arbitrageAlerts);
-      
+
       if (!games.length) {
         document.getElementById('content').innerHTML = '<div class="no-games">No games found for today.</div>';
         return;
       }
 
-      const isNHL = data.sport === 'NHL';
-
       const html = games.map(g => {
         const valueBet = isValueBet(g);
         const valueBadge = valueBet ? '<span class="value-badge">VALUE BET</span>' : '';
-        
+
         let weatherBadge = '';
         if (g.weather) {
           weatherBadge = `<span class="weather-badge">🌡️ ${g.weather.temperature}°F ${g.weather.windSpeed}mph</span>`;
         }
-        
+
         const favoriteTeam = g.favorite || '';
         const homeIsFavorite = favoriteTeam.includes(g.homeTeam?.split(' ').pop());
-        
-        let movementHTML = '';
-        if (g.lineMovement && (g.lineMovement.spreadMove || g.lineMovement.totalMove)) {
-          const spreadMov = formatMovement(g.lineMovement.spreadMove);
-          const totalMov = formatMovement(g.lineMovement.totalMove);
-          movementHTML = `
-            <div class="line-movement">
-              <div class="movement-chip ${spreadMov.cls}">Spread ${spreadMov.text}</div>
-              <div class="movement-chip ${totalMov.cls}">Total ${totalMov.text}</div>
-            </div>`;
-        }
+
+        // NEW: Full-detail line movement section (replaces old movementHTML)
+        const movementHTML = renderLineMovement(g);
 
         let linesHTML = `
           <div class="lines-row">
-            <div class="line-item"><div class="line-label">Spread</div><div class="line-value">${g.spread || 'N/A'}</div></div>
-            <div class="line-item"><div class="line-label">Total</div><div class="line-value">${g.total || 'N/A'}</div></div>
-            <div class="line-item"><div class="line-label">Home ML</div><div class="line-value ${homeIsFavorite ? 'favorite' : ''}">${g.homeML || 'N/A'}</div></div>
-            <div class="line-item"><div class="line-label">Away ML</div><div class="line-value ${!homeIsFavorite ? 'favorite' : ''}">${g.awayML || 'N/A'}</div></div>
+            <div class="line-item"><div class="line-label">Spread</div><div class="line-value">${g.spread ?? 'N/A'}</div></div>
+            <div class="line-item"><div class="line-label">Total</div><div class="line-value">${g.total ?? 'N/A'}</div></div>
+            <div class="line-item"><div class="line-label">Home ML</div><div class="line-value ${homeIsFavorite ? 'favorite' : ''}">${g.homeML ?? 'N/A'}</div></div>
+            <div class="line-item"><div class="line-label">Away ML</div><div class="line-value ${!homeIsFavorite ? 'favorite' : ''}">${g.awayML ?? 'N/A'}</div></div>
           </div>`;
 
         const spreadEdgeNum = safeNum(g.spreadEdge);
@@ -534,7 +682,7 @@
           const bestTotalEdge = Math.abs(totalEdgeNum || 0);
           let bestPick = '';
           let bestEdge = 0;
-          
+
           if (bestSpreadEdge >= bestTotalEdge && bestSpreadEdge >= 3) {
             bestPick = g.spreadPick;
             bestEdge = spreadEdgeNum;
@@ -542,7 +690,7 @@
             bestPick = g.totalPick;
             bestEdge = totalEdgeNum;
           }
-          
+
           if (bestPick && bestEdge !== null && bestEdge !== undefined && !isNaN(bestEdge)) {
             recommendationHTML = `
               <div class="recommendation">
@@ -556,16 +704,16 @@
         }
 
         const factors = (g.keyFactors || []).map(f => `<div class="factor-item">${f}</div>`).join('');
-        
+
         // INJURY REPORT DISPLAY
         let injuriesHTML = '';
         if (g.stats?.injuries) {
           const homeInjuries = g.stats.injuries.home || [];
           const awayInjuries = g.stats.injuries.away || [];
-          
+
           if (homeInjuries.length > 0 || awayInjuries.length > 0) {
             injuriesHTML = '<div class="factors"><div class="factors-label">🏥 Injury Report</div>';
-            
+
             if (homeInjuries.length > 0) {
               injuriesHTML += `<div style="margin-top: 6px; padding: 6px 0; border-top: 1px solid #21262d;">`;
               injuriesHTML += `<div style="font-size: 11px; color: #58a6ff; font-weight: 600; margin-bottom: 4px;">${g.homeTeam}</div>`;
@@ -577,7 +725,7 @@
               });
               injuriesHTML += '</div>';
             }
-            
+
             if (awayInjuries.length > 0) {
               injuriesHTML += `<div style="margin-top: 6px; padding: 6px 0; border-top: 1px solid #21262d;">`;
               injuriesHTML += `<div style="font-size: 11px; color: #58a6ff; font-weight: 600; margin-bottom: 4px;">${g.awayTeam}</div>`;
@@ -589,7 +737,7 @@
               });
               injuriesHTML += '</div>';
             }
-            
+
             injuriesHTML += '</div>';
           }
         }
