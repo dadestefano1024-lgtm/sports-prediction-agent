@@ -348,6 +348,150 @@
       font-size: 15px;
     }
 
+    /* ============================================================ */
+    /* HISTORY TAB                                                   */
+    /* ============================================================ */
+    .history-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .summary-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 16px;
+      text-align: center;
+    }
+    .summary-label {
+      font-size: 11px;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+    .summary-value {
+      font-size: 24px;
+      font-weight: 800;
+      color: #e6edf3;
+    }
+    .summary-value.win-rate { color: #3fb950; }
+    .summary-value.loss-rate { color: #f85149; }
+    .summary-value.pending { color: #d29922; }
+    .summary-sub {
+      font-size: 12px;
+      color: #8b949e;
+      margin-top: 4px;
+    }
+    .history-section {
+      margin-bottom: 24px;
+    }
+    .history-section-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #58a6ff;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 10px;
+    }
+    .breakdown-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .breakdown-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 12px 14px;
+    }
+    .breakdown-name {
+      font-size: 12px;
+      color: #8b949e;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .breakdown-record {
+      font-size: 18px;
+      font-weight: 800;
+      color: #e6edf3;
+    }
+    .breakdown-pct {
+      font-size: 12px;
+      margin-left: 6px;
+    }
+    .breakdown-pct.good { color: #3fb950; }
+    .breakdown-pct.bad { color: #f85149; }
+    .breakdown-pct.neutral { color: #8b949e; }
+
+    .picks-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 12px;
+    }
+    .picks-table th {
+      background: #1c2128;
+      text-align: left;
+      padding: 10px 12px;
+      font-size: 10px;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid #30363d;
+    }
+    .picks-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #21262d;
+      color: #e6edf3;
+    }
+    .picks-table tr:last-child td { border-bottom: none; }
+    .picks-table tr:hover td { background: #1c2128; }
+    .result-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .result-pill.win { background: #0f2a1a; color: #3fb950; border: 1px solid #2ea04355; }
+    .result-pill.loss { background: #1a0f0f; color: #f85149; border: 1px solid #6e101055; }
+    .result-pill.push { background: #1c2128; color: #8b949e; border: 1px solid #30363d; }
+    .result-pill.pending { background: #1a1a0a; color: #d29922; border: 1px solid #6b5b0055; }
+
+    .history-filters {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .filter-btn {
+      padding: 6px 14px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      color: #8b949e;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .filter-btn.active {
+      background: #1f6feb22;
+      border-color: #58a6ff;
+      color: #58a6ff;
+    }
+
+    @media (max-width: 600px) {
+      .picks-table { font-size: 10px; }
+      .picks-table th, .picks-table td { padding: 6px 8px; }
+      .summary-value { font-size: 20px; }
+    }
+
     @media (max-width: 500px) {
       .games-grid { grid-template-columns: 1fr; }
       .tabs { padding: 12px 16px 0; }
@@ -372,6 +516,7 @@
     <button class="tab" onclick="switchTab('nfl', this)">🏈 NFL</button>
     <button class="tab" onclick="switchTab('mlb', this)">⚾ MLB</button>
     <button class="tab" onclick="switchTab('cbb', this)">🏫 CBB</button>
+    <button class="tab" onclick="switchTab('history', this)">📊 History</button>
   </div>
 
   <div class="controls">
@@ -388,11 +533,29 @@
   <script>
     let currentSport = 'nba';
     let cache = {};
+    let historyFilter = null; // null = all, 'nba', 'nhl', 'mlb'
 
     function switchTab(sport, el) {
       currentSport = sport;
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       el.classList.add('active');
+
+      const fetchBtn = document.getElementById('fetch-btn');
+      const refreshInfo = document.getElementById('refresh-info');
+
+      if (sport === 'history') {
+        // History tab: hide the fetch button, load history immediately
+        fetchBtn.style.display = 'none';
+        refreshInfo.textContent = 'Pick history and W/L tracking';
+        document.getElementById('arb-container').innerHTML = '';
+        loadHistory();
+        return;
+      }
+
+      // Sport tab: show the fetch button
+      fetchBtn.style.display = '';
+      refreshInfo.textContent = 'Click to load predictions with live betting lines';
+
       if (cache[sport]) {
         renderGames(cache[sport]);
       } else {
@@ -771,6 +934,212 @@
       }).join('');
 
       document.getElementById('content').innerHTML = `<div class="games-grid">${html}</div>`;
+    }
+
+    // ========================================================================
+    // HISTORY TAB
+    // ========================================================================
+
+    async function loadHistory() {
+      const content = document.getElementById('content');
+      content.innerHTML = `
+        <div class="loading">
+          <div class="spinner"></div>
+          <div>Loading pick history...</div>
+        </div>`;
+
+      try {
+        const url = historyFilter ? `/api/history?sport=${historyFilter}` : '/api/history';
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Server error: ' + res.status);
+        const data = await res.json();
+
+        if (!data.available) {
+          content.innerHTML = `
+            <div class="no-games">
+              📊 Pick tracking is not available yet.<br><br>
+              <span style="font-size: 13px;">${data.message || 'The database is not configured or no picks have been recorded yet. Make some predictions and check back!'}</span>
+            </div>`;
+          return;
+        }
+
+        renderHistory(data);
+      } catch (err) {
+        content.innerHTML = `<div class="error">❌ Error loading history: ${err.message}</div>`;
+      }
+    }
+
+    function setHistoryFilter(filter, el) {
+      historyFilter = filter;
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      if (el) el.classList.add('active');
+      loadHistory();
+    }
+
+    function pctClass(wins, losses) {
+      const total = wins + losses;
+      if (total === 0) return 'neutral';
+      const pct = wins / total;
+      if (pct >= 0.55) return 'good';
+      if (pct < 0.50) return 'bad';
+      return 'neutral';
+    }
+
+    function fmtRecord(wins, losses, pushes) {
+      wins = parseInt(wins) || 0;
+      losses = parseInt(losses) || 0;
+      pushes = parseInt(pushes) || 0;
+      const total = wins + losses;
+      const pct = total > 0 ? ((wins / total) * 100).toFixed(1) : '0.0';
+      const recordStr = pushes > 0 ? `${wins}-${losses}-${pushes}` : `${wins}-${losses}`;
+      return { record: recordStr, pct, cls: pctClass(wins, losses) };
+    }
+
+    function renderHistory(data) {
+      const overall = data.overall || {};
+      const wins = parseInt(overall.wins) || 0;
+      const losses = parseInt(overall.losses) || 0;
+      const pushes = parseInt(overall.pushes) || 0;
+      const pending = parseInt(overall.pending) || 0;
+      const total = wins + losses;
+      const winPct = total > 0 ? ((wins / total) * 100).toFixed(1) : '0.0';
+
+      // Rough profit calculation: assumes -110 juice on all bets, $100 unit
+      // Win = +$90.91, Loss = -$100, Push = $0
+      const unitProfit = (wins * 90.91) - (losses * 100);
+      const profitColor = unitProfit > 0 ? '#3fb950' : unitProfit < 0 ? '#f85149' : '#8b949e';
+
+      // Filter buttons
+      const filtersHTML = `
+        <div class="history-filters">
+          <button class="filter-btn ${historyFilter === null ? 'active' : ''}" onclick="setHistoryFilter(null, this)">All Sports</button>
+          <button class="filter-btn ${historyFilter === 'nba' ? 'active' : ''}" onclick="setHistoryFilter('nba', this)">🏀 NBA</button>
+          <button class="filter-btn ${historyFilter === 'nhl' ? 'active' : ''}" onclick="setHistoryFilter('nhl', this)">🏒 NHL</button>
+          <button class="filter-btn ${historyFilter === 'mlb' ? 'active' : ''}" onclick="setHistoryFilter('mlb', this)">⚾ MLB</button>
+        </div>`;
+
+      // Summary cards
+      const summaryHTML = `
+        <div class="history-summary">
+          <div class="summary-card">
+            <div class="summary-label">Overall Record</div>
+            <div class="summary-value">${wins}-${losses}${pushes > 0 ? '-' + pushes : ''}</div>
+            <div class="summary-sub">${total} graded picks</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Win Rate</div>
+            <div class="summary-value ${parseFloat(winPct) >= 52.4 ? 'win-rate' : 'loss-rate'}">${winPct}%</div>
+            <div class="summary-sub">52.4% needed at -110</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Pending</div>
+            <div class="summary-value pending">${pending}</div>
+            <div class="summary-sub">awaiting results</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Profit (per $100 unit)</div>
+            <div class="summary-value" style="color: ${profitColor};">${unitProfit >= 0 ? '+' : ''}$${unitProfit.toFixed(0)}</div>
+            <div class="summary-sub">assumes -110 juice</div>
+          </div>
+        </div>`;
+
+      // By Market breakdown
+      let marketHTML = '';
+      if (data.byMarket && data.byMarket.length > 0) {
+        const marketCards = data.byMarket.map(m => {
+          const r = fmtRecord(m.wins, m.losses, m.pushes);
+          return `
+            <div class="breakdown-card">
+              <div class="breakdown-name">${m.market === 'spread' ? 'Spread / Run Line / Puck Line' : m.market.toUpperCase()}</div>
+              <div class="breakdown-record">${r.record}<span class="breakdown-pct ${r.cls}">${r.pct}%</span></div>
+            </div>`;
+        }).join('');
+        marketHTML = `
+          <div class="history-section">
+            <div class="history-section-title">Performance by Market</div>
+            <div class="breakdown-grid">${marketCards}</div>
+          </div>`;
+      }
+
+      // By Confidence breakdown
+      let confidenceHTML = '';
+      if (data.byConfidence && data.byConfidence.length > 0) {
+        const order = { 'High': 0, 'Medium': 1, 'Low': 2 };
+        const sorted = [...data.byConfidence].sort((a, b) => (order[a.confidence] ?? 99) - (order[b.confidence] ?? 99));
+        const confCards = sorted.map(c => {
+          const r = fmtRecord(c.wins, c.losses, c.pushes);
+          return `
+            <div class="breakdown-card">
+              <div class="breakdown-name">${c.confidence || 'Unknown'} Confidence</div>
+              <div class="breakdown-record">${r.record}<span class="breakdown-pct ${r.cls}">${r.pct}%</span></div>
+            </div>`;
+        }).join('');
+        confidenceHTML = `
+          <div class="history-section">
+            <div class="history-section-title">Performance by Confidence Level</div>
+            <div class="breakdown-grid">${confCards}</div>
+          </div>`;
+      }
+
+      // Recent picks table
+      let recentHTML = '';
+      if (data.recent && data.recent.length > 0) {
+        const rows = data.recent.map(p => {
+          let resultPill;
+          if (p.result === 'win') resultPill = '<span class="result-pill win">Win</span>';
+          else if (p.result === 'loss') resultPill = '<span class="result-pill loss">Loss</span>';
+          else if (p.result === 'push') resultPill = '<span class="result-pill push">Push</span>';
+          else resultPill = '<span class="result-pill pending">Pending</span>';
+
+          const dateStr = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
+          const matchup = `${(p.away_team || '').split(' ').pop()} @ ${(p.home_team || '').split(' ').pop()}`;
+          const finalScore = (p.actual_home !== null && p.actual_away !== null)
+            ? `${p.actual_away}-${p.actual_home}`
+            : '—';
+          const edgeStr = p.edge !== null ? (parseFloat(p.edge) > 0 ? '+' : '') + parseFloat(p.edge).toFixed(1) + '%' : '—';
+
+          return `
+            <tr>
+              <td>${dateStr}</td>
+              <td>${(p.sport || '').toUpperCase()}</td>
+              <td>${matchup}</td>
+              <td>${p.market || ''}</td>
+              <td><strong>${p.pick || ''}</strong></td>
+              <td>${edgeStr}</td>
+              <td>${p.confidence || ''}</td>
+              <td>${finalScore}</td>
+              <td>${resultPill}</td>
+            </tr>`;
+        }).join('');
+
+        recentHTML = `
+          <div class="history-section">
+            <div class="history-section-title">Recent Picks (Last 50)</div>
+            <table class="picks-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Sport</th>
+                  <th>Matchup</th>
+                  <th>Market</th>
+                  <th>Pick</th>
+                  <th>Edge</th>
+                  <th>Conf</th>
+                  <th>Final</th>
+                  <th>Result</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`;
+      } else {
+        recentHTML = `
+          <div class="no-games">
+            No picks recorded yet. Once you fetch predictions for NBA, NHL, or MLB games with edges, they'll appear here and get graded automatically when games finish.
+          </div>`;
+      }
+
+      document.getElementById('content').innerHTML = filtersHTML + summaryHTML + marketHTML + confidenceHTML + recentHTML;
     }
   </script>
 </body>
