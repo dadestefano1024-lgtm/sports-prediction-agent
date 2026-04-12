@@ -11,6 +11,14 @@ const anthropic = new Anthropic({
 });
 
 // ============================================================================
+// ODDS CACHE — prevents burning through Odds API quota on repeated page loads
+// The Odds API free tier is 500 requests/month. Without caching, every refresh
+// of the app burns 1 request per sport. Cache odds for 5 minutes.
+// ============================================================================
+const oddsCache = {};
+const ODDS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// ============================================================================
 // NBA TEAM IDS & LOCATIONS
 // ============================================================================
 
@@ -151,128 +159,28 @@ const mlbTeamLocations = {
   'Nationals': { lat: 38.8730, lon: -77.0074, tz: -5 }
 };
 
-// Ballpark factors (runs per game multiplier)
 const ballparkFactors = {
-  'Coors Field': 1.25,        // Rockies - thin air, massive offense boost
-  'Great American Ball Park': 1.15, // Reds - hitter friendly
-  'Camden Yards': 1.10,       // Orioles - short porches
-  'Globe Life Field': 1.10,   // Rangers - new park, hitter friendly
-  'Fenway Park': 1.08,        // Red Sox - Green Monster
-  'Yankee Stadium': 1.08,     // Yankees - short right porch
-  'Citizens Bank Park': 1.08, // Phillies - hitter friendly
-  'Truist Park': 1.05,        // Braves - neutral-slight hitter
-  'Chase Field': 1.05,        // Diamondbacks - dome
-  'Wrigley Field': 1.05,      // Cubs - wind dependent
-  'T-Mobile Park': 0.92,      // Mariners - pitcher friendly
-  'Oracle Park': 0.90,        // Giants - marine layer, big dimensions
-  'Petco Park': 0.90,         // Padres - pitcher friendly
-  'Tropicana Field': 0.95,    // Rays - dome, pitcher friendly
-  'Marlins Park': 0.95        // Marlins - dome, pitcher friendly
-  // Default: 1.0 for unlisted parks
+  'Coors Field': 1.25, 'Great American Ball Park': 1.15, 'Camden Yards': 1.10,
+  'Globe Life Field': 1.10, 'Fenway Park': 1.08, 'Yankee Stadium': 1.08,
+  'Citizens Bank Park': 1.08, 'Truist Park': 1.05, 'Chase Field': 1.05,
+  'Wrigley Field': 1.05, 'T-Mobile Park': 0.92, 'Oracle Park': 0.90,
+  'Petco Park': 0.90, 'Tropicana Field': 0.95, 'Marlins Park': 0.95
 };
 
 // ============================================================================
-// NCAAMB (College Basketball) TEAM IDS
-// ============================================================================
-
-const ncaambTeamIds = {
-  // Top programs - expand as needed
-  'Duke': 150, 'North Carolina': 153, 'Kansas': 2305, 'Kentucky': 96,
-  'Michigan': 130, 'UConn': 41, 'Gonzaga': 2250, 'Villanova': 222,
-  'UCLA': 26, 'Arizona': 12, 'Purdue': 2509, 'Houston': 248,
-  'Tennessee': 2633, 'Alabama': 333, 'Baylor': 239, 'Texas': 251,
-  'Illinois': 356, 'Marquette': 269, 'Creighton': 156, 'Xavier': 2752,
-  'Arkansas': 8, 'Auburn': 2, 'Florida': 57, 'South Carolina': 2579,
-  'Iowa State': 66, 'Wisconsin': 275, 'Maryland': 120, 'Indiana': 84,
-  'Michigan State': 127, 'Ohio State': 194, 'Texas Tech': 2641, 'Virginia': 258,
-  'Oregon': 2483, 'San Diego State': 21, 'Saint Mary\'s': 2608, 'BYU': 252,
-  'TCU': 2628, 'West Virginia': 277, 'Oklahoma': 201, 'Kansas State': 2306,
-  'Iowa': 2294, 'Memphis': 235, 'Florida Atlantic': 2226, 'Miami': 2390,
-  'Providence': 2507, 'USC': 30, 'Northwestern': 77, 'Rutgers': 164
-};
-
-// ============================================================================
-// ATS TRACKING (IN-MEMORY - WOULD USE DATABASE IN PRODUCTION)
-// ============================================================================
-
-const atsRecords = {};
-
-function updateATSRecord(teamName, covered, isFavorite, isHome) {
-  if (!atsRecords[teamName]) {
-    atsRecords[teamName] = {
-      overall: { games: 0, covers: 0 },
-      home: { games: 0, covers: 0 },
-      away: { games: 0, covers: 0 },
-      favorite: { games: 0, covers: 0 },
-      underdog: { games: 0, covers: 0 }
-    };
-  }
-  
-  const record = atsRecords[teamName];
-  record.overall.games++;
-  if (covered) record.overall.covers++;
-  
-  if (isHome) {
-    record.home.games++;
-    if (covered) record.home.covers++;
-  } else {
-    record.away.games++;
-    if (covered) record.away.covers++;
-  }
-  
-  if (isFavorite) {
-    record.favorite.games++;
-    if (covered) record.favorite.covers++;
-  } else {
-    record.underdog.games++;
-    if (covered) record.underdog.covers++;
-  }
-}
-
-function getATSRecord(teamName) {
-  if (!atsRecords[teamName]) {
-    return {
-      overall: '0-0 (0%)',
-      home: '0-0 (0%)',
-      away: '0-0 (0%)',
-      asFavorite: '0-0 (0%)',
-      asUnderdog: '0-0 (0%)'
-    };
-  }
-  
-  const r = atsRecords[teamName];
-  const format = (rec) => {
-    if (rec.games === 0) return '0-0 (0%)';
-    const pct = ((rec.covers / rec.games) * 100).toFixed(0);
-    return `${rec.covers}-${rec.games - rec.covers} (${pct}%)`;
-  };
-  
-  return {
-    overall: format(r.overall),
-    home: format(r.home),
-    away: format(r.away),
-    asFavorite: format(r.favorite),
-    asUnderdog: format(r.underdog)
-  };
-}
-
-// ============================================================================
-// ESPN API FUNCTIONS
+// ESPN STATS — NBA
 // ============================================================================
 
 async function fetchNBATeamStats(teamName) {
   try {
     const teamId = nbaTeamIds[teamName];
     if (!teamId) return null;
-    
     const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}`;
     const response = await axios.get(url, { timeout: 5000 });
-    
     const team = response.data.team;
     const record = team.record?.items?.find(r => r.type === 'total');
     const homeRecord = team.record?.items?.find(r => r.type === 'home');
     const awayRecord = team.record?.items?.find(r => r.type === 'road');
-    
     return {
       record: record?.summary || 'N/A',
       homeRecord: homeRecord?.summary || 'N/A',
@@ -281,7 +189,7 @@ async function fetchNBATeamStats(teamName) {
       losses: record?.stats?.find(s => s.name === 'losses')?.value || 0
     };
   } catch (error) {
-    console.error(`Error fetching stats for ${teamName}:`, error.message);
+    console.error(`Error fetching NBA stats for ${teamName}:`, error.message);
     return null;
   }
 }
@@ -290,171 +198,31 @@ async function fetchRecentGames(teamName) {
   try {
     const teamId = nbaTeamIds[teamName];
     if (!teamId) return null;
-    
     const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
     const response = await axios.get(url, { timeout: 5000 });
-    
     const events = response.data.events || [];
-    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
-    const recent10 = completedGames.slice(0, 10);
-    const recent5 = recent10.slice(0, 5);
-    
-    const analyzeGames = (games) => {
-      let wins = 0;
-      let totalScored = 0;
-      let totalAllowed = 0;
-      
-      games.forEach(game => {
-        const comp = game.competitions[0];
-        const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
-        const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-        const isHome = homeTeam.team.id == teamId;
-        const teamScore = isHome ? parseInt(homeTeam.score) : parseInt(awayTeam.score);
-        const oppScore = isHome ? parseInt(awayTeam.score) : parseInt(homeTeam.score);
-        
-        if (teamScore > oppScore) wins++;
-        totalScored += teamScore;
-        totalAllowed += oppScore;
-      });
-      
-      return {
-        record: `${wins}-${games.length - wins}`,
-        avgScored: games.length > 0 ? (totalScored / games.length).toFixed(1) : 0,
-        avgAllowed: games.length > 0 ? (totalAllowed / games.length).toFixed(1) : 0
-      };
-    };
-    
-    const streak = calculateStreak(recent10);
-    const last10Data = analyzeGames(recent10);
-    const last5Data = analyzeGames(recent5);
-    
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
+
+    let wins = 0, totalScored = 0, totalAllowed = 0;
+    completedGames.forEach(game => {
+      const comp = game.competitions[0];
+      const h = comp.competitors.find(c => c.homeAway === 'home');
+      const a = comp.competitors.find(c => c.homeAway === 'away');
+      const isHome = h.team.id == teamId;
+      const ts = isHome ? parseInt(h.score) : parseInt(a.score);
+      const os = isHome ? parseInt(a.score) : parseInt(h.score);
+      if (ts > os) wins++;
+      totalScored += ts;
+      totalAllowed += os;
+    });
+
     return {
-      last10: last10Data.record,
-      last5: last5Data.record,
-      streak: streak,
-      avgScored: last10Data.avgScored,
-      avgAllowed: last10Data.avgAllowed
+      last10: `${wins}-${completedGames.length - wins}`,
+      avgScored: completedGames.length > 0 ? (totalScored / completedGames.length).toFixed(1) : 0,
+      avgAllowed: completedGames.length > 0 ? (totalAllowed / completedGames.length).toFixed(1) : 0
     };
   } catch (error) {
     console.error(`Error fetching recent games for ${teamName}:`, error.message);
-    return null;
-  }
-}
-
-function calculateStreak(games) {
-  if (!games || games.length === 0) return 'N/A';
-  
-  let streak = 0;
-  let streakType = null;
-  
-  for (const game of games) {
-    const comp = game.competitions[0];
-    const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
-    const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-    const teamId = nbaTeamIds[games.teamName];
-    const isHome = homeTeam.team.id == teamId;
-    const won = isHome ? homeTeam.winner : awayTeam.winner;
-    
-    if (streakType === null) {
-      streakType = won ? 'W' : 'L';
-      streak = 1;
-    } else if ((won && streakType === 'W') || (!won && streakType === 'L')) {
-      streak++;
-    } else {
-      break;
-    }
-  }
-  
-  return `${streakType}${streak}`;
-}
-
-async function fetchRestDays(teamName, gameDate) {
-  try {
-    const teamId = nbaTeamIds[teamName];
-    if (!teamId) return { restDays: null, isB2B: false, is3in4: false };
-    
-    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
-    const response = await axios.get(url, { timeout: 5000 });
-    
-    const events = response.data.events || [];
-    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
-    
-    if (completedGames.length === 0) {
-      return { restDays: null, isB2B: false, is3in4: false };
-    }
-    
-    const lastGame = completedGames[0];
-    const lastGameDate = new Date(lastGame.date);
-    const currentGameDate = new Date(gameDate);
-    const diffTime = currentGameDate - lastGameDate;
-    const restDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-    
-    const isB2B = restDays === 1;
-    
-    // Check for 3 games in 4 nights
-    const last3Games = completedGames.slice(0, 3);
-    let is3in4 = false;
-    if (last3Games.length >= 2) {
-      const firstGameDate = new Date(last3Games[2].date);
-      const daysBetween = (currentGameDate - firstGameDate) / (1000 * 60 * 60 * 24);
-      is3in4 = daysBetween <= 4;
-    }
-    
-    return { restDays, isB2B, is3in4 };
-  } catch (error) {
-    console.error(`Error fetching rest days for ${teamName}:`, error.message);
-    return { restDays: null, isB2B: false, is3in4: false };
-  }
-}
-
-async function fetchHeadToHead(homeTeam, awayTeam) {
-  try {
-    const homeId = nbaTeamIds[homeTeam];
-    if (!homeId) return null;
-    
-    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${homeId}/schedule`;
-    const response = await axios.get(url, { timeout: 5000 });
-    
-    const events = response.data.events || [];
-    const h2hGames = events.filter(e => {
-      const comp = e.competitions?.[0];
-      if (!comp) return false;
-      const home = comp.competitors.find(c => c.homeAway === 'home');
-      const away = comp.competitors.find(c => c.homeAway === 'away');
-      return (home?.team?.displayName.includes(homeTeam) && away?.team?.displayName.includes(awayTeam)) ||
-             (home?.team?.displayName.includes(awayTeam) && away?.team?.displayName.includes(homeTeam));
-    }).filter(e => e.competitions?.[0]?.status?.type?.completed);
-    
-    if (h2hGames.length === 0) {
-      return { games: 0, homeRecord: '0-0', avgMargin: 0, avgTotal: 0 };
-    }
-    
-    let homeWins = 0;
-    let totalMargin = 0;
-    let totalPoints = 0;
-    
-    h2hGames.forEach(game => {
-      const comp = game.competitions[0];
-      const home = comp.competitors.find(c => c.homeAway === 'home');
-      const away = comp.competitors.find(c => c.homeAway === 'away');
-      const homeScore = parseInt(home.score);
-      const awayScore = parseInt(away.score);
-      
-      if (home.team.displayName.includes(homeTeam) && homeScore > awayScore) homeWins++;
-      if (away.team.displayName.includes(homeTeam) && awayScore > homeScore) homeWins++;
-      
-      totalMargin += Math.abs(homeScore - awayScore);
-      totalPoints += homeScore + awayScore;
-    });
-    
-    return {
-      games: h2hGames.length,
-      homeRecord: `${homeWins}-${h2hGames.length - homeWins}`,
-      avgMargin: (totalMargin / h2hGames.length).toFixed(1),
-      avgTotal: (totalPoints / h2hGames.length).toFixed(1)
-    };
-  } catch (error) {
-    console.error(`Error fetching H2H for ${homeTeam} vs ${awayTeam}:`, error.message);
     return null;
   }
 }
@@ -463,150 +231,51 @@ async function fetchPaceData(teamName) {
   try {
     const teamId = nbaTeamIds[teamName];
     if (!teamId) return null;
-    
     const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
     const response = await axios.get(url, { timeout: 5000 });
-    
     const events = response.data.events || [];
     const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
-    
     if (completedGames.length === 0) return null;
-    
     let totalPoints = 0;
     completedGames.forEach(game => {
       const comp = game.competitions[0];
-      const home = comp.competitors.find(c => c.homeAway === 'home');
-      const away = comp.competitors.find(c => c.homeAway === 'away');
-      totalPoints += parseInt(home.score) + parseInt(away.score);
+      const h = comp.competitors.find(c => c.homeAway === 'home');
+      const a = comp.competitors.find(c => c.homeAway === 'away');
+      totalPoints += parseInt(h.score) + parseInt(a.score);
     });
-    
     const avgTotal = totalPoints / completedGames.length;
     let pace = 'Average';
     if (avgTotal > 225) pace = 'Fast';
     else if (avgTotal < 215) pace = 'Slow';
-    
-    return {
-      avgTotal: avgTotal.toFixed(1),
-      pace: pace
-    };
+    return { avgTotal: avgTotal.toFixed(1), pace };
   } catch (error) {
-    console.error(`Error fetching pace data for ${teamName}:`, error.message);
-    return null;
-  }
-}
-
-async function fetchTeamRatings(teamName) {
-  try {
-    const teamId = nbaTeamIds[teamName];
-    if (!teamId) return null;
-    
-    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
-    const response = await axios.get(url, { timeout: 5000 });
-    
-    const events = response.data.events || [];
-    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
-    
-    if (completedGames.length === 0) return null;
-    
-    let totalOffRtg = 0;
-    let totalDefRtg = 0;
-    
-    completedGames.forEach(game => {
-      const comp = game.competitions[0];
-      const home = comp.competitors.find(c => c.homeAway === 'home');
-      const away = comp.competitors.find(c => c.homeAway === 'away');
-      const isHome = home.team.id == teamId;
-      const teamScore = isHome ? parseInt(home.score) : parseInt(away.score);
-      const oppScore = isHome ? parseInt(away.score) : parseInt(home.score);
-      
-      // Rough estimation: points per 100 possessions
-      // Actual calculation would need possession data
-      const estimatedPoss = 100;
-      totalOffRtg += (teamScore / estimatedPoss) * 100;
-      totalDefRtg += (oppScore / estimatedPoss) * 100;
-    });
-    
-    const offRtg = (totalOffRtg / completedGames.length).toFixed(1);
-    const defRtg = (totalDefRtg / completedGames.length).toFixed(1);
-    const netRtg = (offRtg - defRtg).toFixed(1);
-    
-    return {
-      offRtg: parseFloat(offRtg),
-      defRtg: parseFloat(defRtg),
-      netRtg: parseFloat(netRtg)
-    };
-  } catch (error) {
-    console.error(`Error fetching ratings for ${teamName}:`, error.message);
     return null;
   }
 }
 
 function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 3959; // Earth radius in miles
+  const R = 3959;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
   const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
             Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
             Math.sin(dLon/2) * Math.sin(dLon/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-async function fetchTravelData(awayTeam, homeTeam, gameTime) {
+async function fetchTravelData(awayTeam, homeTeam) {
   try {
-    const awayLoc = nbaTeamLocations[awayTeam];
-    const homeLoc = nbaTeamLocations[homeTeam];
-    
+    const awayLoc = nbaTeamLocations[awayTeam] || nhlTeamLocations[awayTeam] || mlbTeamLocations[awayTeam];
+    const homeLoc = nbaTeamLocations[homeTeam] || nhlTeamLocations[homeTeam] || mlbTeamLocations[homeTeam];
     if (!awayLoc || !homeLoc) return null;
-    
     const miles = calculateDistance(awayLoc.lat, awayLoc.lon, homeLoc.lat, homeLoc.lon);
     const tzChange = Math.abs(awayLoc.tz - homeLoc.tz);
-    
     let impact = 'None';
-    let adjustment = 0;
-    
-    if (miles > 2000 || tzChange >= 3) {
-      impact = 'Severe';
-      adjustment = -3;
-    } else if (miles > 1000 || tzChange >= 2) {
-      impact = 'Moderate';
-      adjustment = -2;
-    } else if (miles > 500) {
-      impact = 'Minor';
-      adjustment = -1;
-    }
-    
-    // West to East early game penalty
-    const gameHour = new Date(gameTime).getHours();
-    if (awayLoc.tz < homeLoc.tz && gameHour < 13) {
-      adjustment -= 1;
-      impact += ' + Early Game';
-    }
-    
-    return {
-      miles: Math.round(miles),
-      tzChange,
-      impact,
-      adjustment
-    };
+    if (miles > 2000 || tzChange >= 3) impact = 'Severe';
+    else if (miles > 1000 || tzChange >= 2) impact = 'Moderate';
+    else if (miles > 500) impact = 'Minor';
+    return { miles: Math.round(miles), tzChange, impact };
   } catch (error) {
-    console.error(`Error calculating travel data:`, error.message);
-    return null;
-  }
-}
-
-async function fetchStartingLineup(teamName) {
-  try {
-    // ESPN doesn't have a direct starting lineup API
-    // This would require scraping or a paid service
-    // Placeholder for now
-    return {
-      confirmed: false,
-      injuries: [],
-      lastMinuteChanges: []
-    };
-  } catch (error) {
-    console.error(`Error fetching lineup for ${teamName}:`, error.message);
     return null;
   }
 }
@@ -618,29 +287,21 @@ function calculateProjectedTotal(homePace, awayPace) {
 }
 
 // ============================================================================
-// NHL API FUNCTIONS
+// ESPN STATS — NHL
 // ============================================================================
 
 async function fetchNHLTeamStats(teamName) {
   try {
     const teamId = nhlTeamIds[teamName];
     if (!teamId) return null;
-    
     const url = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/${teamId}`;
     const response = await axios.get(url, { timeout: 5000 });
-    
     const team = response.data.team;
     const record = team.record?.items?.find(r => r.type === 'total');
-    const homeRecord = team.record?.items?.find(r => r.type === 'home');
-    const awayRecord = team.record?.items?.find(r => r.type === 'road');
-    
     return {
       record: record?.summary || 'N/A',
-      homeRecord: homeRecord?.summary || 'N/A',
-      awayRecord: awayRecord?.summary || 'N/A',
       wins: record?.stats?.find(s => s.name === 'wins')?.value || 0,
-      losses: record?.stats?.find(s => s.name === 'losses')?.value || 0,
-      otLosses: record?.stats?.find(s => s.name === 'otLosses')?.value || 0
+      losses: record?.stats?.find(s => s.name === 'losses')?.value || 0
     };
   } catch (error) {
     console.error(`Error fetching NHL stats for ${teamName}:`, error.message);
@@ -652,138 +313,49 @@ async function fetchNHLRecentGames(teamName) {
   try {
     const teamId = nhlTeamIds[teamName];
     if (!teamId) return null;
-    
     const url = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/${teamId}/schedule`;
     const response = await axios.get(url, { timeout: 5000 });
-    
     const events = response.data.events || [];
-    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
-    const recent10 = completedGames.slice(0, 10);
-    const recent5 = recent10.slice(0, 5);
-    
-    const analyzeGames = (games) => {
-      let wins = 0;
-      let totalGoalsFor = 0;
-      let totalGoalsAgainst = 0;
-      
-      games.forEach(game => {
-        const comp = game.competitions[0];
-        const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
-        const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-        const isHome = homeTeam.team.id == teamId;
-        const teamScore = isHome ? parseInt(homeTeam.score) : parseInt(awayTeam.score);
-        const oppScore = isHome ? parseInt(awayTeam.score) : parseInt(homeTeam.score);
-        
-        if (teamScore > oppScore) wins++;
-        totalGoalsFor += teamScore;
-        totalGoalsAgainst += oppScore;
-      });
-      
-      return {
-        record: `${wins}-${games.length - wins}`,
-        avgGoalsFor: games.length > 0 ? (totalGoalsFor / games.length).toFixed(1) : 0,
-        avgGoalsAgainst: games.length > 0 ? (totalGoalsAgainst / games.length).toFixed(1) : 0
-      };
-    };
-    
-    const streak = calculateNHLStreak(recent10, teamId);
-    const last10Data = analyzeGames(recent10);
-    const last5Data = analyzeGames(recent5);
-    
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
+    let wins = 0, gf = 0, ga = 0;
+    completedGames.forEach(game => {
+      const comp = game.competitions[0];
+      const h = comp.competitors.find(c => c.homeAway === 'home');
+      const a = comp.competitors.find(c => c.homeAway === 'away');
+      const isHome = h.team.id == teamId;
+      const ts = isHome ? parseInt(h.score) : parseInt(a.score);
+      const os = isHome ? parseInt(a.score) : parseInt(h.score);
+      if (ts > os) wins++;
+      gf += ts; ga += os;
+    });
     return {
-      last10: last10Data.record,
-      last5: last5Data.record,
-      streak: streak,
-      avgGoalsFor: last10Data.avgGoalsFor,
-      avgGoalsAgainst: last10Data.avgGoalsAgainst
+      last10: `${wins}-${completedGames.length - wins}`,
+      avgGoalsFor: completedGames.length > 0 ? (gf / completedGames.length).toFixed(1) : 0,
+      avgGoalsAgainst: completedGames.length > 0 ? (ga / completedGames.length).toFixed(1) : 0
     };
   } catch (error) {
-    console.error(`Error fetching NHL recent games for ${teamName}:`, error.message);
-    return null;
-  }
-}
-
-function calculateNHLStreak(games, teamId) {
-  if (!games || games.length === 0) return 'N/A';
-  
-  let streak = 0;
-  let streakType = null;
-  
-  for (const game of games) {
-    const comp = game.competitions[0];
-    const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
-    const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-    const isHome = homeTeam.team.id == teamId;
-    const won = isHome ? homeTeam.winner : awayTeam.winner;
-    
-    if (streakType === null) {
-      streakType = won ? 'W' : 'L';
-      streak = 1;
-    } else if ((won && streakType === 'W') || (!won && streakType === 'L')) {
-      streak++;
-    } else {
-      break;
-    }
-  }
-  
-  return `${streakType}${streak}`;
-}
-
-async function fetchNHLGoalieStats(teamName) {
-  try {
-    // Goalie stats would require additional ESPN endpoints
-    // For now, return placeholder that can be enhanced later
-    return {
-      starter: 'TBD',
-      savePct: 'N/A',
-      gaa: 'N/A'
-    };
-  } catch (error) {
-    console.error(`Error fetching goalie stats for ${teamName}:`, error.message);
-    return null;
-  }
-}
-
-async function fetchNHLSpecialTeams(teamName) {
-  try {
-    // Special teams stats (power play, penalty kill)
-    // Would need additional ESPN endpoints
-    return {
-      powerPlayPct: 'N/A',
-      penaltyKillPct: 'N/A'
-    };
-  } catch (error) {
-    console.error(`Error fetching special teams for ${teamName}:`, error.message);
     return null;
   }
 }
 
 // ============================================================================
-// MLB API FUNCTIONS
+// ESPN STATS — MLB
 // ============================================================================
 
 async function fetchMLBTeamStats(teamName) {
   try {
     const teamId = mlbTeamIds[teamName];
     if (!teamId) return null;
-    
     const url = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams/${teamId}`;
     const response = await axios.get(url, { timeout: 5000 });
-    
     const team = response.data.team;
     const record = team.record?.items?.find(r => r.type === 'total');
-    const homeRecord = team.record?.items?.find(r => r.type === 'home');
-    const awayRecord = team.record?.items?.find(r => r.type === 'road');
-    
     return {
       record: record?.summary || 'N/A',
-      homeRecord: homeRecord?.summary || 'N/A',
-      awayRecord: awayRecord?.summary || 'N/A',
       wins: record?.stats?.find(s => s.name === 'wins')?.value || 0,
       losses: record?.stats?.find(s => s.name === 'losses')?.value || 0
     };
   } catch (error) {
-    console.error(`Error fetching MLB stats for ${teamName}:`, error.message);
     return null;
   }
 }
@@ -792,388 +364,88 @@ async function fetchMLBRecentGames(teamName) {
   try {
     const teamId = mlbTeamIds[teamName];
     if (!teamId) return null;
-    
     const url = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams/${teamId}/schedule`;
     const response = await axios.get(url, { timeout: 5000 });
-    
     const events = response.data.events || [];
-    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
-    const recent10 = completedGames.slice(0, 10);
-    const recent5 = recent10.slice(0, 5);
-    
-    const analyzeGames = (games) => {
-      let wins = 0;
-      let totalRunsFor = 0;
-      let totalRunsAgainst = 0;
-      
-      games.forEach(game => {
-        const comp = game.competitions[0];
-        const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
-        const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-        const isHome = homeTeam.team.id == teamId;
-        const teamScore = isHome ? parseInt(homeTeam.score) : parseInt(awayTeam.score);
-        const oppScore = isHome ? parseInt(awayTeam.score) : parseInt(homeTeam.score);
-        
-        if (teamScore > oppScore) wins++;
-        totalRunsFor += teamScore;
-        totalRunsAgainst += oppScore;
-      });
-      
-      return {
-        record: `${wins}-${games.length - wins}`,
-        avgRunsFor: games.length > 0 ? (totalRunsFor / games.length).toFixed(1) : 0,
-        avgRunsAgainst: games.length > 0 ? (totalRunsAgainst / games.length).toFixed(1) : 0
-      };
-    };
-    
-    const streak = calculateMLBStreak(recent10, teamId);
-    const last10Data = analyzeGames(recent10);
-    const last5Data = analyzeGames(recent5);
-    
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
+    let wins = 0, rf = 0, ra = 0;
+    completedGames.forEach(game => {
+      const comp = game.competitions[0];
+      const h = comp.competitors.find(c => c.homeAway === 'home');
+      const a = comp.competitors.find(c => c.homeAway === 'away');
+      const isHome = h.team.id == teamId;
+      const ts = isHome ? parseInt(h.score) : parseInt(a.score);
+      const os = isHome ? parseInt(a.score) : parseInt(h.score);
+      if (ts > os) wins++;
+      rf += ts; ra += os;
+    });
     return {
-      last10: last10Data.record,
-      last5: last5Data.record,
-      streak: streak,
-      avgRunsFor: last10Data.avgRunsFor,
-      avgRunsAgainst: last10Data.avgRunsAgainst
+      last10: `${wins}-${completedGames.length - wins}`,
+      avgRunsFor: completedGames.length > 0 ? (rf / completedGames.length).toFixed(1) : 0,
+      avgRunsAgainst: completedGames.length > 0 ? (ra / completedGames.length).toFixed(1) : 0
     };
   } catch (error) {
-    console.error(`Error fetching MLB recent games for ${teamName}:`, error.message);
-    return null;
-  }
-}
-
-function calculateMLBStreak(games, teamId) {
-  if (!games || games.length === 0) return 'N/A';
-  
-  let streak = 0;
-  let streakType = null;
-  
-  for (const game of games) {
-    const comp = game.competitions[0];
-    const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
-    const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-    const isHome = homeTeam.team.id == teamId;
-    const won = isHome ? homeTeam.winner : awayTeam.winner;
-    
-    if (streakType === null) {
-      streakType = won ? 'W' : 'L';
-      streak = 1;
-    } else if ((won && streakType === 'W') || (!won && streakType === 'L')) {
-      streak++;
-    } else {
-      break;
-    }
-  }
-  
-  return `${streakType}${streak}`;
-}
-
-async function fetchMLBPitcherStats(teamName) {
-  try {
-    // Pitcher stats require game-specific data
-    // Would need to fetch probable pitchers from today's game
-    // Placeholder for now - can be enhanced with roster API
-    return {
-      starter: 'TBD',
-      era: 'N/A',
-      whip: 'N/A',
-      k9: 'N/A'
-    };
-  } catch (error) {
-    console.error(`Error fetching pitcher stats for ${teamName}:`, error.message);
     return null;
   }
 }
 
 function getBallparkFactor(venueName) {
-  // Match venue name to ballpark factor
   for (const [park, factor] of Object.entries(ballparkFactors)) {
-    if (venueName && venueName.includes(park.split(' ')[0])) {
-      return factor;
-    }
+    if (venueName && venueName.includes(park.split(' ')[0])) return factor;
   }
-  return 1.0; // Neutral park
-}
-
-async function fetchMLBWeather(gameId) {
-  try {
-    // Weather is crucial for MLB totals
-    // Wind blowing out = OVER, wind blowing in = UNDER
-    // Would need weather API integration
-    return {
-      temp: 'N/A',
-      wind: 'N/A',
-      conditions: 'N/A'
-    };
-  } catch (error) {
-    console.error(`Error fetching MLB weather:`, error.message);
-    return null;
-  }
+  return 1.0;
 }
 
 // ============================================================================
-// NCAAMB (COLLEGE BASKETBALL) API FUNCTIONS
-// ============================================================================
-
-async function fetchNCAAMBTeamStats(teamName) {
-  try {
-    const teamId = ncaambTeamIds[teamName];
-    if (!teamId) return null;
-    
-    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}`;
-    const response = await axios.get(url, { timeout: 5000 });
-    
-    const team = response.data.team;
-    const record = team.record?.items?.find(r => r.type === 'total');
-    const homeRecord = team.record?.items?.find(r => r.type === 'home');
-    const awayRecord = team.record?.items?.find(r => r.type === 'road');
-    
-    return {
-      record: record?.summary || 'N/A',
-      homeRecord: homeRecord?.summary || 'N/A',
-      awayRecord: awayRecord?.summary || 'N/A',
-      wins: record?.stats?.find(s => s.name === 'wins')?.value || 0,
-      losses: record?.stats?.find(s => s.name === 'losses')?.value || 0
-    };
-  } catch (error) {
-    console.error(`Error fetching NCAAMB stats for ${teamName}:`, error.message);
-    return null;
-  }
-}
-
-async function fetchNCAAMBRecentGames(teamName) {
-  try {
-    const teamId = ncaambTeamIds[teamName];
-    if (!teamId) return null;
-    
-    const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}/schedule`;
-    const response = await axios.get(url, { timeout: 5000 });
-    
-    const events = response.data.events || [];
-    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
-    const recent10 = completedGames.slice(0, 10);
-    const recent5 = recent10.slice(0, 5);
-    
-    const analyzeGames = (games) => {
-      let wins = 0;
-      let totalScored = 0;
-      let totalAllowed = 0;
-      
-      games.forEach(game => {
-        const comp = game.competitions[0];
-        const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
-        const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-        const isHome = homeTeam.team.id == teamId;
-        const teamScore = isHome ? parseInt(homeTeam.score) : parseInt(awayTeam.score);
-        const oppScore = isHome ? parseInt(awayTeam.score) : parseInt(homeTeam.score);
-        
-        if (teamScore > oppScore) wins++;
-        totalScored += teamScore;
-        totalAllowed += oppScore;
-      });
-      
-      return {
-        record: `${wins}-${games.length - wins}`,
-        avgScored: games.length > 0 ? (totalScored / games.length).toFixed(1) : 0,
-        avgAllowed: games.length > 0 ? (totalAllowed / games.length).toFixed(1) : 0
-      };
-    };
-    
-    const streak = calculateNCAAMBStreak(recent10, teamId);
-    const last10Data = analyzeGames(recent10);
-    const last5Data = analyzeGames(recent5);
-    
-    return {
-      last10: last10Data.record,
-      last5: last5Data.record,
-      streak: streak,
-      avgScored: last10Data.avgScored,
-      avgAllowed: last10Data.avgAllowed
-    };
-  } catch (error) {
-    console.error(`Error fetching NCAAMB recent games for ${teamName}:`, error.message);
-    return null;
-  }
-}
-
-function calculateNCAAMBStreak(games, teamId) {
-  if (!games || games.length === 0) return 'N/A';
-  
-  let streak = 0;
-  let streakType = null;
-  
-  for (const game of games) {
-    const comp = game.competitions[0];
-    const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
-    const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-    const isHome = homeTeam.team.id == teamId;
-    const won = isHome ? homeTeam.winner : awayTeam.winner;
-    
-    if (streakType === null) {
-      streakType = won ? 'W' : 'L';
-      streak = 1;
-    } else if ((won && streakType === 'W') || (!won && streakType === 'L')) {
-      streak++;
-    } else {
-      break;
-    }
-  }
-  
-  return `${streakType}${streak}`;
-}
-
-// ============================================================================
-// INJURY REPORT FUNCTIONS (ALL SPORTS)
+// INJURY SCRAPER (ESPN)
 // ============================================================================
 
 async function fetchInjuries(teamName, sport) {
   try {
-    // ESPN injury scraper - fetches real current injury data from ESPN's public pages
-    const injuries = [];
-    
-    // Map sport to ESPN URLs
     const sportUrls = {
       'nba': 'https://www.espn.com/nba/injuries',
-      'nfl': 'https://www.espn.com/nfl/injuries',
       'nhl': 'https://www.espn.com/nhl/injuries',
       'mlb': 'https://www.espn.com/mlb/injuries'
     };
-    
     const url = sportUrls[sport];
     if (!url) return [];
-    
-    // Map team nicknames to full names for better matching
-    const teamFullNames = {
-      // NHL
-      'Senators': 'Ottawa', 'Maple Leafs': 'Toronto', 'Canadiens': 'Montreal',
-      'Jets': 'Winnipeg', 'Flames': 'Calgary', 'Oilers': 'Edmonton', 'Canucks': 'Vancouver',
-      'Bruins': 'Boston', 'Sabres': 'Buffalo', 'Red Wings': 'Detroit', 'Panthers': 'Florida',
-      'Lightning': 'Tampa Bay', 'Capitals': 'Washington', 'Hurricanes': 'Carolina',
-      'Blue Jackets': 'Columbus', 'Devils': 'New Jersey', 'Islanders': 'NY Islanders',
-      'Rangers': 'NY Rangers', 'Flyers': 'Philadelphia', 'Penguins': 'Pittsburgh',
-      'Blackhawks': 'Chicago', 'Avalanche': 'Colorado', 'Stars': 'Dallas', 'Wild': 'Minnesota',
-      'Predators': 'Nashville', 'Blues': 'St. Louis', 'Ducks': 'Anaheim', 'Coyotes': 'Arizona',
-      'Golden Knights': 'Vegas', 'Kings': 'Los Angeles', 'Sharks': 'San Jose', 'Kraken': 'Seattle',
-      // NBA
-      'Celtics': 'Boston', 'Nets': 'Brooklyn', 'Knicks': 'New York', 'Sixers': 'Philadelphia',
-      '76ers': 'Philadelphia', 'Raptors': 'Toronto', 'Bulls': 'Chicago', 'Cavaliers': 'Cleveland',
-      'Pistons': 'Detroit', 'Pacers': 'Indiana', 'Bucks': 'Milwaukee', 'Hawks': 'Atlanta',
-      'Hornets': 'Charlotte', 'Heat': 'Miami', 'Magic': 'Orlando', 'Wizards': 'Washington',
-      'Nuggets': 'Denver', 'Timberwolves': 'Minnesota', 'Thunder': 'Oklahoma City',
-      'Trail Blazers': 'Portland', 'Jazz': 'Utah', 'Warriors': 'Golden State', 'Clippers': 'LA Clippers',
-      'Lakers': 'LA Lakers', 'Suns': 'Phoenix', 'Kings': 'Sacramento', 'Mavericks': 'Dallas',
-      'Rockets': 'Houston', 'Grizzlies': 'Memphis', 'Pelicans': 'New Orleans', 'Spurs': 'San Antonio'
-    };
-    
-    const searchName = teamFullNames[teamName] || teamName;
-    
-    try {
-      // Fetch ESPN's injury page
-      const response = await axios.get(url, { 
-        timeout: 10000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+
+    const response = await axios.get(url, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    const html = response.data;
+
+    const injuries = [];
+    const teamMatch = html.match(new RegExp(`>${teamName}[^<]*<`, 'i'));
+    if (!teamMatch) return [];
+
+    const teamSectionStart = html.indexOf(teamMatch[0]);
+    const nextTeamStart = html.indexOf('ResponsiveTable', teamSectionStart + 500);
+    const teamSection = html.substring(teamSectionStart, nextTeamStart > 0 ? nextTeamStart : teamSectionStart + 3000);
+
+    const rowMatches = [...teamSection.matchAll(/<tr[^>]*>(.*?)<\/tr>/gs)];
+    rowMatches.forEach(match => {
+      const rowHtml = match[1];
+      if (rowHtml.includes('<th') || rowHtml.includes('NAME')) return;
+      const cells = [];
+      const cellMatches = [...rowHtml.matchAll(/<td[^>]*>(.*?)<\/td>/gs)];
+      cellMatches.forEach(cell => {
+        const text = cell[1].replace(/<[^>]*>/g, '').trim();
+        if (text) cells.push(text);
       });
-      
-      const html = response.data;
-      
-      // Look for team section - try multiple patterns
-      const patterns = [
-        new RegExp(`>${searchName}[^<]*<`, 'i'),
-        new RegExp(`>${teamName}[^<]*<`, 'i'),
-        new RegExp(`"teamName":"[^"]*${searchName}[^"]*"`, 'i'),
-        new RegExp(`"teamName":"[^"]*${teamName}[^"]*"`, 'i')
-      ];
-      
-      let teamMatch = null;
-      for (const pattern of patterns) {
-        teamMatch = html.match(pattern);
-        if (teamMatch) break;
-      }
-      
-      if (!teamMatch) {
-        console.log(`No injuries found for ${teamName} (${searchName}) on ESPN`);
-        return [];
-      }
-      
-      // Find the injury table for this team
-      const teamSectionStart = html.indexOf(teamMatch[0]);
-      const nextTeamStart = html.indexOf('ResponsiveTable', teamSectionStart + 500);
-      const teamSection = html.substring(teamSectionStart, nextTeamStart > 0 ? nextTeamStart : teamSectionStart + 3000);
-      
-      // Extract player data - ESPN uses JSON embedded in the page
-      const jsonPattern = /"athletes":\[(.*?)\]/;
-      const jsonMatch = teamSection.match(jsonPattern);
-      
-      if (jsonMatch) {
-        try {
-          const athletesJson = '[' + jsonMatch[1] + ']';
-          const athletes = JSON.parse(athletesJson);
-          
-          athletes.forEach(athlete => {
-            if (athlete.injuries && athlete.injuries.length > 0) {
-              athlete.injuries.forEach(injury => {
-                injuries.push({
-                  player: athlete.displayName || athlete.name || 'Unknown',
-                  position: athlete.position?.abbreviation || '',
-                  status: injury.status || 'Unknown',
-                  type: injury.longComment || injury.type || 'Undisclosed'
-                });
-              });
-            }
+      if (cells.length >= 3) {
+        const status = cells[2];
+        if (status && status.toLowerCase() !== 'active') {
+          injuries.push({
+            player: cells[0],
+            position: cells[1] || '',
+            status: status,
+            type: cells[3] || 'Undisclosed'
           });
-        } catch (parseErr) {
-          console.log(`JSON parse failed for ${teamName}: ${parseErr.message}`);
         }
       }
-      
-      // HTML parsing fallback if JSON didn't work
-      if (injuries.length === 0) {
-        const rowMatches = [...teamSection.matchAll(/<tr[^>]*>(.*?)<\/tr>/gs)];
-        
-        rowMatches.forEach(match => {
-          const rowHtml = match[1];
-          
-          // Skip header rows
-          if (rowHtml.includes('<th') || rowHtml.includes('NAME')) return;
-          
-          // Extract cell data
-          const cells = [];
-          const cellMatches = [...rowHtml.matchAll(/<td[^>]*>(.*?)<\/td>/gs)];
-          
-          cellMatches.forEach(cell => {
-            const text = cell[1].replace(/<[^>]*>/g, '').trim();
-            if (text) cells.push(text);
-          });
-          
-          // Typical ESPN format: [Name, Position, Status, Comment]
-          if (cells.length >= 3) {
-            const status = cells[2];
-            // Only add if actually injured
-            if (status && status.toLowerCase() !== 'active') {
-              injuries.push({
-                player: cells[0],
-                position: cells[1] || '',
-                status: status,
-                type: cells[3] || 'Undisclosed'
-              });
-            }
-          }
-        });
-      }
-      
-      if (injuries.length > 0) {
-        console.log(`Found ${injuries.length} real injuries for ${teamName} from ESPN`);
-      } else {
-        console.log(`No injuries found for ${teamName} on ESPN (team section found but no injured players)`);
-      }
-      
-    } catch (scrapeError) {
-      console.log(`ESPN scraping error for ${teamName}: ${scrapeError.message}`);
-    }
-    
+    });
     return injuries;
   } catch (error) {
     console.error(`Error fetching injuries for ${teamName}:`, error.message);
@@ -1181,234 +453,216 @@ async function fetchInjuries(teamName, sport) {
   }
 }
 
-function formatInjuryStatus(status) {
-  // Standardize injury status labels
-  const statusMap = {
-    'out': 'OUT',
-    'questionable': 'Q',
-    'doubtful': 'D',
-    'probable': 'P',
-    'day-to-day': 'DTD'
-  };
-  
-  const normalized = status.toLowerCase();
-  return statusMap[normalized] || status.toUpperCase();
-}
-
 // ============================================================================
-// LINE MOVEMENT / SHARP MONEY TRACKING
+// THE ODDS API — REWRITTEN with caching, header logging, and proper error handling
 // ============================================================================
 
-async function fetchLineMovement(games, sport) {
-  try {
-    const oddsApiKey = process.env.ODDS_API_KEY;
-    if (!oddsApiKey) {
-      console.log('No ODDS_API_KEY - skipping line movement');
-      return {};
-    }
-
-    const sportKeys = {
-      'nba': 'basketball_nba',
-      'nhl': 'icehockey_nhl',
-      'mlb': 'baseball_mlb',
-      'nfl': 'americanfootball_nfl'
-    };
-
-    const sportKey = sportKeys[sport];
-    if (!sportKey) return {};
-
-    // Get historical odds data (opening lines)
-    const lineMovement = {};
-    
-    for (const game of games) {
-      try {
-        // Fetch odds history for this game from multiple bookmakers
-        const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events/${game.id}/odds?apiKey=${oddsApiKey}&regions=us&markets=spreads,totals&oddsFormat=american`;
-        
-        const response = await axios.get(url, { timeout: 5000 });
-        const data = response.data;
-        
-        if (data && data.bookmakers && data.bookmakers.length > 0) {
-          // Track consensus opening vs current
-          const spreadData = [];
-          const totalData = [];
-          
-          data.bookmakers.forEach(book => {
-            book.markets.forEach(market => {
-              if (market.key === 'spreads') {
-                market.outcomes.forEach(outcome => {
-                  spreadData.push({
-                    bookmaker: book.title,
-                    team: outcome.name,
-                    line: outcome.point,
-                    odds: outcome.price,
-                    timestamp: market.last_update
-                  });
-                });
-              } else if (market.key === 'totals') {
-                market.outcomes.forEach(outcome => {
-                  totalData.push({
-                    bookmaker: book.title,
-                    type: outcome.name,
-                    line: outcome.point,
-                    odds: outcome.price,
-                    timestamp: market.last_update
-                  });
-                });
-              }
-            });
-          });
-          
-          // Calculate line movement (simplified - compare early vs recent timestamps)
-          const spreadMovement = calculateMovement(spreadData);
-          const totalMovement = calculateMovement(totalData);
-          
-          lineMovement[game.id] = {
-            spread: spreadMovement,
-            total: totalMovement,
-            sharpIndicators: determineSharpSide(spreadMovement, totalMovement)
-          };
-        }
-        
-      } catch (gameError) {
-        console.log(`Line movement error for game ${game.id}: ${gameError.message}`);
-      }
-    }
-    
-    return lineMovement;
-    
-  } catch (error) {
-    console.error('Error fetching line movement:', error.message);
-    return {};
-  }
-}
-
-function calculateMovement(data) {
-  if (data.length === 0) return null;
-  
-  // Sort by timestamp
-  data.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-  
-  // Get opening (earliest) and current (latest) lines
-  const opening = data[0];
-  const current = data[data.length - 1];
-  
-  return {
-    opening: opening.line,
-    current: current.line,
-    movement: current.line - opening.line,
-    direction: current.line > opening.line ? 'up' : current.line < opening.line ? 'down' : 'no movement'
-  };
-}
-
-function determineSharpSide(spreadMovement, totalMovement) {
-  const indicators = [];
-  
-  // Sharp money indicators:
-  // 1. Line moves against public (public loves favorites/overs, so reverse line movement = sharp)
-  // 2. Significant movement (>1 point spread, >0.5 total)
-  
-  if (spreadMovement && Math.abs(spreadMovement.movement) >= 1) {
-    indicators.push({
-      type: 'spread',
-      side: spreadMovement.movement > 0 ? 'favorite' : 'underdog',
-      confidence: Math.abs(spreadMovement.movement) >= 2 ? 'high' : 'medium',
-      movement: spreadMovement.movement
-    });
-  }
-  
-  if (totalMovement && Math.abs(totalMovement.movement) >= 0.5) {
-    indicators.push({
-      type: 'total',
-      side: totalMovement.movement > 0 ? 'over' : 'under',
-      confidence: Math.abs(totalMovement.movement) >= 1 ? 'high' : 'medium',
-      movement: totalMovement.movement
-    });
-  }
-  
-  return indicators;
-}
-
-// ============================================================================
-// ODDS API FUNCTIONS
-// ============================================================================
-
+/**
+ * Fetch odds with cache, quota header logging, and detailed error reporting.
+ *
+ * KEY FIXES vs original:
+ *   1. 5-minute in-memory cache so refreshing the page doesn't re-spend quota.
+ *   2. Logs x-requests-remaining / x-requests-used after each call so we can
+ *      see in Render logs whether we're burning through the 500/month free tier.
+ *   3. Logs the FULL HTTP status and response body on failure so we can tell
+ *      apart 401 (bad key), 422 (bad params), 429 (rate limit), and 5xx (upstream).
+ *      The original logged everything as a generic "Error" with no detail.
+ *   4. Increased timeout from 10s to 15s to survive Render free-tier slowness.
+ *   5. Falls back to stale cache on error rather than returning null.
+ */
 async function fetchOdds(sport) {
+  const apiKey = process.env.ODDS_API_KEY;
+  if (!apiKey) {
+    console.log('[ODDS] No ODDS_API_KEY found');
+    return null;
+  }
+
+  // Check cache first
+  const cached = oddsCache[sport];
+  if (cached && (Date.now() - cached.timestamp) < ODDS_CACHE_TTL_MS) {
+    const ageSec = Math.round((Date.now() - cached.timestamp) / 1000);
+    console.log(`[ODDS] Cache hit for ${sport} (${ageSec}s old, ${cached.data?.length || 0} games)`);
+    return cached.data;
+  }
+
+  const sportMap = {
+    'nba': 'basketball_nba',
+    'nfl': 'americanfootball_nfl',
+    'nhl': 'icehockey_nhl',
+    'mlb': 'baseball_mlb',
+    'cbb': 'basketball_ncaab'
+  };
+  const sportKey = sportMap[sport];
+  if (!sportKey) {
+    console.log(`[ODDS] Unknown sport: ${sport}`);
+    return null;
+  }
+
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?apiKey=${apiKey}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`;
+  console.log(`[ODDS] Fetching ${sport} (${sportKey})...`);
+
   try {
-    const apiKey = process.env.ODDS_API_KEY;
-    if (!apiKey) {
-      console.log('No ODDS_API_KEY found - using mock odds');
+    const response = await axios.get(url, {
+      timeout: 15000,
+      validateStatus: (status) => status < 500  // We'll inspect 4xx ourselves
+    });
+
+    // Log quota headers — these tell us if we're running out of the 500/month
+    const remaining = response.headers['x-requests-remaining'];
+    const used = response.headers['x-requests-used'];
+    const lastCost = response.headers['x-requests-last'];
+    console.log(`[ODDS] Quota — remaining: ${remaining}, used: ${used}, this call cost: ${lastCost}`);
+
+    if (response.status >= 400) {
+      console.error(`[ODDS] HTTP ${response.status} for ${sport}:`, JSON.stringify(response.data));
+      if (cached) {
+        console.log(`[ODDS] Falling back to stale cache for ${sport}`);
+        return cached.data;
+      }
       return null;
     }
-    
-    const sportMap = {
-      'nba': 'basketball_nba',
-      'nfl': 'americanfootball_nfl',
-      'nhl': 'icehockey_nhl',
-      'mlb': 'baseball_mlb',
-      'cbb': 'basketball_ncaab'
-    };
-    
-    const sportKey = sportMap[sport];
-    if (!sportKey) return null;
-    
-    console.log(`Fetching odds for ${sport} (${sportKey})...`);
-    
-    const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?apiKey=${apiKey}&regions=us&markets=spreads,totals,h2h&oddsFormat=american`;
-    const response = await axios.get(url, { timeout: 10000 });
-    
-    console.log(`Received ${response.data?.length || 0} games with odds for ${sport}`);
-    
-    return response.data;
+
+    const games = response.data || [];
+    console.log(`[ODDS] Received ${games.length} ${sport} games with odds`);
+    oddsCache[sport] = { timestamp: Date.now(), data: games };
+    return games;
+
   } catch (error) {
-    console.error('Error fetching odds:', error.message);
+    if (error.response) {
+      console.error(`[ODDS] HTTP ${error.response.status} from Odds API for ${sport}:`, JSON.stringify(error.response.data));
+    } else if (error.code === 'ECONNABORTED') {
+      console.error(`[ODDS] Timeout fetching ${sport} odds (15s exceeded)`);
+    } else {
+      console.error(`[ODDS] Network error fetching ${sport}:`, error.message);
+    }
+
+    if (cached) {
+      console.log(`[ODDS] Falling back to stale cache for ${sport}`);
+      return cached.data;
+    }
     return null;
   }
 }
 
+/**
+ * Match odds data from The Odds API to a game built from ESPN data.
+ *
+ * KEY FIXES vs original inline matching:
+ *   1. Original used `||` which matched the WRONG game when teams appeared in
+ *      multiple slates (e.g., it would match a Lakers game from yesterday to
+ *      today's Celtics game just because the Lakers played the Celtics last week).
+ *      Now requires BOTH home AND away to match.
+ *   2. Original only read bookmakers[0]. If that one bookmaker didn't offer a
+ *      market, fields came back null. Now searches across ALL bookmakers and
+ *      uses the first one that has each market.
+ *   3. Original only pulled spread POINTS, never the spread PRICE (juice).
+ *      Now returns spread point + both spread prices, total + over/under prices,
+ *      both moneyline prices, AND the bookmaker name.
+ *   4. Loose name matching handles "Lakers" vs "Los Angeles Lakers" mismatches
+ *      between ESPN and The Odds API.
+ */
+function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
+  if (!oddsData || oddsData.length === 0) return null;
+
+  const normalize = (s) => (s || '').toLowerCase().replace(/[^a-z]/g, '');
+  const homeNorm = normalize(homeTeamFull);
+  const awayNorm = normalize(awayTeamFull);
+
+  // FIX 1: Match BOTH teams (was OR), with loose substring matching
+  const matchingOdds = oddsData.find(o => {
+    const oHome = normalize(o.home_team);
+    const oAway = normalize(o.away_team);
+    const homeMatch = oHome.includes(homeNorm) || homeNorm.includes(oHome);
+    const awayMatch = oAway.includes(awayNorm) || awayNorm.includes(oAway);
+    return homeMatch && awayMatch;
+  });
+
+  if (!matchingOdds || !matchingOdds.bookmakers || matchingOdds.bookmakers.length === 0) {
+    return null;
+  }
+
+  // FIX 2: Walk all bookmakers, take first that has each market
+  let spreadOutcomes = null, totalOutcomes = null, h2hOutcomes = null;
+  let spreadBook = null, totalBook = null, h2hBook = null;
+
+  for (const book of matchingOdds.bookmakers) {
+    if (!spreadOutcomes) {
+      const m = book.markets?.find(m => m.key === 'spreads');
+      if (m && m.outcomes?.length) { spreadOutcomes = m.outcomes; spreadBook = book.title; }
+    }
+    if (!totalOutcomes) {
+      const m = book.markets?.find(m => m.key === 'totals');
+      if (m && m.outcomes?.length) { totalOutcomes = m.outcomes; totalBook = book.title; }
+    }
+    if (!h2hOutcomes) {
+      const m = book.markets?.find(m => m.key === 'h2h');
+      if (m && m.outcomes?.length) { h2hOutcomes = m.outcomes; h2hBook = book.title; }
+    }
+    if (spreadOutcomes && totalOutcomes && h2hOutcomes) break;
+  }
+
+  // FIX 3: Pull points AND prices for everything
+  const findOutcome = (outcomes, teamName) => {
+    if (!outcomes) return null;
+    const teamNorm = normalize(teamName);
+    return outcomes.find(o => {
+      const oNorm = normalize(o.name);
+      return oNorm.includes(teamNorm) || teamNorm.includes(oNorm);
+    });
+  };
+
+  const homeSpread = findOutcome(spreadOutcomes, homeTeamFull);
+  const awaySpread = findOutcome(spreadOutcomes, awayTeamFull);
+  const overOutcome = totalOutcomes?.find(o => o.name?.toLowerCase() === 'over');
+  const underOutcome = totalOutcomes?.find(o => o.name?.toLowerCase() === 'under');
+  const homeMLOutcome = findOutcome(h2hOutcomes, homeTeamFull);
+  const awayMLOutcome = findOutcome(h2hOutcomes, awayTeamFull);
+
+  return {
+    spread: homeSpread?.point ?? null,
+    spreadHomePrice: homeSpread?.price ?? null,
+    spreadAwayPrice: awaySpread?.price ?? null,
+    total: overOutcome?.point ?? underOutcome?.point ?? null,
+    overPrice: overOutcome?.price ?? null,
+    underPrice: underOutcome?.price ?? null,
+    homeML: homeMLOutcome?.price ?? null,
+    awayML: awayMLOutcome?.price ?? null,
+    bookmaker: spreadBook || totalBook || h2hBook || 'Unknown',
+    matchedHome: matchingOdds.home_team,
+    matchedAway: matchingOdds.away_team
+  };
+}
+
 function findArbitrageOpportunities(oddsData) {
   if (!oddsData) return [];
-  
   const opportunities = [];
-  
   oddsData.forEach(game => {
     const bookmakers = game.bookmakers || [];
-    
-    // Check for arbitrage on moneylines
-    let bestHome = -Infinity;
-    let bestAway = -Infinity;
-    
+    let bestHome = -Infinity, bestAway = -Infinity;
     bookmakers.forEach(book => {
       const h2h = book.markets?.find(m => m.key === 'h2h');
       if (h2h && h2h.outcomes) {
         h2h.outcomes.forEach(outcome => {
           const odds = outcome.price;
-          if (outcome.name === game.home_team) {
-            bestHome = Math.max(bestHome, odds);
-          } else {
-            bestAway = Math.max(bestAway, odds);
-          }
+          if (outcome.name === game.home_team) bestHome = Math.max(bestHome, odds);
+          else bestAway = Math.max(bestAway, odds);
         });
       }
     });
-    
     if (bestHome !== -Infinity && bestAway !== -Infinity) {
       const homeImplied = bestHome > 0 ? 100 / (bestHome + 100) : Math.abs(bestHome) / (Math.abs(bestHome) + 100);
       const awayImplied = bestAway > 0 ? 100 / (bestAway + 100) : Math.abs(bestAway) / (Math.abs(bestAway) + 100);
       const totalImplied = homeImplied + awayImplied;
-      
       if (totalImplied < 1) {
-        const profit = ((1 - totalImplied) * 100).toFixed(2);
         opportunities.push({
           homeTeam: game.home_team,
           awayTeam: game.away_team,
-          profit: profit,
+          profit: ((1 - totalImplied) * 100).toFixed(2),
           description: `Bet ${game.away_team} at ${bestAway} and ${game.home_team} at ${bestHome}`
         });
       }
     }
   });
-  
   return opportunities;
 }
 
@@ -1419,129 +673,65 @@ function findArbitrageOpportunities(oddsData) {
 app.post('/api/predictions', async (req, res) => {
   try {
     const { sport } = req.body;
-    
-    if (!sport) {
-      return res.status(400).json({ error: 'Sport parameter required' });
-    }
-    
-    console.log(`Fetching predictions for ${sport.toUpperCase()}...`);
-    
-    // Fetch odds from API
+    if (!sport) return res.status(400).json({ error: 'Sport parameter required' });
+
+    console.log(`\n=== Fetching predictions for ${sport.toUpperCase()} ===`);
     const oddsData = await fetchOdds(sport);
     const arbitrageAlerts = findArbitrageOpportunities(oddsData);
-    
-    // Handle different sports
-    if (sport === 'nba') {
-      return await handleNBAPredictions(res, arbitrageAlerts, oddsData);
-    } else if (sport === 'nhl') {
-      return await handleNHLPredictions(res, arbitrageAlerts, oddsData);
-    } else if (sport === 'mlb') {
-      return await handleMLBPredictions(res, arbitrageAlerts, oddsData);
-    } else if (sport === 'nfl') {
-      return res.json({
-        sport: 'NFL',
-        games: [],
-        arbitrageAlerts: [],
-        message: 'NFL support coming soon! Will include: weather impact, injury analysis, home field advantage, rest days, and game script predictions.'
-      });
-    } else if (sport === 'cbb') {
-      return await handleNCAAMBPredictions(res, arbitrageAlerts, oddsData);
-    } else {
-      return res.json({
-        sport: sport.toUpperCase(),
-        games: [],
-        arbitrageAlerts: [],
-        message: `${sport.toUpperCase()} support coming soon. Currently available: NBA, NHL, MLB`
-      });
-    }
-    
+
+    if (sport === 'nba') return await handleNBAPredictions(res, arbitrageAlerts, oddsData);
+    if (sport === 'nhl') return await handleNHLPredictions(res, arbitrageAlerts, oddsData);
+    if (sport === 'mlb') return await handleMLBPredictions(res, arbitrageAlerts, oddsData);
+    if (sport === 'cbb') return res.json({ sport: 'CBB', games: [], arbitrageAlerts: [], message: 'Coming soon.' });
+    if (sport === 'nfl') return res.json({ sport: 'NFL', games: [], arbitrageAlerts: [], message: 'Coming soon.' });
+
+    return res.json({ sport: sport.toUpperCase(), games: [], arbitrageAlerts: [], message: `${sport.toUpperCase()} not supported.` });
   } catch (error) {
     console.error('Prediction error:', error);
-    res.status(500).json({ 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
 // ============================================================================
-// NBA PREDICTION HANDLER
+// NBA HANDLER
 // ============================================================================
 
 async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
   try {
-    // Fetch NBA games from ESPN - get games from last 24 hours to catch live games
-    // ESPN returns live, completed, and upcoming games
     const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?limit=50`;
     const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
     let events = scoreboardResponse.data.events || [];
-    
-    // Filter to only include live and upcoming games (exclude completed)
     events = events.filter(e => {
       const status = e.competitions?.[0]?.status?.type?.state;
-      return status === 'pre' || status === 'in'; // pre = upcoming, in = live
+      return status === 'pre' || status === 'in';
     });
-    
+
     if (events.length === 0) {
-      return res.json({
-        sport: 'NBA',
-        games: [],
-        arbitrageAlerts: [],
-        message: 'No NBA games scheduled for today'
-      });
+      return res.json({ sport: 'NBA', games: [], arbitrageAlerts: [], message: 'No NBA games scheduled' });
     }
-    
-    // Process each game with comprehensive stats
+
     const gamesWithStats = await Promise.all(events.map(async (event) => {
       const comp = event.competitions[0];
       const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
       const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
       const homeTeamName = homeTeam.team.displayName.split(' ').pop();
       const awayTeamName = awayTeam.team.displayName.split(' ').pop();
-      
-      // Fetch all data sources
-      const [
-        homeStats,
-        awayStats,
-        homeForm,
-        awayForm,
-        homeRest,
-        awayRest,
-        h2h,
-        homePace,
-        awayPace,
-        homeRatings,
-        awayRatings,
-        travelData,
-        homeATS,
-        awayATS,
-        homeLineup,
-        awayLineup,
-        homeInjuries,
-        awayInjuries
-      ] = await Promise.all([
+
+      const [homeStats, awayStats, homeForm, awayForm, homePace, awayPace, travelData, homeInjuries, awayInjuries] = await Promise.all([
         fetchNBATeamStats(homeTeamName),
         fetchNBATeamStats(awayTeamName),
         fetchRecentGames(homeTeamName),
         fetchRecentGames(awayTeamName),
-        fetchRestDays(homeTeamName, event.date),
-        fetchRestDays(awayTeamName, event.date),
-        fetchHeadToHead(homeTeamName, awayTeamName),
         fetchPaceData(homeTeamName),
         fetchPaceData(awayTeamName),
-        fetchTeamRatings(homeTeamName),
-        fetchTeamRatings(awayTeamName),
-        fetchTravelData(awayTeamName, homeTeamName, event.date),
-        Promise.resolve(getATSRecord(homeTeamName)),
-        Promise.resolve(getATSRecord(awayTeamName)),
-        fetchStartingLineup(homeTeamName),
-        fetchStartingLineup(awayTeamName),
+        fetchTravelData(awayTeamName, homeTeamName),
         fetchInjuries(homeTeamName, 'nba'),
         fetchInjuries(awayTeamName, 'nba')
       ]);
-      
-      const projectedTotal = calculateProjectedTotal(homePace, awayPace);
-      
+
+      // FIX: Use new matchOddsToGame helper instead of broken inline matching
+      const odds = matchOddsToGame(oddsData, homeTeam.team.displayName, awayTeam.team.displayName);
+
       return {
         homeTeam: homeTeam.team.displayName,
         awayTeam: awayTeam.team.displayName,
@@ -1550,322 +740,128 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
         awayData: awayStats,
         homeForm: homeForm,
         awayForm: awayForm,
-        restData: {
-          homeRestDays: homeRest?.restDays,
-          homeB2B: homeRest?.isB2B,
-          home3in4: homeRest?.is3in4,
-          awayRestDays: awayRest?.restDays,
-          awayB2B: awayRest?.isB2B,
-          away3in4: awayRest?.is3in4
-        },
-        h2h: h2h,
         pace: {
           homeAvgTotal: homePace?.avgTotal,
-          homePace: homePace?.pace,
           awayAvgTotal: awayPace?.avgTotal,
-          awayPace: awayPace?.pace,
-          projectedTotal: projectedTotal
-        },
-        ratings: {
-          homeOffRtg: homeRatings?.offRtg,
-          homeDefRtg: homeRatings?.defRtg,
-          homeNetRtg: homeRatings?.netRtg,
-          awayOffRtg: awayRatings?.offRtg,
-          awayDefRtg: awayRatings?.defRtg,
-          awayNetRtg: awayRatings?.netRtg
+          projectedTotal: calculateProjectedTotal(homePace, awayPace)
         },
         travel: travelData,
-        ats: {
-          home: homeATS,
-          away: awayATS
-        },
-        lineups: {
-          home: homeLineup,
-          away: awayLineup
-        },
-        injuries: {
-          home: homeInjuries,
-          away: awayInjuries
-        },
-        odds: null // Will be filled from odds API
+        injuries: { home: homeInjuries, away: awayInjuries },
+        odds: odds
       };
     }));
-    
-    // Match odds data to games
-    if (oddsData && oddsData.length > 0) {
-      gamesWithStats.forEach(game => {
-        const matchingOdds = oddsData.find(o => 
-          o.home_team === game.homeTeam || o.away_team === game.awayTeam
-        );
-        
-        if (matchingOdds && matchingOdds.bookmakers?.length > 0) {
-          const bookmaker = matchingOdds.bookmakers[0];
-          const spreads = bookmaker.markets?.find(m => m.key === 'spreads');
-          const totals = bookmaker.markets?.find(m => m.key === 'totals');
-          const h2h = bookmaker.markets?.find(m => m.key === 'h2h');
-          
-          game.odds = {
-            spread: spreads?.outcomes?.find(o => o.name === game.homeTeam)?.point || null,
-            total: totals?.outcomes?.[0]?.point || null,
-            homeML: h2h?.outcomes?.find(o => o.name === game.homeTeam)?.price || null,
-            awayML: h2h?.outcomes?.find(o => o.name === game.awayTeam)?.price || null
-          };
-        }
-      });
-    }
-    
-    // Send to Claude for predictions
-    const prompt = `You are an expert NBA sports analyst and sharp bettor. Analyze the following games and provide predictions.
+
+    const matched = gamesWithStats.filter(g => g.odds).length;
+    console.log(`[NBA] Matched odds to ${matched}/${gamesWithStats.length} games`);
+
+    const prompt = `You are an expert NBA analyst. Analyze these games and respond ONLY with a valid JSON object.
 
 GAMES DATA:
 ${JSON.stringify(gamesWithStats, null, 2)}
 
-DATA EXPLANATION:
-- homeData/awayData: Season records, home/away splits
-- homeForm/awayForm: Recent performance (L5, L10, streaks, avg scored/allowed in last 10)
-- restData: Days since last game, back-to-back detection, 3 games in 4 nights
-- h2h: Head-to-head matchup history this season
-- pace: Team tempo and projected total based on pace
-- ratings: Offensive/Defensive ratings (points per 100 possessions), Net Rating
-- travel: Distance traveled, timezone changes, fatigue impact
-- ats: Against The Spread records (overall, home/away, as favorite/underdog)
-- lineups: Starting lineup status and injuries
-- odds: Current betting lines (spread, total, moneylines)
+For each game predict: spread pick (or "No edge" if edge < 2%), total pick, confidence (Low/Medium/High), and 3-5 key factors.
 
-ANALYSIS METHODOLOGY:
+CRITICAL: Use the EXACT odds from the "odds" field for spread/total/homeML/awayML. Do not invent odds.
 
-1. REST & FATIGUE IMPACT:
-   - Back-to-back (B2B): -3 to -5 points expected performance drop
-   - 3 games in 4 nights: Additional -1 to -2 points
-   - Well-rested (3+ days): +1 to +2 points boost
-
-2. TRAVEL IMPACT:
-   - 2000+ miles OR 3+ timezone changes: -3 points (Severe)
-   - 1000-2000 miles OR 2 timezone changes: -2 points (Moderate)
-   - 500-1000 miles: -1 point (Minor)
-   - West→East early games (<1pm ET): Additional -1 point
-
-3. MATCHUP ANALYSIS (Offense vs Defense):
-   - Elite Offense (OffRtg >115) vs Poor Defense (DefRtg >115): Expect high scoring, lean OVER
-   - Elite Offense vs Elite Defense (DefRtg <105): Balanced, use pace factor
-   - Poor Offense (OffRtg <108) vs Elite Defense: Expect low scoring, lean UNDER
-   - Poor Offense vs Poor Defense: Pace-dependent, could go either way
-
-4. PACE FACTOR (Total Predictions):
-   - Fast (>225 avg) + Fast: Strong OVER (+4-6 points to projected total)
-   - Fast + Average (215-225): Slight OVER (+2-3 points)
-   - Average + Average: Use projected total as baseline
-   - Slow (<215) + Average: Slight UNDER (-2-3 points)
-   - Slow + Slow: Strong UNDER (-4-6 points to projected total)
-
-5. HEAD-TO-HEAD HISTORY:
-   - Use avgTotal from H2H as baseline for total prediction
-   - Use avgMargin to inform spread prediction
-   - Recent series dominance (e.g., 3-0) = stronger confidence in favorite
-
-6. NET RATING DIFFERENTIAL:
-   - Every +10 point NetRtg difference ≈ 3-4 point spread advantage
-   - Example: Team A NetRtg +8, Team B NetRtg -4 = 12 point difference = ~4.5 point edge for Team A
-
-7. ATS PERFORMANCE:
-   - Team with 55%+ ATS record = trust them to cover more
-   - Team with <45% ATS record = fade them covering
-   - Check home/away ATS splits (some teams only cover at home)
-   - Favorite/Underdog ATS splits (some teams better as dogs)
-
-8. RECENT FORM:
-   - W5+ streak: +2 confidence boost
-   - L5+ streak: -2 confidence penalty
-   - Consider avg points scored/allowed in L10 for scoring trends
-
-9. EDGE CALCULATION:
-   - Compare your predicted score to betting line
-   - Edge = |Your Prediction - Line| as percentage
-   - 3%+ edge = Value Bet
-   - 5%+ edge = Strong Value Bet
-
-10. KELLY CRITERION:
-    - Half Kelly = (Edge% × 0.5)
-    - Example: 6% edge = 3% half-kelly bet size
-
-RESPONSE FORMAT (JSON):
+Respond ONLY with this JSON shape:
 {
   "games": [
     {
-      "homeTeam": "Lakers",
-      "awayTeam": "Celtics",
-      "gameTime": "7:00 PM ET",
-      "spread": "-5.5",
-      "total": "225.5",
-      "homeML": "-220",
-      "awayML": "+180",
-      "favorite": "Lakers -5.5",
-      "predictedScore": { "home": 115, "away": 108 },
-      "spreadPick": "Lakers -5.5",
-      "spreadEdge": 3.2,
-      "totalPick": "OVER 225.5",
-      "totalEdge": -1.5,
-      "kellySpread": 1.6,
-      "kellyTotal": 0,
-      "confidence": "Medium",
-      "keyFactors": [
-        "Celtics on B2B after West Coast trip (-3 pts)",
-        "Lakers elite defense (108.5 DefRtg) vs Celtics average offense",
-        "Slow pace matchup suggests UNDER (-3 pts to total)"
-      ],
-      "lineMovement": {
-        "spreadMove": -0.5,
-        "totalMove": 2.0
-      }
+      "homeTeam": "<full name>",
+      "awayTeam": "<full name>",
+      "gameTime": "<time>",
+      "spread": "<from odds.spread or 'N/A'>",
+      "total": "<from odds.total or 'N/A'>",
+      "homeML": "<from odds.homeML or 'N/A'>",
+      "awayML": "<from odds.awayML or 'N/A'>",
+      "predictedScore": { "home": <int>, "away": <int> },
+      "spreadPick": "<pick or 'No edge'>",
+      "spreadEdge": <number>,
+      "totalPick": "<pick or 'No edge'>",
+      "totalEdge": <number>,
+      "kellySpread": <number>,
+      "kellyTotal": <number>,
+      "confidence": "Low|Medium|High",
+      "keyFactors": ["...", "..."]
     }
   ]
-}
+}`;
 
-CRITICAL RULES:
-- Only recommend picks where edge ≥ 2%
-- If edge < 2%, set pick to "No edge" and edge to 0
-- Be honest about uncertainty - assign "Low" confidence when data is mixed
-- Factor in ALL data sources - rest, travel, pace, matchups, ATS, H2H
-- For totals, pace factor is critical - don't ignore it
-- Back-to-back games are HUGE - always apply -3 to -5 point adjustment`;
-
-    console.log('Sending data to Claude for predictions...');
-    
+    console.log('[NBA] Sending to Claude...');
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 8000,
-      messages: [{
-        role: 'user',
-        content: prompt
-      }]
+      messages: [{ role: 'user', content: prompt }]
     });
-    
+
     const responseText = message.content[0].text;
-    console.log('Claude response received');
-    
-    // Parse Claude's JSON response
     let predictions;
     try {
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        predictions = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('No JSON found in response');
-      }
+      predictions = JSON.parse(jsonMatch[0]);
     } catch (parseError) {
-      console.error('Error parsing Claude response:', parseError);
+      console.error('[NBA] Parse error:', parseError);
       return res.status(500).json({ error: 'Failed to parse predictions' });
     }
-    
-    // Format for frontend
-    const formattedGames = predictions.games.map(game => ({
-      homeTeam: game.homeTeam,
-      awayTeam: game.awayTeam,
-      gameTime: game.gameTime,
-      spread: game.spread,
-      total: game.total,
-      homeML: game.homeML,
-      awayML: game.awayML,
-      favorite: game.favorite,
-      predictedScore: game.predictedScore,
-      spreadPick: game.spreadPick,
-      spreadEdge: game.spreadEdge,
-      totalPick: game.totalPick,
-      totalEdge: game.totalEdge,
-      kellySpread: game.kellySpread,
-      kellyTotal: game.kellyTotal,
-      confidence: game.confidence,
-      keyFactors: game.keyFactors,
-      lineMovement: game.lineMovement,
-      stats: gamesWithStats.find(g => 
-        g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam
-      )
-    }));
-    
-    return res.json({
-      sport: 'NBA',
-      games: formattedGames,
-      arbitrageAlerts: arbitrageAlerts
+
+    // Override Claude's odds fields with the real fetched odds (in case Claude hallucinated)
+    const formattedGames = predictions.games.map(game => {
+      const stats = gamesWithStats.find(g => g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam);
+      return {
+        ...game,
+        spread: stats?.odds?.spread ?? game.spread,
+        total: stats?.odds?.total ?? game.total,
+        homeML: stats?.odds?.homeML ?? game.homeML,
+        awayML: stats?.odds?.awayML ?? game.awayML,
+        bookmaker: stats?.odds?.bookmaker ?? null,
+        stats
+      };
     });
-    
+
+    return res.json({ sport: 'NBA', games: formattedGames, arbitrageAlerts });
   } catch (error) {
     console.error('NBA Prediction error:', error);
-    return res.status(500).json({ 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    return res.status(500).json({ error: error.message });
   }
 }
 
 // ============================================================================
-// NHL PREDICTION HANDLER  
+// NHL HANDLER
 // ============================================================================
 
 async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
   try {
-    // Fetch NHL games from ESPN
     const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?limit=50`;
     const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
     let events = scoreboardResponse.data.events || [];
-    
-    // Filter to only include live and upcoming games
     events = events.filter(e => {
       const status = e.competitions?.[0]?.status?.type?.state;
       return status === 'pre' || status === 'in';
     });
-    
+
     if (events.length === 0) {
-      return res.json({
-        sport: 'NHL',
-        games: [],
-        arbitrageAlerts: [],
-        message: 'No NHL games scheduled for today'
-      });
+      return res.json({ sport: 'NHL', games: [], arbitrageAlerts: [], message: 'No NHL games scheduled' });
     }
-    
-    // Process each NHL game with comprehensive stats
+
     const gamesWithStats = await Promise.all(events.map(async (event) => {
       const comp = event.competitions[0];
       const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
       const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
       const homeTeamName = homeTeam.team.displayName.split(' ').pop();
       const awayTeamName = awayTeam.team.displayName.split(' ').pop();
-      
-      // Fetch all NHL data sources
-      const [
-        homeStats,
-        awayStats,
-        homeForm,
-        awayForm,
-        homeRest,
-        awayRest,
-        travelData,
-        homeGoalie,
-        awayGoalie,
-        homeSpecialTeams,
-        awaySpecialTeams,
-        homeATS,
-        awayATS,
-        homeInjuries,
-        awayInjuries
-      ] = await Promise.all([
+
+      const [homeStats, awayStats, homeForm, awayForm, travelData, homeInjuries, awayInjuries] = await Promise.all([
         fetchNHLTeamStats(homeTeamName),
         fetchNHLTeamStats(awayTeamName),
         fetchNHLRecentGames(homeTeamName),
         fetchNHLRecentGames(awayTeamName),
-        fetchRestDays(homeTeamName, event.date),
-        fetchRestDays(awayTeamName, event.date),
-        fetchTravelData(awayTeamName, homeTeamName, event.date),
-        fetchNHLGoalieStats(homeTeamName),
-        fetchNHLGoalieStats(awayTeamName),
-        fetchNHLSpecialTeams(homeTeamName),
-        fetchNHLSpecialTeams(awayTeamName),
-        Promise.resolve(getATSRecord(homeTeamName)),
-        Promise.resolve(getATSRecord(awayTeamName)),
+        fetchTravelData(awayTeamName, homeTeamName),
         fetchInjuries(homeTeamName, 'nhl'),
         fetchInjuries(awayTeamName, 'nhl')
       ]);
-      
+
+      const odds = matchOddsToGame(oddsData, homeTeam.team.displayName, awayTeam.team.displayName);
+
       return {
         homeTeam: homeTeam.team.displayName,
         awayTeam: awayTeam.team.displayName,
@@ -1874,231 +870,112 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
         awayData: awayStats,
         homeForm: homeForm,
         awayForm: awayForm,
-        restData: {
-          homeRestDays: homeRest?.restDays,
-          homeB2B: homeRest?.isB2B,
-          home3in4: homeRest?.is3in4,
-          awayRestDays: awayRest?.restDays,
-          awayB2B: awayRest?.isB2B,
-          away3in4: awayRest?.is3in4
-        },
         travel: travelData,
-        goalies: {
-          home: homeGoalie,
-          away: awayGoalie
-        },
-        specialTeams: {
-          home: homeSpecialTeams,
-          away: awaySpecialTeams
-        },
-        ats: {
-          home: homeATS,
-          away: awayATS
-        },
-        injuries: {
-          home: homeInjuries,
-          away: awayInjuries
-        },
-        odds: null
+        injuries: { home: homeInjuries, away: awayInjuries },
+        odds: odds
       };
     }));
-    
-    // Send to Claude for NHL predictions
-    const prompt = `You are an expert NHL sports analyst and sharp bettor. Analyze the following games and provide predictions.
+
+    const matched = gamesWithStats.filter(g => g.odds).length;
+    console.log(`[NHL] Matched odds to ${matched}/${gamesWithStats.length} games`);
+
+    const prompt = `You are an expert NHL analyst. Analyze these games and respond ONLY with valid JSON.
 
 GAMES DATA:
 ${JSON.stringify(gamesWithStats, null, 2)}
 
-DATA EXPLANATION:
-- homeData/awayData: Season records (W-L-OTL), home/away splits
-- homeForm/awayForm: Recent performance (L5, L10, streaks, avg goals for/against in last 10)
-- restData: Days since last game, back-to-back detection, 3 games in 4 nights
-- travel: Distance traveled, timezone changes, fatigue impact
-- goalies: Starting goalie stats (placeholder for now - will be enhanced)
-- specialTeams: Power play % and penalty kill % (placeholder - will be enhanced)
-- ats: Against The Spread records
-- odds: Current betting lines (spread/puck line, total, moneylines)
+CRITICAL: Use the EXACT odds from the "odds" field. Do not invent odds.
 
-NHL-SPECIFIC ANALYSIS METHODOLOGY:
-
-1. REST & FATIGUE IMPACT:
-   - Back-to-back (B2B): -0.5 to -1.0 goals expected
-   - NHL teams play 82 games, fatigue is CRITICAL
-   - Well-rested (3+ days): +0.3 to +0.5 goals boost
-
-2. TRAVEL IMPACT:
-   - 2000+ miles OR 3+ timezone changes: -0.5 goals (Severe)
-   - 1000-2000 miles OR 2 timezone changes: -0.3 goals (Moderate)
-   - West→East early games: Additional -0.2 goals
-
-3. GOALIE MATCHUPS:
-   - Elite goalie (placeholder) vs weak offense: lean UNDER
-   - Backup goalies: typically +0.5 goals against
-   - Goalie on B2B: +0.3 to +0.5 goals against
-
-4. SPECIAL TEAMS:
-   - Elite PP vs weak PK: +0.5 goals lean OVER
-   - Poor PP vs elite PK: -0.3 goals lean UNDER
-   - Special teams score ~20% of NHL goals
-
-5. HOME ICE ADVANTAGE:
-   - NHL home ice worth ~0.3 goals
-   - Some buildings (Edmonton, Vegas) worth more
-   - Last line change = matchup advantage
-
-6. SCORING TRENDS:
-   - Use avgGoalsFor and avgGoalsAgainst from recent form
-   - High-scoring teams (>3.5 GPG) vs low-scoring (<2.5 GPG)
-   - Defensive teams (<2.5 GA/G) suppress totals
-
-7. PUCK LINE (1.5 GOALS):
-   - Favorites -1.5 = must win by 2+ (risky, empty net scenarios)
-   - Underdogs +1.5 = can lose by 1 in regulation
-   - Close games common in NHL - puck line value on heavy favorites
-
-8. OVERTIME/SHOOTOUT:
-   - ~25% of NHL games go to OT
-   - Affects totals (extra 5 min 3v3 = goals)
-   - Check OT record in team stats
-
-9. EDGE CALCULATION:
-   - Compare predicted score to betting line
-   - Edge = |Your Prediction - Line| as percentage
-   - 5%+ edge = Value Bet (NHL has tighter margins than NBA)
-
-10. KELLY CRITERION:
-    - Half Kelly = (Edge% × 0.5)
-
-RESPONSE FORMAT (JSON):
+Respond ONLY with:
 {
   "games": [
     {
-      "homeTeam": "Bruins",
-      "awayTeam": "Maple Leafs",
-      "gameTime": "7:00 PM ET",
-      "puckLine": "-1.5 (+180)",
-      "total": "6.5",
-      "homeML": "-150",
-      "awayML": "+130",
-      "predictedScore": { "home": 4, "away": 2 },
-      "puckLinePick": "Bruins -1.5",
-      "puckLineEdge": 3.5,
-      "totalPick": "OVER 6.5",
-      "totalEdge": 2.1,
-      "kellyPuckLine": 1.75,
-      "kellyTotal": 1.05,
-      "confidence": "Medium",
-      "keyFactors": [
-        "Maple Leafs on B2B with travel (-0.5 goals)",
-        "Bruins strong home record",
-        "Both teams trending over in recent games"
-      ]
+      "homeTeam": "<full name>",
+      "awayTeam": "<full name>",
+      "gameTime": "<time>",
+      "puckLine": "<from odds.spread or 'N/A'>",
+      "total": "<from odds.total or 'N/A'>",
+      "homeML": "<from odds.homeML or 'N/A'>",
+      "awayML": "<from odds.awayML or 'N/A'>",
+      "predictedScore": { "home": <int>, "away": <int> },
+      "puckLinePick": "<pick or 'No edge'>",
+      "puckLineEdge": <number>,
+      "totalPick": "<pick or 'No edge'>",
+      "totalEdge": <number>,
+      "kellyPuckLine": <number>,
+      "kellyTotal": <number>,
+      "confidence": "Low|Medium|High",
+      "keyFactors": ["...", "..."]
     }
   ]
-}
+}`;
 
-CRITICAL RULES FOR NHL:
-- Only recommend picks where edge ≥ 3% (tighter than NBA)
-- If edge < 3%, set pick to "No edge" and edge to 0
-- Goalie matchups are HUGE - factor heavily when available
-- Back-to-back games matter MORE in NHL than NBA
-- Home ice = ~0.3 goal advantage
-- Totals in NHL typically 5.5-6.5 (much lower than NBA)
-- Empty net goals affect puck line heavily`;
-
-    console.log('Sending NHL data to Claude for predictions...');
-    
+    console.log('[NHL] Sending to Claude...');
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 8000,
-      messages: [{
-        role: 'user',
-        content: prompt
-      }]
+      messages: [{ role: 'user', content: prompt }]
     });
-    
+
     const responseText = message.content[0].text;
-    console.log('Claude NHL response received');
-    
-    // Parse Claude's JSON response
     let predictions;
     try {
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        predictions = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('No JSON found in response');
-      }
+      predictions = JSON.parse(jsonMatch[0]);
     } catch (parseError) {
-      console.error('Error parsing Claude NHL response:', parseError);
+      console.error('[NHL] Parse error:', parseError);
       return res.status(500).json({ error: 'Failed to parse NHL predictions' });
     }
-    
-    // Format for frontend
-    const formattedGames = predictions.games.map(game => ({
-      homeTeam: game.homeTeam,
-      awayTeam: game.awayTeam,
-      gameTime: game.gameTime,
-      spread: game.puckLine,
-      total: game.total,
-      homeML: game.homeML,
-      awayML: game.awayML,
-      predictedScore: game.predictedScore,
-      spreadPick: game.puckLinePick,
-      spreadEdge: game.puckLineEdge,
-      totalPick: game.totalPick,
-      totalEdge: game.totalEdge,
-      kellySpread: game.kellyPuckLine,
-      kellyTotal: game.kellyTotal,
-      confidence: game.confidence,
-      keyFactors: game.keyFactors,
-      stats: gamesWithStats.find(g => 
-        g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam
-      )
-    }));
-    
-    return res.json({
-      sport: 'NHL',
-      games: formattedGames,
-      arbitrageAlerts: arbitrageAlerts
+
+    const formattedGames = predictions.games.map(game => {
+      const stats = gamesWithStats.find(g => g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam);
+      return {
+        homeTeam: game.homeTeam,
+        awayTeam: game.awayTeam,
+        gameTime: game.gameTime,
+        spread: stats?.odds?.spread ?? game.puckLine,
+        total: stats?.odds?.total ?? game.total,
+        homeML: stats?.odds?.homeML ?? game.homeML,
+        awayML: stats?.odds?.awayML ?? game.awayML,
+        bookmaker: stats?.odds?.bookmaker ?? null,
+        predictedScore: game.predictedScore,
+        spreadPick: game.puckLinePick,
+        spreadEdge: game.puckLineEdge,
+        totalPick: game.totalPick,
+        totalEdge: game.totalEdge,
+        kellySpread: game.kellyPuckLine,
+        kellyTotal: game.kellyTotal,
+        confidence: game.confidence,
+        keyFactors: game.keyFactors,
+        stats
+      };
     });
-    
+
+    return res.json({ sport: 'NHL', games: formattedGames, arbitrageAlerts });
   } catch (error) {
     console.error('NHL Prediction error:', error);
-    return res.status(500).json({ 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    return res.status(500).json({ error: error.message });
   }
 }
 
 // ============================================================================
-// MLB PREDICTION HANDLER
+// MLB HANDLER
 // ============================================================================
 
 async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
   try {
-    // Fetch MLB games from ESPN
     const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?limit=50`;
     const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
     let events = scoreboardResponse.data.events || [];
-    
-    // Filter to only include live and upcoming games
     events = events.filter(e => {
       const status = e.competitions?.[0]?.status?.type?.state;
       return status === 'pre' || status === 'in';
     });
-    
+
     if (events.length === 0) {
-      return res.json({
-        sport: 'MLB',
-        games: [],
-        arbitrageAlerts: [],
-        message: 'No MLB games scheduled for today'
-      });
+      return res.json({ sport: 'MLB', games: [], arbitrageAlerts: [], message: 'No MLB games scheduled' });
     }
-    
-    // Process each MLB game with comprehensive stats
+
     const gamesWithStats = await Promise.all(events.map(async (event) => {
       const comp = event.competitions[0];
       const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
@@ -2106,527 +983,184 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
       const homeTeamName = homeTeam.team.displayName.split(' ').pop();
       const awayTeamName = awayTeam.team.displayName.split(' ').pop();
       const venueName = comp.venue?.fullName || '';
-      
-      // Fetch all MLB data sources
-      const [
-        homeStats,
-        awayStats,
-        homeForm,
-        awayForm,
-        homePitcher,
-        awayPitcher,
-        weather,
-        homeATS,
-        awayATS,
-        homeInjuries,
-        awayInjuries
-      ] = await Promise.all([
+
+      const [homeStats, awayStats, homeForm, awayForm, homeInjuries, awayInjuries] = await Promise.all([
         fetchMLBTeamStats(homeTeamName),
         fetchMLBTeamStats(awayTeamName),
         fetchMLBRecentGames(homeTeamName),
         fetchMLBRecentGames(awayTeamName),
-        fetchMLBPitcherStats(homeTeamName),
-        fetchMLBPitcherStats(awayTeamName),
-        fetchMLBWeather(event.id),
-        Promise.resolve(getATSRecord(homeTeamName)),
-        Promise.resolve(getATSRecord(awayTeamName)),
         fetchInjuries(homeTeamName, 'mlb'),
         fetchInjuries(awayTeamName, 'mlb')
       ]);
-      
-      const ballparkFactor = getBallparkFactor(venueName);
-      
+
+      const odds = matchOddsToGame(oddsData, homeTeam.team.displayName, awayTeam.team.displayName);
+
       return {
         homeTeam: homeTeam.team.displayName,
         awayTeam: awayTeam.team.displayName,
         gameTime: new Date(event.date).toLocaleString(),
         venue: venueName,
-        ballparkFactor: ballparkFactor,
+        ballparkFactor: getBallparkFactor(venueName),
         homeData: homeStats,
         awayData: awayStats,
         homeForm: homeForm,
         awayForm: awayForm,
-        pitchers: {
-          home: homePitcher,
-          away: awayPitcher
-        },
-        weather: weather,
-        ats: {
-          home: homeATS,
-          away: awayATS
-        },
-        injuries: {
-          home: homeInjuries,
-          away: awayInjuries
-        },
-        odds: null
+        injuries: { home: homeInjuries, away: awayInjuries },
+        odds: odds
       };
     }));
-    
-    // Send to Claude for MLB predictions
-    const prompt = `You are an expert MLB sports analyst and sharp bettor. Analyze the following games and provide predictions.
+
+    const matched = gamesWithStats.filter(g => g.odds).length;
+    console.log(`[MLB] Matched odds to ${matched}/${gamesWithStats.length} games`);
+
+    const prompt = `You are an expert MLB analyst. Analyze these games and respond ONLY with valid JSON.
 
 GAMES DATA:
 ${JSON.stringify(gamesWithStats, null, 2)}
 
-DATA EXPLANATION:
-- homeData/awayData: Season records, home/away splits
-- homeForm/awayForm: Recent performance (L5, L10, streaks, avg runs for/against in last 10)
-- pitchers: Starting pitcher stats (placeholder - will be enhanced with probable starters)
-- weather: Temperature, wind speed/direction, conditions (placeholder - will be enhanced)
-- ballparkFactor: Run environment multiplier (1.0 = neutral, >1.0 = hitter friendly, <1.0 = pitcher friendly)
-- venue: Stadium name
-- ats: Against The Spread records (runline performance)
+CRITICAL: Use the EXACT odds from the "odds" field. Do not invent odds.
 
-MLB-SPECIFIC ANALYSIS METHODOLOGY:
-
-1. PITCHER MATCHUPS (MOST IMPORTANT):
-   - Ace vs weak lineup: -1.5 to -2.0 runs, lean UNDER
-   - Two aces: Strong UNDER lean (-1.0 runs)
-   - Weak starter vs elite offense: +1.5 to +2.0 runs, lean OVER
-   - Bullpen games: More volatile, check bullpen ERA
-   - Day game after night game: Tired bullpen = OVER risk
-
-2. BALLPARK FACTORS (CRITICAL FOR TOTALS):
-   - Coors Field (1.25x): Add +2.5 runs to total projection
-   - Great American (1.15x): Add +1.5 runs
-   - Oracle Park/Petco (0.90x): Subtract -1.0 runs
-   - Dome vs outdoor: Weather not a factor in dome
-
-3. WEATHER IMPACT:
-   - Wind blowing OUT 10+ mph: +1.0 to +1.5 runs (OVER)
-   - Wind blowing IN 10+ mph: -1.0 runs (UNDER)
-   - Hot weather (85°F+): +0.5 runs (ball carries better)
-   - Cold weather (<50°F): -0.5 runs (dead ball)
-   - Rain forecast: Possible postponement, avoid
-
-4. HOME FIELD ADVANTAGE:
-   - Worth ~0.2 runs in MLB (less than other sports)
-   - Last at-bat = walk-off potential
-   - Familiar with ballpark dimensions
-
-5. RECENT FORM & STREAKS:
-   - Hot team (6+ game win streak): Riding momentum
-   - Cold team (5+ game losing streak): Fade them
-   - Runs per game trending up/down
-
-6. RUNLINE (Usually ±1.5):
-   - Favorites -1.5: Need to win by 2+ (risky, ~45% hit rate)
-   - Underdogs +1.5: High hit rate (~65%), lower payout
-   - Alternative: Look at -2.5/+2.5 for value
-
-7. TOTALS PROJECTION:
-   - Start with league average: ~9.0 runs
-   - Apply ballpark factor
-   - Adjust for pitcher quality (±1.5 runs each)
-   - Adjust for weather/wind
-   - Check recent team totals (over/under trends)
-
-8. DIVISION GAMES:
-   - Teams know each other well = lower scoring
-   - Rivalry games can go either way
-
-9. EDGE CALCULATION:
-   - Compare predicted total to betting line
-   - MLB totals typically 7.5-9.5 runs
-   - 5%+ edge = Value Bet
-
-10. KELLY CRITERION:
-    - Half Kelly = (Edge% × 0.5)
-
-RESPONSE FORMAT (JSON):
+Respond ONLY with:
 {
   "games": [
     {
-      "homeTeam": "Yankees",
-      "awayTeam": "Red Sox",
-      "gameTime": "7:00 PM ET",
-      "runLine": "-1.5 (+140)",
-      "total": "9.0",
-      "homeML": "-180",
-      "awayML": "+155",
-      "predictedScore": { "home": 5, "away": 3 },
-      "runLinePick": "Yankees -1.5",
-      "runLineEdge": 4.2,
-      "totalPick": "UNDER 9.0",
-      "totalEdge": 5.5,
-      "kellyRunLine": 2.1,
-      "kellyTotal": 2.75,
-      "confidence": "High",
-      "keyFactors": [
-        "Ace pitcher (2.50 ERA) vs struggling Red Sox offense",
-        "Wind blowing IN at 12 mph - strong UNDER indicator",
-        "Fenway Park neutral factor (1.08x)"
-      ]
+      "homeTeam": "<full name>",
+      "awayTeam": "<full name>",
+      "gameTime": "<time>",
+      "runLine": "<from odds.spread or 'N/A'>",
+      "total": "<from odds.total or 'N/A'>",
+      "homeML": "<from odds.homeML or 'N/A'>",
+      "awayML": "<from odds.awayML or 'N/A'>",
+      "predictedScore": { "home": <int>, "away": <int> },
+      "runLinePick": "<pick or 'No edge'>",
+      "runLineEdge": <number>,
+      "totalPick": "<pick or 'No edge'>",
+      "totalEdge": <number>,
+      "kellyRunLine": <number>,
+      "kellyTotal": <number>,
+      "confidence": "Low|Medium|High",
+      "keyFactors": ["...", "..."]
     }
   ]
-}
+}`;
 
-CRITICAL RULES FOR MLB:
-- Pitcher matchup is #1 factor - weight heavily
-- Ballpark factor is #2 - Coors Field games are VERY different than Oracle Park
-- Wind direction matters MORE than wind speed
-- Only recommend picks where edge ≥ 4% (MLB has variance)
-- Day games after night games = tired bullpens
-- Check if it's a series finale (teams might rest starters)
-- First inning lines can offer value (starting pitcher only)`;
-
-    console.log('Sending MLB data to Claude for predictions...');
-    
+    console.log('[MLB] Sending to Claude...');
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 8000,
-      messages: [{
-        role: 'user',
-        content: prompt
-      }]
+      messages: [{ role: 'user', content: prompt }]
     });
-    
+
     const responseText = message.content[0].text;
-    console.log('Claude MLB response received');
-    
-    // Parse Claude's JSON response
     let predictions;
     try {
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        predictions = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('No JSON found in response');
-      }
+      predictions = JSON.parse(jsonMatch[0]);
     } catch (parseError) {
-      console.error('Error parsing Claude MLB response:', parseError);
+      console.error('[MLB] Parse error:', parseError);
       return res.status(500).json({ error: 'Failed to parse MLB predictions' });
     }
-    
-    // Format for frontend
-    const formattedGames = predictions.games.map(game => ({
-      homeTeam: game.homeTeam,
-      awayTeam: game.awayTeam,
-      gameTime: game.gameTime,
-      spread: game.runLine,
-      total: game.total,
-      homeML: game.homeML,
-      awayML: game.awayML,
-      predictedScore: game.predictedScore,
-      spreadPick: game.runLinePick,
-      spreadEdge: game.runLineEdge,
-      totalPick: game.totalPick,
-      totalEdge: game.totalEdge,
-      kellySpread: game.kellyRunLine,
-      kellyTotal: game.kellyTotal,
-      confidence: game.confidence,
-      keyFactors: game.keyFactors,
-      stats: gamesWithStats.find(g => 
-        g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam
-      )
-    }));
-    
-    return res.json({
-      sport: 'MLB',
-      games: formattedGames,
-      arbitrageAlerts: arbitrageAlerts
+
+    const formattedGames = predictions.games.map(game => {
+      const stats = gamesWithStats.find(g => g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam);
+      return {
+        homeTeam: game.homeTeam,
+        awayTeam: game.awayTeam,
+        gameTime: game.gameTime,
+        spread: stats?.odds?.spread ?? game.runLine,
+        total: stats?.odds?.total ?? game.total,
+        homeML: stats?.odds?.homeML ?? game.homeML,
+        awayML: stats?.odds?.awayML ?? game.awayML,
+        bookmaker: stats?.odds?.bookmaker ?? null,
+        predictedScore: game.predictedScore,
+        spreadPick: game.runLinePick,
+        spreadEdge: game.runLineEdge,
+        totalPick: game.totalPick,
+        totalEdge: game.totalEdge,
+        kellySpread: game.kellyRunLine,
+        kellyTotal: game.kellyTotal,
+        confidence: game.confidence,
+        keyFactors: game.keyFactors,
+        stats
+      };
     });
-    
+
+    return res.json({ sport: 'MLB', games: formattedGames, arbitrageAlerts });
   } catch (error) {
     console.error('MLB Prediction error:', error);
-    return res.status(500).json({ 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    return res.status(500).json({ error: error.message });
   }
 }
 
 // ============================================================================
-// NCAAMB (COLLEGE BASKETBALL) PREDICTION HANDLER
+// DEBUG ENDPOINT — verify Odds API status without running full predictions
+// Visit https://sports-prediction-agent.onrender.com/api/debug/odds/nba in a browser
 // ============================================================================
 
-async function handleNCAAMBPredictions(res, arbitrageAlerts, oddsData) {
+app.get('/api/debug/odds/:sport', async (req, res) => {
+  const { sport } = req.params;
+  const apiKey = process.env.ODDS_API_KEY;
+
+  if (!apiKey) {
+    return res.json({ ok: false, reason: 'ODDS_API_KEY environment variable is not set' });
+  }
+
+  const sportMap = {
+    'nba': 'basketball_nba', 'nhl': 'icehockey_nhl',
+    'mlb': 'baseball_mlb', 'nfl': 'americanfootball_nfl'
+  };
+  const sportKey = sportMap[sport];
+  if (!sportKey) return res.json({ ok: false, reason: `Unknown sport: ${sport}` });
+
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?apiKey=${apiKey}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`;
+
   try {
-    // Fetch NCAAMB games from ESPN
-    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?limit=50&groups=50`;
-    const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
-    let events = scoreboardResponse.data.events || [];
-    
-    // Filter to live and upcoming games
-    events = events.filter(e => {
-      const status = e.competitions?.[0]?.status?.type?.state;
-      return status === 'pre' || status === 'in';
+    const response = await axios.get(url, {
+      timeout: 15000,
+      validateStatus: () => true  // Don't throw on any status — return everything
     });
-    
-    if (events.length === 0) {
-      return res.json({
-        sport: 'CBB',
-        games: [],
-        arbitrageAlerts: [],
-        message: 'No college basketball games scheduled right now'
-      });
-    }
-    
-    // Process each game
-    const gamesWithStats = await Promise.all(events.map(async (event) => {
-      const comp = event.competitions[0];
-      const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
-      const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-      
-      // Extract team names (last word typically)
-      const homeTeamName = homeTeam.team.displayName.split(' ').pop();
-      const awayTeamName = awayTeam.team.displayName.split(' ').pop();
-      
-      // Fetch stats
-      const [
-        homeStats,
-        awayStats,
-        homeForm,
-        awayForm,
-        homeATS,
-        awayATS,
-        homeInjuries,
-        awayInjuries
-      ] = await Promise.all([
-        fetchNCAAMBTeamStats(homeTeamName),
-        fetchNCAAMBTeamStats(awayTeamName),
-        fetchNCAAMBRecentGames(homeTeamName),
-        fetchNCAAMBRecentGames(awayTeamName),
-        Promise.resolve(getATSRecord(homeTeamName)),
-        Promise.resolve(getATSRecord(awayTeamName)),
-        fetchInjuries(homeTeamName, 'cbb'),
-        fetchInjuries(awayTeamName, 'cbb')
-      ]);
-      
-      return {
-        homeTeam: homeTeam.team.displayName,
-        awayTeam: awayTeam.team.displayName,
-        gameTime: new Date(event.date).toLocaleString(),
-        homeData: homeStats,
-        awayData: awayStats,
-        homeForm: homeForm,
-        awayForm: awayForm,
-        ats: {
-          home: homeATS,
-          away: awayATS
-        },
-        injuries: {
-          home: homeInjuries,
-          away: awayInjuries
-        },
-        tournament: event.name?.includes('NCAA') || event.name?.includes('Final Four') || event.name?.includes('Championship'),
-        odds: null
-      };
-    }));
-    
-    // Send to Claude
-    const prompt = `You are an expert college basketball analyst and sharp bettor. Analyze the following games and provide predictions.
 
-GAMES DATA:
-${JSON.stringify(gamesWithStats, null, 2)}
-
-DATA EXPLANATION:
-- homeData/awayData: Season records, home/away splits
-- homeForm/awayForm: Recent performance (L5, L10, streaks, avg points scored/allowed)
-- tournament: Is this an NCAA Tournament game?
-- ats: Against The Spread records
-
-COLLEGE BASKETBALL ANALYSIS METHODOLOGY:
-
-1. HOME COURT ADVANTAGE (MASSIVE IN COLLEGE):
-   - Worth 3-5 points (bigger than NBA/NHL/MLB)
-   - Student sections matter
-   - Familiar rims, depth perception
-   - Tournament games = NEUTRAL COURT (no home advantage)
-
-2. TOURNAMENT CONTEXT:
-   - March Madness = single elimination, high variance
-   - Upsets are common (seed doesn't guarantee outcome)
-   - Experience matters (teams that have "been there")
-   - Coaching critical in tournament
-
-3. RECENT FORM & MOMENTUM:
-   - Teams on 5+ game win streaks have confidence
-   - Coming off big wins = momentum
-   - Teams that lost in conference tournament = extra rest or rust?
-
-4. PACE & TEMPO:
-   - Fast-paced teams (75+ possessions) = higher totals
-   - Slow-paced teams (65- possessions) = lower totals
-   - Use avgScored to infer pace
-
-5. DEFENSIVE IDENTITY:
-   - Elite defense (allow <65 PPG) suppresses totals
-   - High-scoring offenses (80+ PPG) push totals up
-   - Check avgAllowed from recent form
-
-6. SPREADS IN COLLEGE BASKETBALL:
-   - Much higher variance than NBA
-   - Double-digit spreads common
-   - Blowouts happen more frequently
-   - Close games also very common (down to final possession)
-
-7. TOTALS RANGE:
-   - College typically 130-150 points
-   - Tournament games often UNDER (tighter defense, nerves)
-   - Regular season = more scoring
-
-8. INTANGIBLES:
-   - Star player impact (one player can dominate college game)
-   - Foul trouble (college has only 5 fouls vs NBA's 6)
-   - Free throw shooting matters late game
-   - Three-point variance (hot/cold shooting)
-
-9. EDGE CALCULATION:
-   - Compare predicted score to betting line
-   - 4%+ edge = Value Bet (high variance sport)
-
-10. KELLY CRITERION:
-    - Half Kelly = (Edge% × 0.5)
-
-RESPONSE FORMAT (JSON):
-{
-  "games": [
-    {
-      "homeTeam": "UConn",
-      "awayTeam": "Michigan",
-      "gameTime": "9:00 PM ET",
-      "spread": "-4.5",
-      "total": "140.5",
-      "homeML": "-180",
-      "awayML": "+155",
-      "predictedScore": { "home": 73, "away": 68 },
-      "spreadPick": "UConn -4.5",
-      "spreadEdge": 5.2,
-      "totalPick": "UNDER 140.5",
-      "totalEdge": 3.8,
-      "kellySpread": 2.6,
-      "kellyTotal": 1.9,
-      "confidence": "Medium",
-      "keyFactors": [
-        "National Championship - neutral court, no home advantage",
-        "UConn elite defense, tournament experience",
-        "Tournament games trend UNDER - tight defense, nerves"
-      ]
-    }
-  ]
-}
-
-CRITICAL RULES:
-- Tournament games = NEUTRAL COURT (no home court edge)
-- Only recommend picks where edge ≥ 4%
-- College basketball is HIGH VARIANCE
-- One hot shooter can swing a game
-- Defense wins championships`;
-
-    console.log('Sending NCAAMB data to Claude for predictions...');
-    
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8000,
-      messages: [{
-        role: 'user',
-        content: prompt
-      }]
-    });
-    
-    const responseText = message.content[0].text;
-    console.log('Claude NCAAMB response received');
-    
-    // Parse response
-    let predictions;
-    try {
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        predictions = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('No JSON found in response');
-      }
-    } catch (parseError) {
-      console.error('Error parsing Claude NCAAMB response:', parseError);
-      return res.status(500).json({ error: 'Failed to parse NCAAMB predictions' });
-    }
-    
-    // Format for frontend
-    const formattedGames = predictions.games.map(game => ({
-      homeTeam: game.homeTeam,
-      awayTeam: game.awayTeam,
-      gameTime: game.gameTime,
-      spread: game.spread,
-      total: game.total,
-      homeML: game.homeML,
-      awayML: game.awayML,
-      predictedScore: game.predictedScore,
-      spreadPick: game.spreadPick,
-      spreadEdge: game.spreadEdge,
-      totalPick: game.totalPick,
-      totalEdge: game.totalEdge,
-      kellySpread: game.kellySpread,
-      kellyTotal: game.kellyTotal,
-      confidence: game.confidence,
-      keyFactors: game.keyFactors,
-      stats: gamesWithStats.find(g => 
-        g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam
-      )
-    }));
-    
     return res.json({
-      sport: 'CBB',
-      games: formattedGames,
-      arbitrageAlerts: arbitrageAlerts
+      ok: response.status === 200,
+      httpStatus: response.status,
+      quotaRemaining: response.headers['x-requests-remaining'] || 'unknown',
+      quotaUsed: response.headers['x-requests-used'] || 'unknown',
+      lastCallCost: response.headers['x-requests-last'] || 'unknown',
+      gamesReturned: Array.isArray(response.data) ? response.data.length : 0,
+      firstGameSample: Array.isArray(response.data) && response.data.length > 0 ? {
+        home: response.data[0].home_team,
+        away: response.data[0].away_team,
+        bookmakerCount: response.data[0].bookmakers?.length || 0,
+        firstBookmaker: response.data[0].bookmakers?.[0]?.title || null,
+        marketsAvailable: response.data[0].bookmakers?.[0]?.markets?.map(m => m.key) || []
+      } : null,
+      errorBody: response.status >= 400 ? response.data : null
     });
-    
   } catch (error) {
-    console.error('NCAAMB Prediction error:', error);
-    return res.status(500).json({ 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-}
-
-// Sharp money tracking function
-async function fetchSharpMoney(sport, gameId) {
-  try {
-    // Note: Sharp money data requires premium betting feeds
-    // Free APIs don't typically provide this data
-    // This is a placeholder for future enhancement
-    
-    return {
-      movement: null,
-      public_pct: null,
-      sharp_action: 'Premium feature - upgrade for sharp money tracking',
-      note: 'Requires paid betting feeds (SportsData.io, Action Network, etc.)'
-    };
-  } catch (error) {
-    console.error('Sharp money fetch error:', error);
-    return {
-      movement: null,
-      public_pct: null,
-      sharp_action: 'Unknown'
-    };
-  }
-}
-
-// Sharp money tracking endpoint
-app.get('/api/sharp-money/:sport/:gameId', async (req, res) => {
-  try {
-    const { sport, gameId } = req.params;
-    const sharpData = await fetchSharpMoney(sport, gameId);
-    res.json(sharpData);
-  } catch (error) {
-    console.error('Sharp money error:', error);
-    res.json({ 
-      movement: null, 
-      public_pct: null, 
-      sharp_action: 'Unknown' 
+    return res.json({
+      ok: false,
+      reason: 'Network/timeout error reaching The Odds API',
+      errorMessage: error.message,
+      errorCode: error.code || null
     });
   }
 });
 
-// Health check endpoint
+// Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    hasOddsKey: !!process.env.ODDS_API_KEY,
+    hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+    cachedSports: Object.keys(oddsCache)
+  });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`ODDS_API_KEY present: ${!!process.env.ODDS_API_KEY}`);
+  console.log(`ANTHROPIC_API_KEY present: ${!!process.env.ANTHROPIC_API_KEY}`);
 });
