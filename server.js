@@ -1,6 +1,7 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
 const axios = require('axios');
+const { Pool } = require('pg');
 
 const app = express();
 app.use(express.json());
@@ -9,6 +10,342 @@ app.use(express.static('public'));
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
 });
+
+// ============================================================================
+// DATABASE — Postgres pool for pick tracking and CLV measurement
+// ============================================================================
+// Uses Render's DATABASE_URL env var. SSL is required for Render Postgres
+// when connecting from outside the local machine; rejectUnauthorized:false
+// is the standard pattern for Render-hosted DBs.
+let pool = null;
+let dbReady = false;
+
+if (process.env.DATABASE_URL) {
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+  });
+
+  // Create tables on first run if they don't exist
+  (async () => {
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS picks (
+          id SERIAL PRIMARY KEY,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          sport TEXT NOT NULL,
+          espn_game_id TEXT,
+          home_team TEXT NOT NULL,
+          away_team TEXT NOT NULL,
+          game_time TIMESTAMPTZ,
+          market TEXT NOT NULL,
+          pick TEXT NOT NULL,
+          line NUMERIC,
+          edge NUMERIC,
+          confidence TEXT,
+          predicted_home INT,
+          predicted_away INT,
+          line_at_pick NUMERIC,
+          closing_line NUMERIC,
+          result TEXT,
+          actual_home INT,
+          actual_away INT,
+          graded_at TIMESTAMPTZ
+        );
+      `);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_picks_game ON picks(espn_game_id);`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_picks_ungraded ON picks(result) WHERE result IS NULL;`);
+      dbReady = true;
+      console.log('[DB] Connected and tables ready');
+    } catch (err) {
+      console.error('[DB] Setup failed:', err.message);
+      dbReady = false;
+    }
+  })();
+} else {
+  console.log('[DB] DATABASE_URL not set — pick tracking disabled');
+}
+
+// ============================================================================
+// PICK TRACKING — save picks, grade results, query history
+// ============================================================================
+
+/**
+ * Save a single pick to the database. Called once per game per market
+ * (spread + total) when a prediction is generated.
+ *
+ * Silently no-ops if DB is unavailable so the app keeps working without it.
+ */
+async function savePick(pickData) {
+  if (!dbReady || !pool) return null;
+  try {
+    const result = await pool.query(`
+      INSERT INTO picks (
+        sport, espn_game_id, home_team, away_team, game_time,
+        market, pick, line, edge, confidence,
+        predicted_home, predicted_away, line_at_pick
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      RETURNING id;
+    `, [
+      pickData.sport,
+      pickData.espn_game_id,
+      pickData.home_team,
+      pickData.away_team,
+      pickData.game_time,
+      pickData.market,
+      pickData.pick,
+      pickData.line,
+      pickData.edge,
+      pickData.confidence,
+      pickData.predicted_home,
+      pickData.predicted_away,
+      pickData.line_at_pick
+    ]);
+    return result.rows[0].id;
+  } catch (err) {
+    console.error('[DB] savePick error:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Save all picks from a generated games list. Skips games with no edge
+ * ("No edge" picks) since those aren't actionable bets.
+ */
+async function savePicksFromGames(sport, games, eventMap) {
+  if (!dbReady || !pool) return 0;
+  let saved = 0;
+
+  for (const game of games) {
+    const espnGameId = eventMap[`${game.homeTeam}|${game.awayTeam}`] || null;
+    const gameTime = game.gameTime ? new Date(game.gameTime) : null;
+
+    // Save spread pick if there's an edge
+    if (game.spreadPick && game.spreadPick !== 'No edge' && Math.abs(game.spreadEdge || 0) >= 2) {
+      const id = await savePick({
+        sport,
+        espn_game_id: espnGameId,
+        home_team: game.homeTeam,
+        away_team: game.awayTeam,
+        game_time: gameTime,
+        market: 'spread',
+        pick: game.spreadPick,
+        line: parseFloat(game.spread) || null,
+        edge: parseFloat(game.spreadEdge) || null,
+        confidence: game.confidence,
+        predicted_home: game.predictedScore?.home || null,
+        predicted_away: game.predictedScore?.away || null,
+        line_at_pick: parseFloat(game.spread) || null
+      });
+      if (id) saved++;
+    }
+
+    // Save total pick if there's an edge
+    if (game.totalPick && game.totalPick !== 'No edge' && Math.abs(game.totalEdge || 0) >= 2) {
+      const id = await savePick({
+        sport,
+        espn_game_id: espnGameId,
+        home_team: game.homeTeam,
+        away_team: game.awayTeam,
+        game_time: gameTime,
+        market: 'total',
+        pick: game.totalPick,
+        line: parseFloat(game.total) || null,
+        edge: parseFloat(game.totalEdge) || null,
+        confidence: game.confidence,
+        predicted_home: game.predictedScore?.home || null,
+        predicted_away: game.predictedScore?.away || null,
+        line_at_pick: parseFloat(game.total) || null
+      });
+      if (id) saved++;
+    }
+  }
+
+  if (saved > 0) console.log(`[DB] Saved ${saved} picks for ${sport}`);
+  return saved;
+}
+
+/**
+ * Grade ungraded picks by checking ESPN for finished game scores.
+ * Runs as a background job every hour.
+ */
+async function gradePendingPicks() {
+  if (!dbReady || !pool) return;
+
+  try {
+    const ungraded = await pool.query(`
+      SELECT DISTINCT espn_game_id, sport
+      FROM picks
+      WHERE result IS NULL AND espn_game_id IS NOT NULL
+      AND game_time < NOW()
+      LIMIT 50;
+    `);
+
+    if (ungraded.rows.length === 0) return;
+    console.log(`[DB] Grading ${ungraded.rows.length} games`);
+
+    const sportPaths = {
+      'nba': 'basketball/nba',
+      'nhl': 'hockey/nhl',
+      'mlb': 'baseball/mlb'
+    };
+
+    for (const row of ungraded.rows) {
+      const path = sportPaths[row.sport];
+      if (!path) continue;
+
+      try {
+        const url = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard/${row.espn_game_id}`;
+        // ESPN doesn't have a clean per-game endpoint, use summary instead
+        const summaryUrl = `https://site.api.espn.com/apis/site/v2/sports/${path}/summary?event=${row.espn_game_id}`;
+        const response = await axios.get(summaryUrl, { timeout: 5000 });
+
+        const comp = response.data?.header?.competitions?.[0];
+        if (!comp || !comp.status?.type?.completed) continue;
+
+        const home = comp.competitors.find(c => c.homeAway === 'home');
+        const away = comp.competitors.find(c => c.homeAway === 'away');
+        const homeScore = parseInt(home?.score);
+        const awayScore = parseInt(away?.score);
+
+        if (isNaN(homeScore) || isNaN(awayScore)) continue;
+
+        // Get all picks for this game
+        const picks = await pool.query(
+          `SELECT * FROM picks WHERE espn_game_id = $1 AND result IS NULL`,
+          [row.espn_game_id]
+        );
+
+        for (const pick of picks.rows) {
+          const result = gradePick(pick, homeScore, awayScore);
+          await pool.query(
+            `UPDATE picks SET result = $1, actual_home = $2, actual_away = $3, graded_at = NOW() WHERE id = $4`,
+            [result, homeScore, awayScore, pick.id]
+          );
+        }
+      } catch (e) {
+        console.error(`[DB] Grading error for game ${row.espn_game_id}:`, e.message);
+      }
+    }
+  } catch (err) {
+    console.error('[DB] gradePendingPicks error:', err.message);
+  }
+}
+
+/**
+ * Grade a single pick against final scores. Returns 'win', 'loss', or 'push'.
+ */
+function gradePick(pick, homeScore, awayScore) {
+  const line = parseFloat(pick.line);
+  if (isNaN(line)) return null;
+
+  if (pick.market === 'spread') {
+    // pick.pick contains text like "Lakers -5.5" or "Celtics +3.5"
+    // Determine which team was picked: if pick contains home team name, picked home
+    const pickText = (pick.pick || '').toLowerCase();
+    const homeNickname = (pick.home_team || '').split(' ').pop().toLowerCase();
+    const awayNickname = (pick.away_team || '').split(' ').pop().toLowerCase();
+
+    const pickedHome = pickText.includes(homeNickname);
+    const pickedAway = pickText.includes(awayNickname);
+
+    if (!pickedHome && !pickedAway) return null;
+
+    // The line stored is the home spread (negative = home favored)
+    // Home covers if (homeScore + homeSpread) > awayScore — i.e., homeScore - awayScore > -homeSpread
+    const margin = homeScore - awayScore;
+    const homeSpread = pickedHome ? line : -line;
+    const adjusted = margin + homeSpread;
+
+    if (adjusted > 0) return pickedHome ? 'win' : 'loss';
+    if (adjusted < 0) return pickedHome ? 'loss' : 'win';
+    return 'push';
+  }
+
+  if (pick.market === 'total') {
+    const totalScore = homeScore + awayScore;
+    const pickText = (pick.pick || '').toLowerCase();
+    const isOver = pickText.includes('over');
+    const isUnder = pickText.includes('under');
+
+    if (!isOver && !isUnder) return null;
+
+    if (totalScore > line) return isOver ? 'win' : 'loss';
+    if (totalScore < line) return isUnder ? 'win' : 'loss';
+    return 'push';
+  }
+
+  return null;
+}
+
+/**
+ * Get aggregated history stats for the History tab.
+ */
+async function getHistoryStats(sport = null) {
+  if (!dbReady || !pool) {
+    return { available: false, message: 'Database not configured' };
+  }
+
+  try {
+    const sportFilter = sport ? `WHERE sport = $1` : '';
+    const params = sport ? [sport] : [];
+
+    // Overall record
+    const overall = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE result = 'win') as wins,
+        COUNT(*) FILTER (WHERE result = 'loss') as losses,
+        COUNT(*) FILTER (WHERE result = 'push') as pushes,
+        COUNT(*) FILTER (WHERE result IS NULL) as pending,
+        COUNT(*) as total
+      FROM picks ${sportFilter};
+    `, params);
+
+    // By market
+    const byMarket = await pool.query(`
+      SELECT market,
+        COUNT(*) FILTER (WHERE result = 'win') as wins,
+        COUNT(*) FILTER (WHERE result = 'loss') as losses,
+        COUNT(*) FILTER (WHERE result = 'push') as pushes
+      FROM picks
+      ${sportFilter}
+      ${sport ? 'AND' : 'WHERE'} result IS NOT NULL
+      GROUP BY market;
+    `, params);
+
+    // By confidence
+    const byConfidence = await pool.query(`
+      SELECT confidence,
+        COUNT(*) FILTER (WHERE result = 'win') as wins,
+        COUNT(*) FILTER (WHERE result = 'loss') as losses,
+        COUNT(*) FILTER (WHERE result = 'push') as pushes
+      FROM picks
+      ${sportFilter}
+      ${sport ? 'AND' : 'WHERE'} result IS NOT NULL
+      GROUP BY confidence;
+    `, params);
+
+    // Recent picks (last 50)
+    const recent = await pool.query(`
+      SELECT id, created_at, sport, home_team, away_team, market, pick, line, edge, confidence, result, actual_home, actual_away
+      FROM picks
+      ${sportFilter}
+      ORDER BY created_at DESC
+      LIMIT 50;
+    `, params);
+
+    return {
+      available: true,
+      overall: overall.rows[0],
+      byMarket: byMarket.rows,
+      byConfidence: byConfidence.rows,
+      recent: recent.rows
+    };
+  } catch (err) {
+    console.error('[DB] getHistoryStats error:', err.message);
+    return { available: false, message: err.message };
+  }
+}
 
 // ============================================================================
 // ODDS CACHE — prevents burning through Odds API quota on repeated page loads
@@ -398,6 +735,138 @@ function getBallparkFactor(venueName) {
     if (venueName && venueName.includes(park.split(' ')[0])) return factor;
   }
   return 1.0;
+}
+
+// ============================================================================
+// MLB STARTING PITCHER STATS
+// ============================================================================
+// ESPN's scoreboard already includes probable pitchers in
+// competitions[0].competitors[].probables[]. We extract the pitcher athlete ID
+// from there and fetch his season stats from the athlete endpoint.
+//
+// Returns: { name, era, whip, k9, wins, losses, ip } or null
+
+async function fetchMLBPitcherFromProbable(probable) {
+  if (!probable || !probable.athlete) return null;
+
+  const athlete = probable.athlete;
+  const pitcherId = athlete.id;
+  const pitcherName = athlete.displayName || athlete.fullName || 'Unknown';
+
+  if (!pitcherId) {
+    return { name: pitcherName, era: 'N/A', whip: 'N/A', k9: 'N/A', record: 'N/A' };
+  }
+
+  try {
+    const url = `https://site.api.espn.com/apis/common/v3/sports/baseball/mlb/athletes/${pitcherId}/statistics`;
+    const response = await axios.get(url, { timeout: 5000 });
+
+    // ESPN returns categories like "pitching" with stats nested inside
+    const stats = response.data?.splits?.categories?.find(c => c.name === 'pitching')?.stats || [];
+
+    const findStat = (names) => {
+      for (const n of names) {
+        const s = stats.find(s => s.name === n || s.abbreviation === n);
+        if (s) return s.displayValue || s.value;
+      }
+      return 'N/A';
+    };
+
+    return {
+      name: pitcherName,
+      era: findStat(['ERA', 'earnedRunAverage']),
+      whip: findStat(['WHIP', 'walksHitsPerInningPitched']),
+      k9: findStat(['K/9', 'strikeoutsPerNineInnings', 'strikeoutsPer9Innings']),
+      wins: findStat(['W', 'wins']),
+      losses: findStat(['L', 'losses']),
+      ip: findStat(['IP', 'inningsPitched']),
+      strikeouts: findStat(['SO', 'strikeouts'])
+    };
+  } catch (error) {
+    console.error(`[MLB] Error fetching pitcher stats for ${pitcherName}:`, error.message);
+    return { name: pitcherName, era: 'N/A', whip: 'N/A', k9: 'N/A', record: 'N/A' };
+  }
+}
+
+// ============================================================================
+// NHL STARTING GOALIE STATS
+// ============================================================================
+// Daily Faceoff publishes confirmed/projected starters at
+// https://www.dailyfaceoff.com/starting-goalies/. We scrape that page once
+// per refresh and build a map of teamName -> goalie info, then look up each
+// game's home/away goalies. Cached 5 min like other ESPN scrapes.
+
+const goalieCache = { timestamp: 0, data: {} };
+const GOALIE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function fetchNHLGoalieMap() {
+  if (goalieCache.timestamp && (Date.now() - goalieCache.timestamp) < GOALIE_CACHE_TTL_MS) {
+    return goalieCache.data;
+  }
+
+  try {
+    const response = await axios.get('https://www.dailyfaceoff.com/starting-goalies/', {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    const html = response.data;
+
+    // Daily Faceoff renders matchups with team names and goalie names in a
+    // structured layout. We use a permissive scraper: find each team name from
+    // our nhlTeamIds list, look for the nearest goalie name and stats nearby.
+    const goalieMap = {};
+
+    // Strategy: pull all <h6> or similar headers that contain team nicknames,
+    // then grab the next chunk of HTML for the goalie info.
+    Object.keys(nhlTeamIds).forEach(teamNickname => {
+      // Build a regex that finds this team name as a header somewhere in the page
+      const escapedTeam = teamNickname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const teamPattern = new RegExp(`>\\s*${escapedTeam}\\s*<`, 'i');
+      const teamMatch = html.match(teamPattern);
+
+      if (!teamMatch) return;
+
+      const idx = html.indexOf(teamMatch[0]);
+      // Look at the next 2000 chars after the team name for goalie info
+      const chunk = html.substring(idx, idx + 2000);
+
+      // Strip tags to get plain text we can pattern-match
+      const plainText = chunk
+        .replace(/<script[\s\S]*?<\/script>/g, ' ')
+        .replace(/<style[\s\S]*?<\/style>/g, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      // Look for "CONFIRMED" / "PROJECTED" / "UNCONFIRMED" status keywords
+      const statusMatch = plainText.match(/\b(CONFIRMED|PROJECTED|UNCONFIRMED|EXPECTED)\b/i);
+
+      // Look for a goalie name pattern (First Last) that comes after the team
+      // and a stats pattern like "12-8-2" (W-L-OT) or "2.45 GAA" or ".915 SV%"
+      const nameMatch = plainText.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z'\-]+)+)\b/);
+      const recordMatch = plainText.match(/\b(\d{1,2}-\d{1,2}-\d{1,2})\b/);
+      const gaaMatch = plainText.match(/\b(\d\.\d{1,2})\s*(?:GAA)?/);
+      const svMatch = plainText.match(/\b(\.\d{3})\b/);
+
+      if (nameMatch) {
+        goalieMap[teamNickname] = {
+          name: nameMatch[1],
+          status: statusMatch ? statusMatch[1].toUpperCase() : 'UNKNOWN',
+          record: recordMatch ? recordMatch[1] : 'N/A',
+          gaa: gaaMatch ? gaaMatch[1] : 'N/A',
+          svPct: svMatch ? svMatch[1] : 'N/A'
+        };
+      }
+    });
+
+    console.log(`[NHL] Goalie map built: ${Object.keys(goalieMap).length} teams`);
+    goalieCache.timestamp = Date.now();
+    goalieCache.data = goalieMap;
+    return goalieMap;
+  } catch (error) {
+    console.error('[NHL] Goalie scrape error:', error.message);
+    return goalieCache.data || {};
+  }
 }
 
 // ============================================================================
@@ -999,6 +1468,7 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
 
     // Fetch ESPN opening lines once for all games (cached 5 min)
     const espnOpeningLines = await fetchEspnOpeningLines('nba');
+    const eventMap = {};
 
     const gamesWithStats = await Promise.all(events.map(async (event) => {
       const comp = event.competitions[0];
@@ -1008,6 +1478,8 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
       const awayTeamName = awayTeam.team.displayName.split(' ').pop();
       const homeFullName = homeTeam.team.displayName;
       const awayFullName = awayTeam.team.displayName;
+
+      eventMap[`${homeFullName}|${awayFullName}`] = event.id;
 
       const [homeStats, awayStats, homeForm, awayForm, homePace, awayPace, travelData, homeInjuries, awayInjuries] = await Promise.all([
         fetchNBATeamStats(homeTeamName),
@@ -1122,6 +1594,9 @@ Respond ONLY with this JSON shape:
       };
     });
 
+    // Save picks to DB for tracking
+    await savePicksFromGames('nba', formattedGames, eventMap);
+
     return res.json({ sport: 'NBA', games: formattedGames, arbitrageAlerts });
   } catch (error) {
     console.error('NBA Prediction error:', error);
@@ -1148,6 +1623,8 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
     }
 
     const espnOpeningLines = await fetchEspnOpeningLines('nhl');
+    const goalieMap = await fetchNHLGoalieMap();
+    const eventMap = {};
 
     const gamesWithStats = await Promise.all(events.map(async (event) => {
       const comp = event.competitions[0];
@@ -1157,6 +1634,8 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
       const awayTeamName = awayTeam.team.displayName.split(' ').pop();
       const homeFullName = homeTeam.team.displayName;
       const awayFullName = awayTeam.team.displayName;
+
+      eventMap[`${homeFullName}|${awayFullName}`] = event.id;
 
       const [homeStats, awayStats, homeForm, awayForm, travelData, homeInjuries, awayInjuries] = await Promise.all([
         fetchNHLTeamStats(homeTeamName),
@@ -1183,6 +1662,10 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
         homeForm: homeForm,
         awayForm: awayForm,
         travel: travelData,
+        goalies: {
+          home: goalieMap[homeTeamName] || null,
+          away: goalieMap[awayTeamName] || null
+        },
         injuries: { home: homeInjuries, away: awayInjuries },
         odds: odds,
         lineMovement: espnLines,
@@ -1192,7 +1675,8 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
 
     const matched = gamesWithStats.filter(g => g.odds).length;
     const withMovement = gamesWithStats.filter(g => g.lineMovement).length;
-    console.log(`[NHL] Matched odds to ${matched}/${gamesWithStats.length} games, opening lines for ${withMovement}/${gamesWithStats.length}`);
+    const withGoalies = gamesWithStats.filter(g => g.goalies?.home || g.goalies?.away).length;
+    console.log(`[NHL] Matched odds to ${matched}/${gamesWithStats.length}, opening lines ${withMovement}/${gamesWithStats.length}, goalies ${withGoalies}/${gamesWithStats.length}`);
 
     const prompt = `You are an expert NHL analyst. Analyze these games and respond ONLY with valid JSON.
 
@@ -1201,7 +1685,9 @@ ${JSON.stringify(gamesWithStats, null, 2)}
 
 CRITICAL: Use the EXACT odds from the "odds" field. Do not invent odds.
 
-LINE MOVEMENT: Each game has a "lineMovement" field showing OPENING vs CURRENT line, and "sharpSignals". Treat as ONE factor among many. Significant movement (1+ pt spread / 0.5+ goals on total in NHL) suggests sharp money — note in keyFactors when relevant but don't overweight.
+GOALIE MATCHUPS: The "goalies" field contains projected starting goalies with status (CONFIRMED/PROJECTED), record, GAA (goals against average), and SV% (save percentage). GOALIE MATCHUP IS HUGE in NHL — second only to overall team strength. An elite goalie (GAA under 2.50, SV% over .920) vs. a backup (GAA over 3.00) is worth ~0.7 goals. CONFIRMED is more reliable than PROJECTED. Always reference goalies in keyFactors when data is available.
+
+LINE MOVEMENT: "lineMovement" shows OPENING vs CURRENT. Treat as ONE factor among many. Significant movement (1+ pt spread / 0.5+ goals on total) suggests sharp money.
 
 Respond ONLY with:
 {
@@ -1270,6 +1756,9 @@ Respond ONLY with:
       };
     });
 
+    // Save picks to DB for tracking
+    await savePicksFromGames('nhl', formattedGames, eventMap);
+
     return res.json({ sport: 'NHL', games: formattedGames, arbitrageAlerts });
   } catch (error) {
     console.error('NHL Prediction error:', error);
@@ -1296,6 +1785,7 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
     }
 
     const espnOpeningLines = await fetchEspnOpeningLines('mlb');
+    const eventMap = {};
 
     const gamesWithStats = await Promise.all(events.map(async (event) => {
       const comp = event.competitions[0];
@@ -1307,11 +1797,21 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
       const awayFullName = awayTeam.team.displayName;
       const venueName = comp.venue?.fullName || '';
 
-      const [homeStats, awayStats, homeForm, awayForm, homeInjuries, awayInjuries] = await Promise.all([
+      // Map for savePicks lookup later
+      eventMap[`${homeFullName}|${awayFullName}`] = event.id;
+
+      // Extract probable pitchers from ESPN scoreboard data
+      // ESPN puts them at competitions[0].competitors[].probables[]
+      const homeProbable = homeTeam.probables?.[0] || null;
+      const awayProbable = awayTeam.probables?.[0] || null;
+
+      const [homeStats, awayStats, homeForm, awayForm, homePitcher, awayPitcher, homeInjuries, awayInjuries] = await Promise.all([
         fetchMLBTeamStats(homeTeamName),
         fetchMLBTeamStats(awayTeamName),
         fetchMLBRecentGames(homeTeamName),
         fetchMLBRecentGames(awayTeamName),
+        fetchMLBPitcherFromProbable(homeProbable),
+        fetchMLBPitcherFromProbable(awayProbable),
         fetchInjuries(homeFullName, 'mlb'),
         fetchInjuries(awayFullName, 'mlb')
       ]);
@@ -1332,6 +1832,10 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
         awayData: awayStats,
         homeForm: homeForm,
         awayForm: awayForm,
+        pitchers: {
+          home: homePitcher,
+          away: awayPitcher
+        },
         injuries: { home: homeInjuries, away: awayInjuries },
         odds: odds,
         lineMovement: espnLines,
@@ -1341,7 +1845,8 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
 
     const matched = gamesWithStats.filter(g => g.odds).length;
     const withMovement = gamesWithStats.filter(g => g.lineMovement).length;
-    console.log(`[MLB] Matched odds to ${matched}/${gamesWithStats.length} games, opening lines for ${withMovement}/${gamesWithStats.length}`);
+    const withPitchers = gamesWithStats.filter(g => g.pitchers?.home?.era && g.pitchers.home.era !== 'N/A').length;
+    console.log(`[MLB] Matched odds to ${matched}/${gamesWithStats.length}, opening lines ${withMovement}/${gamesWithStats.length}, pitchers ${withPitchers}/${gamesWithStats.length}`);
 
     const prompt = `You are an expert MLB analyst. Analyze these games and respond ONLY with valid JSON.
 
@@ -1350,7 +1855,9 @@ ${JSON.stringify(gamesWithStats, null, 2)}
 
 CRITICAL: Use the EXACT odds from the "odds" field. Do not invent odds.
 
-LINE MOVEMENT: Each game has a "lineMovement" field showing OPENING vs CURRENT line, and "sharpSignals". Treat as ONE factor among many. In MLB, runline rarely moves (it's almost always ±1.5), so focus on TOTAL movement and moneyline movement. Significant movement suggests sharp action — note in keyFactors when relevant but don't overweight.
+PITCHER MATCHUPS: The "pitchers" field contains the probable starting pitchers with ERA, WHIP, K/9. PITCHER MATCHUP IS THE #1 FACTOR IN MLB BETTING — weight it more than anything else. An ace (ERA under 3.00) vs. a weak starter (ERA over 4.50) is worth ~1.5 runs on the total and significant moneyline value. Two aces = strong UNDER lean. Two weak starters = OVER lean. Always reference pitchers in keyFactors.
+
+LINE MOVEMENT: "lineMovement" shows OPENING vs CURRENT. Treat as ONE factor among many. In MLB, runline rarely moves (almost always ±1.5), so focus on TOTAL movement and moneyline movement. Significant movement suggests sharp action.
 
 Respond ONLY with:
 {
@@ -1418,6 +1925,9 @@ Respond ONLY with:
         stats
       };
     });
+
+    // Save picks to DB for tracking
+    await savePicksFromGames('mlb', formattedGames, eventMap);
 
     return res.json({ sport: 'MLB', games: formattedGames, arbitrageAlerts });
   } catch (error) {
@@ -1487,9 +1997,34 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     hasOddsKey: !!process.env.ODDS_API_KEY,
     hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+    hasDatabase: dbReady,
     cachedSports: Object.keys(oddsCache)
   });
 });
+
+// History endpoint — returns picks history and W/L stats
+app.get('/api/history', async (req, res) => {
+  const sport = req.query.sport || null;
+  const stats = await getHistoryStats(sport);
+  res.json(stats);
+});
+
+// Manual grade trigger (for testing)
+app.post('/api/grade', async (req, res) => {
+  await gradePendingPicks();
+  res.json({ ok: true });
+});
+
+// Background grading job — runs every hour
+if (dbReady !== false) {
+  setInterval(() => {
+    gradePendingPicks().catch(e => console.error('[GRADE_JOB]', e.message));
+  }, 60 * 60 * 1000);
+  // Also run once 30 seconds after startup (gives DB time to initialize)
+  setTimeout(() => {
+    gradePendingPicks().catch(e => console.error('[GRADE_JOB]', e.message));
+  }, 30000);
+}
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
