@@ -18,6 +18,10 @@ const anthropic = new Anthropic({
 const oddsCache = {};
 const ODDS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+// Separate cache for ESPN opening-line scrapes (also 5 min)
+const espnOddsCache = {};
+const ESPN_ODDS_CACHE_TTL_MS = 5 * 60 * 1000;
+
 // ============================================================================
 // NBA TEAM IDS & LOCATIONS
 // ============================================================================
@@ -399,8 +403,12 @@ function getBallparkFactor(venueName) {
 // ============================================================================
 // INJURY SCRAPER (ESPN)
 // ============================================================================
+// FIX: Original used team nicknames like "Celtics" but ESPN's injury page
+// groups players under full names like "Boston Celtics". The nickname-only
+// regex would sometimes match the wrong element or miss the team entirely.
+// Now we accept and search for the FULL team name passed in from the scoreboard.
 
-async function fetchInjuries(teamName, sport) {
+async function fetchInjuries(teamFullName, sport) {
   try {
     const sportUrls = {
       'nba': 'https://www.espn.com/nba/injuries',
@@ -417,12 +425,35 @@ async function fetchInjuries(teamName, sport) {
     const html = response.data;
 
     const injuries = [];
-    const teamMatch = html.match(new RegExp(`>${teamName}[^<]*<`, 'i'));
-    if (!teamMatch) return [];
 
-    const teamSectionStart = html.indexOf(teamMatch[0]);
-    const nextTeamStart = html.indexOf('ResponsiveTable', teamSectionStart + 500);
-    const teamSection = html.substring(teamSectionStart, nextTeamStart > 0 ? nextTeamStart : teamSectionStart + 3000);
+    // Escape special regex chars in team name (handles "76ers", "Trail Blazers", etc.)
+    const escapedName = teamFullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // ESPN wraps team names in various tags; look for the team name as a "header" element
+    // Match patterns like: >Boston Celtics< or "Boston Celtics" inside JSON
+    const patterns = [
+      new RegExp(`>\\s*${escapedName}\\s*<`, 'i'),
+      new RegExp(`"${escapedName}"`, 'i'),
+      new RegExp(`>${escapedName}[^<]*<`, 'i')
+    ];
+
+    let teamMatchIdx = -1;
+    for (const pattern of patterns) {
+      const m = html.match(pattern);
+      if (m) {
+        teamMatchIdx = html.indexOf(m[0]);
+        break;
+      }
+    }
+
+    if (teamMatchIdx === -1) {
+      console.log(`[INJURIES] No section found for ${teamFullName} on ${sport}`);
+      return [];
+    }
+
+    // Find the team's injury table — look for the next ResponsiveTable or end-of-section marker
+    const nextTeamStart = html.indexOf('ResponsiveTable', teamMatchIdx + 500);
+    const teamSection = html.substring(teamMatchIdx, nextTeamStart > 0 ? nextTeamStart : teamMatchIdx + 5000);
 
     const rowMatches = [...teamSection.matchAll(/<tr[^>]*>(.*?)<\/tr>/gs)];
     rowMatches.forEach(match => {
@@ -446,11 +477,267 @@ async function fetchInjuries(teamName, sport) {
         }
       }
     });
+
+    if (injuries.length > 0) {
+      console.log(`[INJURIES] Found ${injuries.length} for ${teamFullName}`);
+    }
     return injuries;
   } catch (error) {
-    console.error(`Error fetching injuries for ${teamName}:`, error.message);
+    console.error(`[INJURIES] Error fetching ${teamFullName}:`, error.message);
     return [];
   }
+}
+
+// ============================================================================
+// ESPN OPENING LINES SCRAPER (TRUE OPENING LINES — what Vegas posted)
+// ============================================================================
+// ESPN's odds page shows both the OPENING line (what the book first posted)
+// and the CURRENT line, side by side for every game. This is the real opening
+// line, not a snapshot we took ourselves — exactly what we want for sharp
+// money detection.
+//
+// Format example for one team row:
+//   Lakers   -1.5 -112    -1.5 -108    o226.5 -105    -122
+//   ^team    ^OPEN spread ^CURRENT spr ^CURRENT total ^CURRENT ML
+// And for the other team:
+//   Pistons  u228.5 -115  +1.5 -112    u226.5 -115    +102
+//   ^team    ^OPEN total  ^CURRENT spr ^CURRENT total ^CURRENT ML
+//
+// Each game has two team rows. The OPEN column shows opening spread on the
+// favorite's row and opening total on the underdog's row (or vice versa).
+
+async function fetchEspnOpeningLines(sport) {
+  // Check cache first
+  const cached = espnOddsCache[sport];
+  if (cached && (Date.now() - cached.timestamp) < ESPN_ODDS_CACHE_TTL_MS) {
+    const ageSec = Math.round((Date.now() - cached.timestamp) / 1000);
+    console.log(`[ESPN_ODDS] Cache hit for ${sport} (${ageSec}s old, ${Object.keys(cached.data).length} games)`);
+    return cached.data;
+  }
+
+  const sportUrls = {
+    'nba': 'https://www.espn.com/nba/odds',
+    'nhl': 'https://www.espn.com/nhl/odds',
+    'mlb': 'https://www.espn.com/mlb/odds'
+  };
+  const url = sportUrls[sport];
+  if (!url) return {};
+
+  console.log(`[ESPN_ODDS] Fetching ${sport} opening lines from ESPN...`);
+
+  try {
+    const response = await axios.get(url, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    const html = response.data;
+
+    // Result map: gameId -> { openSpread, currentSpread, openTotal, currentTotal, openHomeML, currentHomeML, ... }
+    const result = {};
+
+    // Find all game blocks. Each game is anchored by a /nba/game/_/gameId/<NUMBER>/ link.
+    // Use that link to identify the game and extract the surrounding row data.
+    const gameIdPattern = new RegExp(`/${sport}/game/_/gameId/(\\d+)/`, 'g');
+    const gameIdMatches = [...html.matchAll(gameIdPattern)];
+
+    // De-duplicate game IDs (each game ID appears multiple times in the HTML)
+    const seenGameIds = new Set();
+
+    for (const gidMatch of gameIdMatches) {
+      const gameId = gidMatch[1];
+      if (seenGameIds.has(gameId)) continue;
+      seenGameIds.add(gameId);
+
+      // Get a chunk of HTML around this game ID — should contain both team rows
+      const startIdx = gidMatch.index;
+      // Look for the next game ID or end of slate to bound this game's HTML
+      const nextGameMatch = html.indexOf('/game/_/gameId/', startIdx + 50);
+      const endIdx = nextGameMatch > 0 ? nextGameMatch + 200 : startIdx + 8000;
+      const gameHtml = html.substring(startIdx, endIdx);
+
+      // Strip HTML tags and decode entities to get plain text we can pattern-match
+      const plainText = gameHtml
+        .replace(/<script[\s\S]*?<\/script>/g, ' ')
+        .replace(/<style[\s\S]*?<\/style>/g, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      // Extract all betting numbers from the row in order.
+      // Patterns we expect: spreads like "-1.5" or "+12.5", totals like "o226.5" or "u228.5",
+      // moneylines like "-122" or "+102" or "+550", and prices like "-110" or "-115".
+      // Numbers appear in this column order for each team row:
+      //   [team name + record] [OPEN value + price] [SPREAD pt + price] [TOTAL ou + price] [ML]
+      //
+      // Strategy: pull out all "betting tokens" in order and assign them by position.
+
+      // Pull tokens: a spread/ML number is just +/- digits with optional .5
+      //              a total is "o" or "u" followed by digits
+      //              a price is +/- digits (typically -100 to -120 range, or +100 to +200)
+      const tokenPattern = /([ou][\d.]+|[+\-]\d+\.?\d*)/g;
+      const tokens = plainText.match(tokenPattern) || [];
+
+      // Filter out the team records like "(46-25)" — these come through as "-25" "+46" etc.
+      // A valid betting token is either: starts with o/u, OR is between -2000 and +2000 ish.
+      // Records are typically small numbers in parens; we can spot them by checking if
+      // they're surrounded by parens in the original text.
+      const recordPattern = /\(\d+-\d+\)/g;
+      const records = plainText.match(recordPattern) || [];
+      // Remove record numbers from our token list
+      const recordNumbers = new Set();
+      records.forEach(r => {
+        const nums = r.match(/\d+/g);
+        if (nums) nums.forEach(n => recordNumbers.add(n));
+      });
+
+      const cleanTokens = tokens.filter(t => {
+        if (t.startsWith('o') || t.startsWith('u')) return true;
+        const num = t.replace(/[+\-]/, '');
+        // If this number appears in a record, it's not a betting token
+        // (this is imperfect but catches most cases)
+        return !recordNumbers.has(num) || Math.abs(parseFloat(t)) >= 100;
+      });
+
+      // For each game we expect roughly 14 tokens (7 per team row):
+      //   open_value, open_price, current_spread, current_spread_price,
+      //   current_total, current_total_price, current_ml
+      // Times two teams = 14. In practice ESPN's layout varies, so we'll be lenient.
+
+      if (cleanTokens.length >= 10) {
+        // Try to identify the OPEN spread (first +/- number that isn't a price)
+        // and OPEN total (first o/u number)
+        let openSpread = null, openTotal = null;
+        let currentSpread = null, currentTotal = null;
+        let homeML = null, awayML = null;
+
+        // First team row tokens: typically [open_spread, open_spread_price, current_spread, current_spread_price, current_total, current_total_price, current_ml]
+        // Find the first o/u token — that's an OPEN total (since one team's open is total, one's is spread)
+        const firstTotalIdx = cleanTokens.findIndex(t => t.startsWith('o') || t.startsWith('u'));
+
+        if (firstTotalIdx !== -1) {
+          openTotal = parseFloat(cleanTokens[firstTotalIdx].replace(/[ou]/, ''));
+        }
+
+        // First +/- token that's a "spread-shaped" number (between -30 and +30, often with .5)
+        const isSpreadShaped = (t) => {
+          const n = parseFloat(t);
+          return !isNaN(n) && Math.abs(n) <= 30 && (t.includes('.') || Math.abs(n) <= 20);
+        };
+        const firstSpreadIdx = cleanTokens.findIndex(t => !t.startsWith('o') && !t.startsWith('u') && isSpreadShaped(t));
+        if (firstSpreadIdx !== -1) {
+          openSpread = parseFloat(cleanTokens[firstSpreadIdx]);
+        }
+
+        // Find current spread: the SECOND spread-shaped number
+        let spreadCount = 0;
+        for (const t of cleanTokens) {
+          if (!t.startsWith('o') && !t.startsWith('u') && isSpreadShaped(t)) {
+            spreadCount++;
+            if (spreadCount === 2) {
+              currentSpread = parseFloat(t);
+              break;
+            }
+          }
+        }
+
+        // Find current total: the SECOND o/u number
+        let totalCount = 0;
+        for (const t of cleanTokens) {
+          if (t.startsWith('o') || t.startsWith('u')) {
+            totalCount++;
+            if (totalCount === 2) {
+              currentTotal = parseFloat(t.replace(/[ou]/, ''));
+              break;
+            }
+          }
+        }
+
+        // Moneylines: typically larger absolute numbers (>= 100), and they appear last in each row
+        const mlCandidates = cleanTokens.filter(t => {
+          if (t.startsWith('o') || t.startsWith('u')) return false;
+          const n = parseFloat(t);
+          return !isNaN(n) && Math.abs(n) >= 100 && Math.abs(n) <= 5000;
+        });
+
+        if (mlCandidates.length >= 2) {
+          awayML = parseFloat(mlCandidates[mlCandidates.length - 2]);
+          homeML = parseFloat(mlCandidates[mlCandidates.length - 1]);
+        }
+
+        result[gameId] = {
+          openSpread,
+          currentSpread,
+          openTotal,
+          currentTotal,
+          homeML,
+          awayML,
+          spreadMovement: (openSpread !== null && currentSpread !== null)
+            ? +(currentSpread - openSpread).toFixed(1)
+            : null,
+          totalMovement: (openTotal !== null && currentTotal !== null)
+            ? +(currentTotal - openTotal).toFixed(1)
+            : null
+        };
+      }
+    }
+
+    console.log(`[ESPN_ODDS] Parsed ${Object.keys(result).length} ${sport} games with opening lines`);
+    espnOddsCache[sport] = { timestamp: Date.now(), data: result };
+    return result;
+  } catch (error) {
+    console.error(`[ESPN_ODDS] Error fetching ${sport}:`, error.message);
+    if (cached) {
+      console.log(`[ESPN_ODDS] Falling back to stale cache for ${sport}`);
+      return cached.data;
+    }
+    return {};
+  }
+}
+
+// Determine "sharp side" from line movement
+// Reverse line movement = line moved against the public favorite = sharp signal
+function analyzeSharpAction(spreadMovement, totalMovement) {
+  const signals = [];
+
+  if (spreadMovement !== null) {
+    if (Math.abs(spreadMovement) >= 2) {
+      signals.push({
+        market: 'spread',
+        magnitude: 'strong',
+        direction: spreadMovement > 0 ? 'toward away/underdog' : 'toward home/favorite',
+        movement: spreadMovement
+      });
+    } else if (Math.abs(spreadMovement) >= 1) {
+      signals.push({
+        market: 'spread',
+        magnitude: 'moderate',
+        direction: spreadMovement > 0 ? 'toward away/underdog' : 'toward home/favorite',
+        movement: spreadMovement
+      });
+    }
+  }
+
+  if (totalMovement !== null) {
+    if (Math.abs(totalMovement) >= 2) {
+      signals.push({
+        market: 'total',
+        magnitude: 'strong',
+        direction: totalMovement > 0 ? 'toward OVER' : 'toward UNDER',
+        movement: totalMovement
+      });
+    } else if (Math.abs(totalMovement) >= 1) {
+      signals.push({
+        market: 'total',
+        magnitude: 'moderate',
+        direction: totalMovement > 0 ? 'toward OVER' : 'toward UNDER',
+        movement: totalMovement
+      });
+    }
+  }
+
+  return signals;
 }
 
 // ============================================================================
@@ -710,12 +997,17 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
       return res.json({ sport: 'NBA', games: [], arbitrageAlerts: [], message: 'No NBA games scheduled' });
     }
 
+    // Fetch ESPN opening lines once for all games (cached 5 min)
+    const espnOpeningLines = await fetchEspnOpeningLines('nba');
+
     const gamesWithStats = await Promise.all(events.map(async (event) => {
       const comp = event.competitions[0];
       const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
       const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
       const homeTeamName = homeTeam.team.displayName.split(' ').pop();
       const awayTeamName = awayTeam.team.displayName.split(' ').pop();
+      const homeFullName = homeTeam.team.displayName;
+      const awayFullName = awayTeam.team.displayName;
 
       const [homeStats, awayStats, homeForm, awayForm, homePace, awayPace, travelData, homeInjuries, awayInjuries] = await Promise.all([
         fetchNBATeamStats(homeTeamName),
@@ -725,16 +1017,21 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
         fetchPaceData(homeTeamName),
         fetchPaceData(awayTeamName),
         fetchTravelData(awayTeamName, homeTeamName),
-        fetchInjuries(homeTeamName, 'nba'),
-        fetchInjuries(awayTeamName, 'nba')
+        fetchInjuries(homeFullName, 'nba'),  // FIX: pass full name not nickname
+        fetchInjuries(awayFullName, 'nba')   // FIX: pass full name not nickname
       ]);
 
-      // FIX: Use new matchOddsToGame helper instead of broken inline matching
-      const odds = matchOddsToGame(oddsData, homeTeam.team.displayName, awayTeam.team.displayName);
+      const odds = matchOddsToGame(oddsData, homeFullName, awayFullName);
+
+      // Look up opening lines from ESPN by game ID
+      const espnLines = espnOpeningLines[event.id] || null;
+      const sharpSignals = espnLines
+        ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
+        : [];
 
       return {
-        homeTeam: homeTeam.team.displayName,
-        awayTeam: awayTeam.team.displayName,
+        homeTeam: homeFullName,
+        awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
         homeData: homeStats,
         awayData: awayStats,
@@ -747,12 +1044,15 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
         },
         travel: travelData,
         injuries: { home: homeInjuries, away: awayInjuries },
-        odds: odds
+        odds: odds,
+        lineMovement: espnLines,
+        sharpSignals: sharpSignals
       };
     }));
 
     const matched = gamesWithStats.filter(g => g.odds).length;
-    console.log(`[NBA] Matched odds to ${matched}/${gamesWithStats.length} games`);
+    const withMovement = gamesWithStats.filter(g => g.lineMovement).length;
+    console.log(`[NBA] Matched odds to ${matched}/${gamesWithStats.length} games, opening lines for ${withMovement}/${gamesWithStats.length}`);
 
     const prompt = `You are an expert NBA analyst. Analyze these games and respond ONLY with a valid JSON object.
 
@@ -762,6 +1062,8 @@ ${JSON.stringify(gamesWithStats, null, 2)}
 For each game predict: spread pick (or "No edge" if edge < 2%), total pick, confidence (Low/Medium/High), and 3-5 key factors.
 
 CRITICAL: Use the EXACT odds from the "odds" field for spread/total/homeML/awayML. Do not invent odds.
+
+LINE MOVEMENT: Each game has a "lineMovement" field showing the OPENING line vs CURRENT line, and a "sharpSignals" field. Treat this as ONE factor among many — don't overweight it. When the line has moved significantly (1+ point on spread, 1+ point on total), mention which side the move suggests sharp money is on, and note it in keyFactors. Reverse line movement (line moving against where the public would bet) is a sharp signal but not definitive.
 
 Respond ONLY with this JSON shape:
 {
@@ -814,6 +1116,8 @@ Respond ONLY with this JSON shape:
         homeML: stats?.odds?.homeML ?? game.homeML,
         awayML: stats?.odds?.awayML ?? game.awayML,
         bookmaker: stats?.odds?.bookmaker ?? null,
+        lineMovement: stats?.lineMovement ?? null,
+        sharpSignals: stats?.sharpSignals ?? [],
         stats
       };
     });
@@ -843,12 +1147,16 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
       return res.json({ sport: 'NHL', games: [], arbitrageAlerts: [], message: 'No NHL games scheduled' });
     }
 
+    const espnOpeningLines = await fetchEspnOpeningLines('nhl');
+
     const gamesWithStats = await Promise.all(events.map(async (event) => {
       const comp = event.competitions[0];
       const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
       const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
       const homeTeamName = homeTeam.team.displayName.split(' ').pop();
       const awayTeamName = awayTeam.team.displayName.split(' ').pop();
+      const homeFullName = homeTeam.team.displayName;
+      const awayFullName = awayTeam.team.displayName;
 
       const [homeStats, awayStats, homeForm, awayForm, travelData, homeInjuries, awayInjuries] = await Promise.all([
         fetchNHLTeamStats(homeTeamName),
@@ -856,15 +1164,19 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
         fetchNHLRecentGames(homeTeamName),
         fetchNHLRecentGames(awayTeamName),
         fetchTravelData(awayTeamName, homeTeamName),
-        fetchInjuries(homeTeamName, 'nhl'),
-        fetchInjuries(awayTeamName, 'nhl')
+        fetchInjuries(homeFullName, 'nhl'),
+        fetchInjuries(awayFullName, 'nhl')
       ]);
 
-      const odds = matchOddsToGame(oddsData, homeTeam.team.displayName, awayTeam.team.displayName);
+      const odds = matchOddsToGame(oddsData, homeFullName, awayFullName);
+      const espnLines = espnOpeningLines[event.id] || null;
+      const sharpSignals = espnLines
+        ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
+        : [];
 
       return {
-        homeTeam: homeTeam.team.displayName,
-        awayTeam: awayTeam.team.displayName,
+        homeTeam: homeFullName,
+        awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
         homeData: homeStats,
         awayData: awayStats,
@@ -872,12 +1184,15 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
         awayForm: awayForm,
         travel: travelData,
         injuries: { home: homeInjuries, away: awayInjuries },
-        odds: odds
+        odds: odds,
+        lineMovement: espnLines,
+        sharpSignals: sharpSignals
       };
     }));
 
     const matched = gamesWithStats.filter(g => g.odds).length;
-    console.log(`[NHL] Matched odds to ${matched}/${gamesWithStats.length} games`);
+    const withMovement = gamesWithStats.filter(g => g.lineMovement).length;
+    console.log(`[NHL] Matched odds to ${matched}/${gamesWithStats.length} games, opening lines for ${withMovement}/${gamesWithStats.length}`);
 
     const prompt = `You are an expert NHL analyst. Analyze these games and respond ONLY with valid JSON.
 
@@ -885,6 +1200,8 @@ GAMES DATA:
 ${JSON.stringify(gamesWithStats, null, 2)}
 
 CRITICAL: Use the EXACT odds from the "odds" field. Do not invent odds.
+
+LINE MOVEMENT: Each game has a "lineMovement" field showing OPENING vs CURRENT line, and "sharpSignals". Treat as ONE factor among many. Significant movement (1+ pt spread / 0.5+ goals on total in NHL) suggests sharp money — note in keyFactors when relevant but don't overweight.
 
 Respond ONLY with:
 {
@@ -938,6 +1255,8 @@ Respond ONLY with:
         homeML: stats?.odds?.homeML ?? game.homeML,
         awayML: stats?.odds?.awayML ?? game.awayML,
         bookmaker: stats?.odds?.bookmaker ?? null,
+        lineMovement: stats?.lineMovement ?? null,
+        sharpSignals: stats?.sharpSignals ?? [],
         predictedScore: game.predictedScore,
         spreadPick: game.puckLinePick,
         spreadEdge: game.puckLineEdge,
@@ -976,12 +1295,16 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
       return res.json({ sport: 'MLB', games: [], arbitrageAlerts: [], message: 'No MLB games scheduled' });
     }
 
+    const espnOpeningLines = await fetchEspnOpeningLines('mlb');
+
     const gamesWithStats = await Promise.all(events.map(async (event) => {
       const comp = event.competitions[0];
       const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
       const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
       const homeTeamName = homeTeam.team.displayName.split(' ').pop();
       const awayTeamName = awayTeam.team.displayName.split(' ').pop();
+      const homeFullName = homeTeam.team.displayName;
+      const awayFullName = awayTeam.team.displayName;
       const venueName = comp.venue?.fullName || '';
 
       const [homeStats, awayStats, homeForm, awayForm, homeInjuries, awayInjuries] = await Promise.all([
@@ -989,15 +1312,19 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
         fetchMLBTeamStats(awayTeamName),
         fetchMLBRecentGames(homeTeamName),
         fetchMLBRecentGames(awayTeamName),
-        fetchInjuries(homeTeamName, 'mlb'),
-        fetchInjuries(awayTeamName, 'mlb')
+        fetchInjuries(homeFullName, 'mlb'),
+        fetchInjuries(awayFullName, 'mlb')
       ]);
 
-      const odds = matchOddsToGame(oddsData, homeTeam.team.displayName, awayTeam.team.displayName);
+      const odds = matchOddsToGame(oddsData, homeFullName, awayFullName);
+      const espnLines = espnOpeningLines[event.id] || null;
+      const sharpSignals = espnLines
+        ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
+        : [];
 
       return {
-        homeTeam: homeTeam.team.displayName,
-        awayTeam: awayTeam.team.displayName,
+        homeTeam: homeFullName,
+        awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
         venue: venueName,
         ballparkFactor: getBallparkFactor(venueName),
@@ -1006,12 +1333,15 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
         homeForm: homeForm,
         awayForm: awayForm,
         injuries: { home: homeInjuries, away: awayInjuries },
-        odds: odds
+        odds: odds,
+        lineMovement: espnLines,
+        sharpSignals: sharpSignals
       };
     }));
 
     const matched = gamesWithStats.filter(g => g.odds).length;
-    console.log(`[MLB] Matched odds to ${matched}/${gamesWithStats.length} games`);
+    const withMovement = gamesWithStats.filter(g => g.lineMovement).length;
+    console.log(`[MLB] Matched odds to ${matched}/${gamesWithStats.length} games, opening lines for ${withMovement}/${gamesWithStats.length}`);
 
     const prompt = `You are an expert MLB analyst. Analyze these games and respond ONLY with valid JSON.
 
@@ -1019,6 +1349,8 @@ GAMES DATA:
 ${JSON.stringify(gamesWithStats, null, 2)}
 
 CRITICAL: Use the EXACT odds from the "odds" field. Do not invent odds.
+
+LINE MOVEMENT: Each game has a "lineMovement" field showing OPENING vs CURRENT line, and "sharpSignals". Treat as ONE factor among many. In MLB, runline rarely moves (it's almost always ±1.5), so focus on TOTAL movement and moneyline movement. Significant movement suggests sharp action — note in keyFactors when relevant but don't overweight.
 
 Respond ONLY with:
 {
@@ -1072,6 +1404,8 @@ Respond ONLY with:
         homeML: stats?.odds?.homeML ?? game.homeML,
         awayML: stats?.odds?.awayML ?? game.awayML,
         bookmaker: stats?.odds?.bookmaker ?? null,
+        lineMovement: stats?.lineMovement ?? null,
+        sharpSignals: stats?.sharpSignals ?? [],
         predictedScore: game.predictedScore,
         spreadPick: game.runLinePick,
         spreadEdge: game.runLineEdge,
