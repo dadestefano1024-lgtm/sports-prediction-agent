@@ -839,3 +839,97 @@ test('blendSeasonRatings degenerate inputs', () => {
   assert.throws(() => m.blendSeasonRatings({
     prior: mkRated(22, { A: [30, 16, 17] }), current, gamesForFullWeight: 0 }));
 });
+
+// ----------------------------------------------------------------------------
+test('priceGame prefers a materially better number over a better price', () => {
+  // Home is a slight underdog. One book offers +3, another +1 at a keener
+  // price. Two points of cushion is worth far more than five cents of juice,
+  // and the old consensus-point logic could not express that at all.
+  const g = m.priceGame({
+    sport: 'nfl', predictedMargin: -1,
+    spreadQuotes: [
+      { book: 'Generous', point: 3, homePrice: -110, awayPrice: -110 },
+      { book: 'Stingy', point: 1, homePrice: -105, awayPrice: -115 },
+    ],
+    homeTeam: 'Bears', awayTeam: 'Packers', trust: 1,
+  });
+  assert.ok(g.spread, 'a side should be backable');
+  assert.equal(g.spread.side, 'home');
+  assert.equal(g.spread.book, 'Generous', 'the better number must win');
+  close(g.spread.point, 3, 1e-9);
+  assert.equal(g.spread.pick, 'Bears +3');
+});
+
+test('priceGame prefers the better price when the number is identical', () => {
+  const g = m.priceGame({
+    sport: 'nfl', predictedMargin: 6,
+    spreadQuotes: [
+      { book: 'Worse', point: -3.5, homePrice: -120, awayPrice: +100 },
+      { book: 'Better', point: -3.5, homePrice: -105, awayPrice: -115 },
+    ],
+    homeTeam: 'Chiefs', awayTeam: 'Raiders', trust: 1,
+  });
+  assert.ok(g.spread);
+  assert.equal(g.spread.book, 'Better');
+  assert.equal(g.spread.side, 'home');
+});
+
+test('priceGame shops each side independently across books', () => {
+  // The best home number and the best away number live at different books,
+  // which is the normal case rather than the exception.
+  const g = m.priceGame({
+    sport: 'nfl', predictedMargin: -8,
+    spreadQuotes: [
+      { book: 'HomeFriendly', point: 6, homePrice: -110, awayPrice: -110 },
+      { book: 'AwayFriendly', point: 2, homePrice: -110, awayPrice: -110 },
+    ],
+    homeTeam: 'Jets', awayTeam: 'Bills', trust: 1,
+  });
+  // Home is projected to lose by 8, so the away side wants the SMALLEST home
+  // number: laying 2 rather than 6.
+  assert.ok(g.spread);
+  assert.equal(g.spread.side, 'away');
+  assert.equal(g.spread.book, 'AwayFriendly');
+  assert.equal(g.spread.pick, 'Bills -2');
+});
+
+test('priceGame shops totals on the number too', () => {
+  const g = m.priceGame({
+    sport: 'nfl', predictedMargin: 0, predictedTotal: 52,
+    totalQuotes: [
+      { book: 'HighTotal', point: 48.5, overPrice: -110, underPrice: -110 },
+      { book: 'LowTotal', point: 44.5, overPrice: -110, underPrice: -110 },
+    ],
+    trust: 1,
+  });
+  assert.ok(g.total, 'projecting 52 against these lines should back the over');
+  assert.equal(g.total.side, 'over');
+  assert.equal(g.total.book, 'LowTotal', 'the over wants the lowest number');
+  assert.equal(g.total.pick, 'Over 44.5');
+});
+
+test('priceGame still works from a single consensus quote', () => {
+  // The old call shape must keep behaving, since three sports still use it.
+  const g = m.priceGame({
+    sport: 'nba', predictedMargin: 9, predictedTotal: 230,
+    spread: -3, spreadHomePrice: -110, spreadAwayPrice: -110,
+    total: 220, overPrice: -110, underPrice: -110,
+    homeTeam: 'Lakers', awayTeam: 'Suns', trust: 0.25,
+  });
+  assert.ok(g.spread && g.spread.side === 'home');
+  assert.equal(g.spread.book, null, 'no book is named when none was supplied');
+  assert.ok(g.total && g.total.side === 'over');
+});
+
+test('priceGame ignores quotes with an unusable point', () => {
+  const g = m.priceGame({
+    sport: 'nfl', predictedMargin: 6,
+    spreadQuotes: [
+      { book: 'Broken', point: null, homePrice: -110, awayPrice: -110 },
+      { book: 'Fine', point: -3.5, homePrice: -110, awayPrice: -110 },
+    ],
+    trust: 1,
+  });
+  assert.ok(g.spread);
+  assert.equal(g.spread.book, 'Fine');
+});

@@ -486,47 +486,88 @@ function priceGame({
   sport, predictedMargin, predictedTotal,
   spread, spreadHomePrice, spreadAwayPrice,
   total, overPrice, underPrice,
+  spreadQuotes, totalQuotes,
   homeTeam = 'Home', awayTeam = 'Away',
   trust = 0.25, kellyFraction = 0.25,
 }) {
   const cfg = sportConfig(sport);
   const out = { spread: null, total: null };
+  const sign = (n) => `${n > 0 ? '+' : ''}${n}`;
 
-  if (Number.isFinite(spread) && Number.isFinite(predictedMargin)) {
-    const hp = Number.isFinite(spreadHomePrice) ? spreadHomePrice : DEFAULT_PRICE;
-    const ap = Number.isFinite(spreadAwayPrice) ? spreadAwayPrice : DEFAULT_PRICE;
-    // Win/push/loss rather than a bare cover probability, so a whole-number
-    // spread can push. Both sides share the same push chance.
-    const outcomes = coverOutcomes({ predictedMargin, spread, sigma: cfg.sigma, sport });
-    const resolved = outcomes.win + outcomes.loss;
-    const homeProb = resolved > 0 ? outcomes.win / resolved : 0.5;
-    const pushProb = outcomes.push;
+  // Per-book quotes when the caller has them, otherwise the single consensus
+  // number. Each book is priced on its OWN point, because books disagree about
+  // the number as often as about the price and a point is worth far more.
+  if (Number.isFinite(predictedMargin)) {
+    const quotes = (Array.isArray(spreadQuotes) && spreadQuotes.length)
+      ? spreadQuotes
+      : (Number.isFinite(spread)
+        ? [{ book: null, point: spread, homePrice: spreadHomePrice, awayPrice: spreadAwayPrice }]
+        : []);
 
-    const home = { ...priceSide({ americanOdds: hp, oppositeAmericanOdds: ap, modelProb: homeProb, pushProb, trust, kellyFraction }),
-                   side: 'home', line: spread, pick: `${homeTeam} ${spread > 0 ? '+' : ''}${spread}` };
-    const away = { ...priceSide({ americanOdds: ap, oppositeAmericanOdds: hp, modelProb: 1 - homeProb, pushProb, trust, kellyFraction }),
-                   side: 'away', line: -spread, pick: `${awayTeam} ${-spread > 0 ? '+' : ''}${-spread}` };
+    const side = (which) => bestOffer({
+      quotes: quotes.map(q => ({
+        book: q.book,
+        point: q.point,
+        price: (which === 'home' ? q.homePrice : q.awayPrice) ?? DEFAULT_PRICE,
+        oppositePrice: (which === 'home' ? q.awayPrice : q.homePrice) ?? DEFAULT_PRICE,
+      })),
+      trust,
+      kellyFraction,
+      probFor: (pt) => {
+        const o = coverOutcomes({ predictedMargin, spread: pt, sigma: cfg.sigma, sport });
+        // The away side wins exactly when the home side does not.
+        return which === 'home' ? o : { win: o.loss, push: o.push, loss: o.win };
+      },
+    });
 
-    const winner = bestSide(home, away);
-    if (winner) out.spread = { ...winner, confidence: confidenceFromEdge(winner.edge) };
+    const home = side('home');
+    const away = side('away');
+    const withPick = [
+      home && { ...home, side: 'home', line: home.point, pick: `${homeTeam} ${sign(home.point)}` },
+      away && { ...away, side: 'away', line: -away.point, pick: `${awayTeam} ${sign(-away.point)}` },
+    ].filter(x => x && x.expectedValue > 0 && x.stake > 0);
+
+    if (withPick.length) {
+      const winner = withPick.reduce((b, x) => (x.expectedValue > b.expectedValue ? x : b));
+      out.spread = { ...winner, confidence: confidenceFromEdge(winner.edge) };
+    }
   }
 
-  if (Number.isFinite(total) && Number.isFinite(predictedTotal)) {
-    const op = Number.isFinite(overPrice) ? overPrice : DEFAULT_PRICE;
-    const up = Number.isFinite(underPrice) ? underPrice : DEFAULT_PRICE;
-    // Over/push/under, so a whole-number total can push. Both sides share it.
-    const tOut = totalOutcomes({ predictedTotal, line: total, sigma: cfg.totalSigma });
-    const tResolved = tOut.over + tOut.under;
-    const overProb = tResolved > 0 ? tOut.over / tResolved : 0.5;
-    const totalPush = tOut.push;
+  if (Number.isFinite(predictedTotal)) {
+    const quotes = (Array.isArray(totalQuotes) && totalQuotes.length)
+      ? totalQuotes
+      : (Number.isFinite(total)
+        ? [{ book: null, point: total, overPrice, underPrice }]
+        : []);
 
-    const over = { ...priceSide({ americanOdds: op, oppositeAmericanOdds: up, modelProb: overProb, pushProb: totalPush, trust, kellyFraction }),
-                   side: 'over', line: total, pick: `Over ${total}` };
-    const under = { ...priceSide({ americanOdds: up, oppositeAmericanOdds: op, modelProb: 1 - overProb, pushProb: totalPush, trust, kellyFraction }),
-                    side: 'under', line: total, pick: `Under ${total}` };
+    const side = (which) => bestOffer({
+      quotes: quotes.map(q => ({
+        book: q.book,
+        point: q.point,
+        price: (which === 'over' ? q.overPrice : q.underPrice) ?? DEFAULT_PRICE,
+        oppositePrice: (which === 'over' ? q.underPrice : q.overPrice) ?? DEFAULT_PRICE,
+      })),
+      trust,
+      kellyFraction,
+      probFor: (pt) => {
+        const o = totalOutcomes({ predictedTotal, line: pt, sigma: cfg.totalSigma });
+        return which === 'over'
+          ? { win: o.over, push: o.push, loss: o.under }
+          : { win: o.under, push: o.push, loss: o.over };
+      },
+    });
 
-    const winner = bestSide(over, under);
-    if (winner) out.total = { ...winner, confidence: confidenceFromEdge(winner.edge) };
+    const over = side('over');
+    const under = side('under');
+    const withPick = [
+      over && { ...over, side: 'over', line: over.point, pick: `Over ${over.point}` },
+      under && { ...under, side: 'under', line: under.point, pick: `Under ${under.point}` },
+    ].filter(x => x && x.expectedValue > 0 && x.stake > 0);
+
+    if (withPick.length) {
+      const winner = withPick.reduce((b, x) => (x.expectedValue > b.expectedValue ? x : b));
+      out.total = { ...winner, confidence: confidenceFromEdge(winner.edge) };
+    }
   }
 
   return out;
@@ -964,6 +1005,50 @@ function blendSeasonRatings({ prior, current, gamesForFullWeight = 8, priorRegre
   return { leagueAvg, ratings, blended: true };
 }
 
+/**
+ * Price a side against every book's actual offer and keep the best.
+ *
+ * priceGame used to take one point and one price per side, which forced every
+ * book onto a consensus number. That discards the larger half of line shopping:
+ * books disagree on the POINT, not just the price, and a full point apart is
+ * common. A point is worth several percent of win probability, where a price
+ * difference is worth a fraction of one.
+ *
+ * Each quote is de-vigged against its OWN opposing price, which is the only
+ * correct way to do it — two sides at different points are not a two-way market
+ * and cannot be de-vigged against each other. The best offer is then whichever
+ * quote produces the highest expected value, which naturally prefers a better
+ * number over a better price without needing a rule about it.
+ *
+ * `quotes` is [{ book, point, price, oppositePrice }] and `probFor(point)`
+ * returns { win, push } for that side at that number.
+ */
+function bestOffer({ quotes, probFor, trust = 0.25, kellyFraction = 0.25 }) {
+  let best = null;
+  for (const q of quotes || []) {
+    if (!Number.isFinite(q.point)) continue;
+    const outcome = probFor(q.point);
+    if (!outcome) continue;
+    const resolved = outcome.win + (outcome.loss ?? (1 - outcome.win - (outcome.push || 0)));
+    const conditional = resolved > 0 ? outcome.win / resolved : 0.5;
+    let priced;
+    try {
+      priced = priceSide({
+        americanOdds: q.price,
+        oppositeAmericanOdds: q.oppositePrice,
+        modelProb: conditional,
+        pushProb: outcome.push || 0,
+        trust,
+        kellyFraction,
+      });
+    } catch (e) { continue; }
+    if (!best || priced.expectedValue > best.expectedValue) {
+      best = { ...priced, point: q.point, book: q.book };
+    }
+  }
+  return best;
+}
+
 module.exports = {
   SPORTS,
   sportConfig,
@@ -991,6 +1076,7 @@ module.exports = {
   projectFromScoringAverages,
   confidenceFromEdge,
   priceGame,
+  bestOffer,
   SPREAD_LIMITS,
   plausibleSpread,
   NFL_KEY_NUMBER_WEIGHTS,

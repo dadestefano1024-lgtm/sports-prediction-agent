@@ -2142,6 +2142,13 @@ function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
   };
 
   return {
+    // Every book's actual offer, so a caller can price each one on its own
+    // number rather than forcing them all onto the consensus. Books disagree on
+    // the POINT, not just the price — a full point apart is common — and a
+    // point is worth far more than any realistic price difference.
+    spreadQuotes: spreadQuotes.map(q => ({ ...q })),
+    totalQuotes: totalQuotes.map(q => ({ ...q })),
+
     // Same shape as before, so every caller keeps working.
     spread: spreadPoint,
     spreadHomePrice: bestHomeSpread?.homePrice ?? null,
@@ -2356,10 +2363,21 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
 
     let priced = { spread: null, total: null };
     if (projection) {
+      // Every book's own number and price, so each side is shopped on the
+      // point as well as the juice. Implausible points are dropped here for the
+      // same reason the consensus one is: a number no book could have posted
+      // means the feed is being misread.
+      const usableSpreadQuotes = (odds.spreadQuotes || [])
+        .filter(q => model.plausibleSpread(sport, q.point));
+      const usableTotalQuotes = (odds.totalQuotes || [])
+        .filter(q => Number.isFinite(q.point) && q.point > 0);
+
       priced = model.priceGame({
         sport,
         predictedMargin: projection.predictedMargin,
         predictedTotal: projection.predictedTotal,
+        spreadQuotes: usableSpreadQuotes,
+        totalQuotes: g.skipTotalReason ? [] : usableTotalQuotes,
         spread: spreadUsable ? rawSpread : null,
         spreadHomePrice: toNum(odds.spreadHomePrice),
         spreadAwayPrice: toNum(odds.spreadAwayPrice),
@@ -2396,9 +2414,13 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       // "No edge" is a real, common and correct answer. The old pipeline had no
       // way to say it — it produced a pick for every game, always.
       spreadPick: priced.spread ? priced.spread.pick : 'No edge',
+      spreadBook: priced.spread ? (priced.spread.book || null) : null,
+      spreadLine: priced.spread ? priced.spread.point : null,
       spreadEdge: priced.spread ? +(priced.spread.edge * 100).toFixed(2) : 0,
       kellySpread: priced.spread ? +(priced.spread.stake * 100).toFixed(2) : 0,
       totalPick: priced.total ? priced.total.pick : 'No edge',
+      totalBook: priced.total ? (priced.total.book || null) : null,
+      totalLine: priced.total ? priced.total.point : null,
       totalEdge: priced.total ? +(priced.total.edge * 100).toFixed(2) : 0,
       kellyTotal: priced.total ? +(priced.total.stake * 100).toFixed(2) : 0,
       confidence: best ? best.confidence : 'Low',
