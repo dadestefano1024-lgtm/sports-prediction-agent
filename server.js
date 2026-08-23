@@ -1958,6 +1958,8 @@ function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
     bookmaker: bestHomeSpread?.book || bestOver?.book || bestHomeML?.book || 'Unknown',
     matchedHome: matchingOdds.home_team,
     matchedAway: matchingOdds.away_team,
+    // Carried so callers can tell a pre-game market from an in-play one.
+    commenceTime: matchingOdds.commence_time || null,
 
     // Where each best price actually lives, so a bet can be placed at it.
     bestBooks: {
@@ -2105,9 +2107,24 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
 
   return gamesWithStats.map(g => {
     const odds = g.odds || {};
+    // Once a game is under way the book is pricing the REST of it: a run line
+    // of -2.5 and a total of 4.5 on a baseball game are in-play numbers for the
+    // innings that remain, not the pre-game market. Our projection covers a
+    // whole game, so comparing the two produces a large fictitious edge.
+    //
+    // The handlers include in-progress games on purpose so the UI can show
+    // them, and the old code priced them like any other — which means picks
+    // have been generated against live lines for as long as this has existed.
+    // Checked here rather than in each handler so every sport is covered once.
+    const started = odds.commenceTime
+      ? (new Date(odds.commenceTime).getTime() <= Date.now())
+      : false;
+
     // A game may decline to be projected on its own account (a changed starting
     // quarterback, say) even when the rest of the slate is fine.
-    const reason = skipReason || g.skipReason || null;
+    const reason = skipReason || g.skipReason
+      || (started ? 'game already under way - the book is pricing the remainder, not the full game' : null)
+      || null;
     // reason states outright that we are declining to project, rather than
     // letting it look like data merely happened to be missing.
     const projection = reason ? null : model.projectFromScoringAverages({
