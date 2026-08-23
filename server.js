@@ -2127,6 +2127,35 @@ app.get('/api/history', async (req, res) => {
   res.json(stats);
 });
 
+// One-time cleanup for rows written before savePick started deduplicating.
+// A game sitting pre-game accumulated a fresh copy on every prediction run —
+// one pick was stored ten times — which inflated the History tab's sample and
+// made the record look far more certain than it was. Keeps the earliest row
+// per (game, market, pick) and removes the later copies.
+//
+// Destructive, so it supports ?dryRun=1 to report the count without deleting.
+// Rows with a NULL espn_game_id can never match and are left alone.
+app.post('/api/dedupe', async (req, res) => {
+  if (!dbReady || !pool) return res.status(503).json({ error: 'Database not available' });
+  const match = 'a.espn_game_id = b.espn_game_id AND a.market = b.market AND a.pick = b.pick';
+  try {
+    const before = await pool.query('SELECT COUNT(*)::int AS n FROM picks');
+    const dupes = await pool.query(
+      `SELECT COUNT(DISTINCT a.id)::int AS n FROM picks a JOIN picks b ON a.id > b.id AND ${match}`);
+    if (req.query.dryRun) {
+      return res.json({ ok: true, dryRun: true, total: before.rows[0].n,
+                        wouldDelete: dupes.rows[0].n });
+    }
+    const del = await pool.query(`DELETE FROM picks a USING picks b WHERE a.id > b.id AND ${match}`);
+    const after = await pool.query('SELECT COUNT(*)::int AS n FROM picks');
+    console.log(`[DEDUPE] removed ${del.rowCount}: ${before.rows[0].n} -> ${after.rows[0].n}`);
+    res.json({ ok: true, before: before.rows[0].n, deleted: del.rowCount, after: after.rows[0].n });
+  } catch (err) {
+    console.error('[DEDUPE]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // One-time recompute for picks already graded under the broken away-spread
 // logic. Final scores are already stored on each row, so this is pure
 // arithmetic — no ESPN calls, and nothing is nulled out first.
