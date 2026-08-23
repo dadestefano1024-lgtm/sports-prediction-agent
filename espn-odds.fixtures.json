@@ -1,0 +1,122 @@
+{
+  "nba": {
+    "matchup": "MEM @ ORL",
+    "date": "20260115",
+    "homeTeamOdds": {
+      "moneyLine": -230,
+      "open": {
+        "pointSpread": {
+          "american": "-4.5"
+        }
+      },
+      "current": {
+        "pointSpread": {
+          "american": "-5.5"
+        }
+      }
+    },
+    "awayTeamOdds": {
+      "moneyLine": 190
+    },
+    "open": {
+      "total": {
+        "american": "230.5"
+      }
+    },
+    "current": {
+      "total": {
+        "american": "227.5"
+      }
+    }
+  },
+  "nhl": {
+    "matchup": "MTL @ BUF",
+    "date": "20260115",
+    "homeTeamOdds": {
+      "moneyLine": 105,
+      "open": {
+        "pointSpread": {
+          "american": "-1.5"
+        }
+      },
+      "current": {
+        "pointSpread": {
+          "american": "+1.5"
+        }
+      }
+    },
+    "awayTeamOdds": {
+      "moneyLine": -125
+    },
+    "open": {
+      "total": {
+        "american": "6.5"
+      }
+    },
+    "current": {
+      "total": {
+        "american": "6.5"
+      }
+    }
+  },
+  "mlb": {
+    "matchup": "STL @ PHI",
+    "date": "20260823",
+    "homeTeamOdds": {
+      "moneyLine": -216,
+      "open": {
+        "pointSpread": {
+          "american": "-1.5"
+        }
+      },
+      "current": {
+        "pointSpread": {
+          "american": "-1.5"
+        }
+      }
+    },
+    "awayTeamOdds": {
+      "moneyLine": 200
+    },
+    "open": {
+      "total": {
+        "american": "8"
+      }
+    },
+    "current": {
+      "total": {
+        "american": "8"
+      }
+    }
+  },
+  "nfl": {
+    "matchup": "SEA @ TEN",
+    "date": "20260823",
+    "homeTeamOdds": {
+      "moneyLine": -185,
+      "open": {
+        "pointSpread": {
+          "american": "-1.5"
+        }
+      },
+      "current": {
+        "pointSpread": {
+          "american": "-3.5"
+        }
+      }
+    },
+    "awayTeamOdds": {
+      "moneyLine": 154
+    },
+    "open": {
+      "total": {
+        "american": "38.5"
+      }
+    },
+    "current": {
+      "total": {
+        "american": "37.5"
+      }
+    }
+  }
+}
