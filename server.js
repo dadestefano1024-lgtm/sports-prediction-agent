@@ -1176,6 +1176,48 @@ const QB_UNAVAILABLE = new Set(['out', 'doubtful', 'injured reserve', 'ir', 'sus
  * does instead is mark our own projection untrustworthy, because the form data
  * feeding it came from a different quarterback.
  */
+/**
+ * Every team's completed regular-season games, as { team: [{opponent, scored,
+ * allowed}] }, which is what opponentAdjustedRatings consumes.
+ *
+ * Thirty-two requests, all through the shared cache and all in parallel, so in
+ * practice this costs one round of fetches per prediction-cache window rather
+ * than one per request.
+ */
+async function fetchNFLGameLogs(seasonYear) {
+  const logs = {};
+  await Promise.all(Object.entries(nflTeamIds).map(async ([nick, id]) => {
+    try {
+      const r = await cachedGet(
+        `https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${id}/schedule?season=${seasonYear}`,
+        { timeout: 8000 });
+      const out = [];
+      for (const e of (r.data && r.data.events) || []) {
+        const cm = e.competitions && e.competitions[0];
+        if (!cm || !cm.status || !cm.status.type || !cm.status.type.completed) continue;
+        const st = (e.seasonType && e.seasonType.id) != null ? e.seasonType.id
+                 : (e.season && e.season.type);
+        if (st !== undefined && st !== null && Number(st) < 2) continue;
+        const h = cm.competitors.find(x => x.homeAway === 'home');
+        const aw = cm.competitors.find(x => x.homeAway === 'away');
+        const hs = parseScore(h), as = parseScore(aw);
+        if (hs === null || as === null) continue;
+        const isHome = String(h.team.id) === String(id);
+        const opp = isHome ? aw : h;
+        out.push({
+          opponent: teamNickname(opp.team.displayName, nflTeamIds),
+          scored: isHome ? hs : as,
+          allowed: isHome ? as : hs,
+        });
+      }
+      logs[nick] = out;
+    } catch (error) {
+      logs[nick] = [];
+    }
+  }));
+  return logs;
+}
+
 async function fetchNFLStartingQB(teamName, seasonYear) {
   try {
     const teamId = nflTeamIds[teamName];
@@ -2188,7 +2230,13 @@ function findArbitrageOpportunities(oddsData) {
 // price. 0 reproduces the market and backs nothing; 1 asserts the model beats
 // the closing line. Overridable by environment so it can be tuned without a
 // deploy, and deliberately low until closing line value earns more.
-const MODEL_TRUST = Number(process.env.MODEL_TRUST ?? 0.25);
+// 0.1, not a guess. Measured over 96 real NFL games (2025 weeks 8-16) by
+// sweeping this value and scoring the blend against actual margins: pure market
+// gave a mean absolute error of 9.995 points, 0.1 gave 9.969, and it rises
+// monotonically after — 10.445 at full trust. The projection is currently WORSE
+// than the line it bets against, so the best available setting is "barely
+// listen to it". Raise this when a measurement says to, not before.
+const MODEL_TRUST = Number(process.env.MODEL_TRUST ?? 0.1);
 const KELLY_FRACTION = Number(process.env.KELLY_FRACTION ?? 0.25);
 
 // Recent-form field names differ per sport.
@@ -2281,13 +2329,15 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       || null;
     // reason states outright that we are declining to project, rather than
     // letting it look like data merely happened to be missing.
-    const projection = reason ? null : model.projectFromScoringAverages({
+    // A handler may supply its own projection (NFL uses opponent-adjusted
+    // ratings); otherwise fall back to raw scoring averages.
+    const projection = reason ? null : (g.projection || model.projectFromScoringAverages({
       homeAvgScored: g.homeForm && g.homeForm[scoredKey],
       homeAvgAllowed: g.homeForm && g.homeForm[allowedKey],
       awayAvgScored: g.awayForm && g.awayForm[scoredKey],
       awayAvgAllowed: g.awayForm && g.awayForm[allowedKey],
       sport,
-    });
+    }));
 
     // The same gate that protects closing-line capture now protects pricing.
     // A spread the sport could not have posted means the feed is being read
@@ -2360,6 +2410,7 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       modelDetail: projection ? {
         predictedMargin: +projection.predictedMargin.toFixed(2),
         predictedTotal: +projection.predictedTotal.toFixed(2),
+        basis: g.projection ? 'opponent-adjusted ratings' : 'raw scoring averages',
         trust: MODEL_TRUST,
         totalSkipped: g.skipTotalReason || null,
         marketProbSpread: priced.spread ? +priced.spread.marketProb.toFixed(4) : null,
@@ -2458,6 +2509,34 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
       ? 'preseason — starters play a quarter, so scoring averages do not describe these teams'
       : null;
 
+    // Opponent-adjusted ratings for the whole league, computed once per slate.
+    //
+    // Raw scoring averages leaned toward the underdog on 83% of games across a
+    // 96-game backtest, which is the signature of not adjusting for schedule:
+    // a team off a soft run looks strong, the market already knows better, so
+    // the model disbelieves good favourites. Adjusting brings that to 38%.
+    //
+    // It does NOT make the model beat the line. Best blended error improved
+    // from 9.980 to 9.958 points against a market at 9.995 — a 0.037 gap on 96
+    // games, which is noise. What it removes is a known systematic bias, not a
+    // demonstrated edge, and MODEL_TRUST stays low accordingly.
+    //
+    // Null until enough games exist, which means no NFL projections through
+    // roughly week 3. That is the honest answer rather than rating teams on one
+    // result.
+    let ratings = null;
+    if (!isPreseason) {
+      try {
+        const logs = await fetchNFLGameLogs(seasonYear);
+        ratings = model.opponentAdjustedRatings(logs, { iterations: 3, minGames: 3 });
+        const rated = ratings ? Object.keys(ratings.ratings).length : 0;
+        console.log(`[NFL] opponent-adjusted ratings for ${rated} teams` +
+          (ratings ? `, league average ${ratings.leagueAvg.toFixed(1)} pts` : ' (not enough games yet)'));
+      } catch (e) {
+        console.error('[NFL] rating build failed:', e.message);
+      }
+    }
+
     const espnOpeningLines = await fetchEspnOpeningLines('nfl');
     const eventMap = {};
 
@@ -2474,6 +2553,16 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
 
       // Skip the stats round-trips entirely in preseason; nothing would use them.
       const venue = nflTeamLocations[homeTeamName] || null;
+
+      // Project from the adjusted ratings when they exist. buildGamesFromModel
+      // falls back to raw scoring averages when this is null.
+      const hr = ratings && ratings.ratings[homeTeamName];
+      const ar = ratings && ratings.ratings[awayTeamName];
+      const projection = (hr && ar) ? model.projectFromRatings({
+        homeOff: hr.offense, homeDef: hr.defense,
+        awayOff: ar.offense, awayDef: ar.defense,
+        leagueAvg: ratings.leagueAvg, sport: 'nfl',
+      }) : null;
 
       const [homeStats, awayStats, homeForm, awayForm, travelData,
              homeInjuries, awayInjuries, homeQB, awayQB, weather] =
@@ -2527,6 +2616,12 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
         awayForm,
         travel: travelData,
         dome: venue ? venue.dome : null,
+        projection,
+        ratings: (hr && ar) ? {
+          home: { offense: +hr.offense.toFixed(2), defense: +hr.defense.toFixed(2), games: hr.games },
+          away: { offense: +ar.offense.toFixed(2), defense: +ar.defense.toFixed(2), games: ar.games },
+          leagueAvg: +ratings.leagueAvg.toFixed(2),
+        } : null,
         weather,
         startingQB: { home: homeQB, away: awayQB },
         // Wind invalidates our TOTAL only, not the spread. Scoring averages

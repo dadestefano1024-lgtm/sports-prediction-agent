@@ -683,3 +683,89 @@ test('priceGame: a whole-number total reports a push, a half-point one does not'
   // The run line is 1.5 and cannot push either.
   if (whole.spread) close(whole.spread.pushProb, 0, 1e-12);
 });
+
+// ----------------------------------------------------------------------------
+test('opponentAdjustedRatings rewards beating a good defence', () => {
+  // Both offences average exactly 28, so raw averages call them identical.
+  // The only difference is who they scored it against: Stingy allows 20.7 a
+  // game, Porous allows 25.3. Adjustment has to separate them.
+  const logs = {
+    Strong: [{ opponent: 'Stingy', scored: 28, allowed: 20 },
+             { opponent: 'Stingy', scored: 28, allowed: 20 }],
+    Weak:   [{ opponent: 'Porous', scored: 28, allowed: 20 },
+             { opponent: 'Porous', scored: 28, allowed: 20 }],
+    Stingy: [{ opponent: 'Strong', scored: 20, allowed: 28 },
+             { opponent: 'Strong', scored: 20, allowed: 28 },
+             { opponent: 'Porous', scored: 20, allowed: 6 }],
+    Porous: [{ opponent: 'Weak', scored: 20, allowed: 28 },
+             { opponent: 'Weak', scored: 20, allowed: 28 },
+             { opponent: 'Stingy', scored: 6, allowed: 20 }],
+  };
+  const rawStrong = 28, rawWeak = 28;
+  assert.equal(rawStrong, rawWeak, 'the fixture must be ambiguous before adjustment');
+
+  const out = m.opponentAdjustedRatings(logs, { minGames: 2 });
+  assert.ok(out, 'should produce ratings');
+  assert.ok(out.leagueAvg > 0);
+  assert.ok(out.ratings.Stingy.defense < out.ratings.Porous.defense,
+    `Stingy should rate the better defence: ${out.ratings.Stingy.defense} vs ${out.ratings.Porous.defense}`);
+  assert.ok(out.ratings.Strong.offense > out.ratings.Weak.offense,
+    `equal raw offences must separate once opponent quality is applied: ` +
+    `${out.ratings.Strong.offense} vs ${out.ratings.Weak.offense}`);
+});
+
+test('opponentAdjustedRatings needs enough games and enough teams', () => {
+  assert.equal(m.opponentAdjustedRatings({}, {}), null);
+  assert.equal(m.opponentAdjustedRatings({ A: [{ opponent: 'B', scored: 20, allowed: 20 }] },
+    { minGames: 3 }), null, 'one team under the minimum is not a league');
+});
+
+test('opponentAdjustedRatings: a balanced league sits at league average', () => {
+  const logs = {};
+  const teams = ['A', 'B', 'C', 'D'];
+  for (const t of teams) {
+    logs[t] = teams.filter(x => x !== t).map(o => ({ opponent: o, scored: 22, allowed: 22 }));
+  }
+  const out = m.opponentAdjustedRatings(logs, { minGames: 3 });
+  close(out.leagueAvg, 22, 1e-9);
+  for (const t of teams) {
+    close(out.ratings[t].offense, 22, 1e-6, `${t} offence`);
+    close(out.ratings[t].defense, 22, 1e-6, `${t} defence`);
+  }
+});
+
+test('projectFromRatings: two average teams produce a league-average game', () => {
+  const p = m.projectFromRatings({
+    homeOff: 22, homeDef: 22, awayOff: 22, awayDef: 22, leagueAvg: 22, sport: 'nfl',
+  });
+  close(p.predictedTotal, 44, 1e-9);
+  close(p.predictedMargin, m.sportConfig('nfl').hfa, 1e-9);
+  close(p.predictedHome - p.predictedAway, p.predictedMargin, 1e-9);
+  close(p.predictedHome + p.predictedAway, p.predictedTotal, 1e-9);
+});
+
+test('projectFromRatings: a better offence against a worse defence scores more', () => {
+  const base = { homeOff: 22, homeDef: 22, awayOff: 22, awayDef: 22, leagueAvg: 22, sport: 'nfl' };
+  const better = m.projectFromRatings({ ...base, homeOff: 30, awayDef: 28 });
+  assert.ok(better.predictedHome > 22 + m.sportConfig('nfl').hfa / 2);
+  assert.ok(better.predictedMargin > m.sportConfig('nfl').hfa);
+});
+
+test('projectFromRatings rejects missing or impossible input', () => {
+  const base = { homeOff: 22, homeDef: 22, awayOff: 22, awayDef: 22, leagueAvg: 22, sport: 'nfl' };
+  assert.equal(m.projectFromRatings({ ...base, homeOff: 0 }), null);
+  assert.equal(m.projectFromRatings({ ...base, leagueAvg: null }), null);
+  assert.equal(m.projectFromRatings({ ...base, awayDef: undefined }), null);
+});
+
+test('regressRatings pulls toward league average', () => {
+  const rated = { leagueAvg: 22, ratings: { A: { offense: 30, defense: 16, games: 5 } } };
+  const half = m.regressRatings(rated, 0.5);
+  close(half.ratings.A.offense, 26, 1e-9);
+  close(half.ratings.A.defense, 19, 1e-9);
+  const none = m.regressRatings(rated, 0);
+  close(none.ratings.A.offense, 22, 1e-9, 'weight 0 is pure league average');
+  const full = m.regressRatings(rated, 1);
+  close(full.ratings.A.offense, 30, 1e-9, 'weight 1 leaves it alone');
+  assert.throws(() => m.regressRatings(rated, 1.5));
+});
