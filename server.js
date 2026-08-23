@@ -202,7 +202,8 @@ async function gradePendingPicks() {
     const sportPaths = {
       'nba': 'basketball/nba',
       'nhl': 'hockey/nhl',
-      'mlb': 'baseball/mlb'
+      'mlb': 'baseball/mlb',
+      'nfl': 'football/nfl'
     };
 
     for (const row of ungraded.rows) {
@@ -784,6 +785,64 @@ async function cachedGet(url, options) {
  * exists. Falls back to the last word when no map is given, so behaviour is
  * unchanged for callers that do not have one.
  */
+// ============================================================================
+// NFL TEAMS
+// ============================================================================
+// ESPN ids and the indoor flag come from its teams API; the coordinates do not
+// exist there and are stadium locations. tz is the standard-time UTC offset —
+// Arizona is -7 year round because it does not observe DST, which matters for
+// the travel calculation.
+//
+// dome is recorded per ESPN's venue.indoor and covers retractable roofs too. It
+// is the prerequisite for weather adjustment on totals, which is not built yet:
+// wind is the single largest weather effect on an NFL total, and applying it to
+// a covered stadium would be worse than not applying it at all.
+const nflTeamIds = {
+  '49ers': 25, 'Bears': 3, 'Bengals': 4, 'Bills': 2,
+  'Broncos': 7, 'Browns': 5, 'Buccaneers': 27, 'Cardinals': 22,
+  'Chargers': 24, 'Chiefs': 12, 'Colts': 11, 'Commanders': 28,
+  'Cowboys': 6, 'Dolphins': 15, 'Eagles': 21, 'Falcons': 1,
+  'Giants': 19, 'Jaguars': 30, 'Jets': 20, 'Lions': 8,
+  'Packers': 9, 'Panthers': 29, 'Patriots': 17, 'Raiders': 13,
+  'Rams': 14, 'Ravens': 33, 'Saints': 18, 'Seahawks': 26,
+  'Steelers': 23, 'Texans': 34, 'Titans': 10, 'Vikings': 16
+};
+
+const nflTeamLocations = {
+  '49ers': { lat: 37.4033, lon: -121.9694, tz: -8, dome: false },  // Levi's Stadium
+  'Bears': { lat: 41.8623, lon: -87.6167, tz: -6, dome: false },  // Soldier Field
+  'Bengals': { lat: 39.0955, lon: -84.5161, tz: -5, dome: false },  // Paycor Stadium
+  'Bills': { lat: 42.7738, lon: -78.7870, tz: -5, dome: false },  // Highmark Stadium
+  'Broncos': { lat: 39.7439, lon: -105.0201, tz: -7, dome: false },  // Empower Field at Mile High
+  'Browns': { lat: 41.5061, lon: -81.6995, tz: -5, dome: false },  // Huntington Bank Field
+  'Buccaneers': { lat: 27.9759, lon: -82.5033, tz: -5, dome: false },  // Raymond James Stadium
+  'Cardinals': { lat: 33.5276, lon: -112.2626, tz: -7, dome: true },  // State Farm Stadium
+  'Chargers': { lat: 33.9535, lon: -118.3392, tz: -8, dome: false },  // Dignity Health Sports Park
+  'Chiefs': { lat: 39.0489, lon: -94.4839, tz: -6, dome: false },  // Arrowhead Stadium
+  'Colts': { lat: 39.7601, lon: -86.1639, tz: -5, dome: true },  // Lucas Oil Stadium
+  'Commanders': { lat: 38.9077, lon: -76.8645, tz: -5, dome: false },  // Northwest Stadium
+  'Cowboys': { lat: 32.7473, lon: -97.0945, tz: -6, dome: true },  // AT&T Stadium
+  'Dolphins': { lat: 25.9580, lon: -80.2389, tz: -5, dome: false },  // Hard Rock Stadium
+  'Eagles': { lat: 39.9008, lon: -75.1675, tz: -5, dome: false },  // Lincoln Financial Field
+  'Falcons': { lat: 33.7554, lon: -84.4008, tz: -5, dome: true },  // Mercedes-Benz Stadium
+  'Giants': { lat: 40.8135, lon: -74.0745, tz: -5, dome: false },  // MetLife Stadium
+  'Jaguars': { lat: 30.3239, lon: -81.6373, tz: -5, dome: false },  // EverBank Stadium
+  'Jets': { lat: 40.8135, lon: -74.0745, tz: -5, dome: false },  // MetLife Stadium
+  'Lions': { lat: 42.3400, lon: -83.0456, tz: -5, dome: true },  // Ford Field
+  'Packers': { lat: 44.5013, lon: -88.0622, tz: -6, dome: false },  // Lambeau Field
+  'Panthers': { lat: 35.2258, lon: -80.8528, tz: -5, dome: false },  // Bank of America Stadium
+  'Patriots': { lat: 42.0909, lon: -71.2643, tz: -5, dome: false },  // Gillette Stadium
+  'Raiders': { lat: 36.0909, lon: -115.1833, tz: -8, dome: true },  // Allegiant Stadium
+  'Rams': { lat: 33.9535, lon: -118.3392, tz: -8, dome: false },  // Los Angeles Memorial Coliseum
+  'Ravens': { lat: 39.2780, lon: -76.6227, tz: -5, dome: false },  // M&T Bank Stadium
+  'Saints': { lat: 29.9511, lon: -90.0812, tz: -6, dome: true },  // Caesars Superdome
+  'Seahawks': { lat: 47.5952, lon: -122.3316, tz: -8, dome: false },  // Lumen Field
+  'Steelers': { lat: 40.4468, lon: -80.0158, tz: -5, dome: false },  // Acrisure Stadium
+  'Texans': { lat: 29.6847, lon: -95.4107, tz: -6, dome: true },  // Reliant Stadium
+  'Titans': { lat: 36.1665, lon: -86.7713, tz: -6, dome: false },  // Nissan Stadium
+  'Vikings': { lat: 44.9738, lon: -93.2578, tz: -6, dome: true },  // U.S. Bank Stadium
+};
+
 function teamNickname(displayName, idMap) {
   const parts = String(displayName || '').trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '';
@@ -906,10 +965,24 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-async function fetchTravelData(awayTeam, homeTeam) {
+async function fetchTravelData(awayTeam, homeTeam, sport) {
   try {
-    const awayLoc = nbaTeamLocations[awayTeam] || nhlTeamLocations[awayTeam] || mlbTeamLocations[awayTeam];
-    const homeLoc = nbaTeamLocations[homeTeam] || nhlTeamLocations[homeTeam] || mlbTeamLocations[homeTeam];
+    // Look up in the caller's own sport. The previous version fell through
+    // nba -> nhl -> mlb by nickname, and six nicknames are shared across the
+    // four leagues: Cardinals and Giants (mlb/nfl), Jets and Panthers
+    // (nhl/nfl), Kings (nba/nhl) and Rangers (nhl/mlb). First match won, so an
+    // LA Kings game measured travel from Sacramento and a Texas Rangers game
+    // from New York — silently, and since well before NFL was added.
+    const maps = {
+      nba: nbaTeamLocations, nhl: nhlTeamLocations,
+      mlb: mlbTeamLocations, nfl: nflTeamLocations,
+    };
+    const map = maps[String(sport || '').toLowerCase()];
+    const pick = (team) => map
+      ? map[team]
+      : (nbaTeamLocations[team] || nhlTeamLocations[team] || mlbTeamLocations[team]);
+    const awayLoc = pick(awayTeam);
+    const homeLoc = pick(homeTeam);
     if (!awayLoc || !homeLoc) return null;
     const miles = calculateDistance(awayLoc.lat, awayLoc.lon, homeLoc.lat, homeLoc.lon);
     const tzChange = Math.abs(awayLoc.tz - homeLoc.tz);
@@ -932,6 +1005,86 @@ function calculateProjectedTotal(homePace, awayPace) {
 // ============================================================================
 // ESPN STATS — NHL
 // ============================================================================
+
+/**
+ * NFL season record.
+ */
+async function fetchNFLTeamStats(teamName) {
+  try {
+    const teamId = nflTeamIds[teamName];
+    if (!teamId) return null;
+    const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${teamId}`;
+    const response = await cachedGet(url, { timeout: 5000 });
+    const team = response.data.team;
+    const rec = team?.record?.items?.[0];
+    return {
+      record: rec?.summary || 'N/A',
+      wins: rec?.stats?.find(x => x.name === 'wins')?.value ?? null,
+      losses: rec?.stats?.find(x => x.name === 'losses')?.value ?? null,
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Recent NFL scoring, regular season only.
+ *
+ * Preseason games are excluded deliberately. Starters play a quarter, schemes
+ * are vanilla and backups decide the result — recent scores of 0, 3 and 6 are
+ * normal. Projecting from that would produce confident nonsense, which is the
+ * exact failure this whole rewrite exists to stop.
+ *
+ * The practical consequence is that this returns null until regular-season
+ * games have actually been played, so NFL projections switch themselves on as
+ * results arrive rather than needing a flag flipped. Only 5 games are used
+ * rather than 10: an NFL team plays once a week, so ten games is most of a
+ * season and far too slow to react to a roster that has changed.
+ */
+async function fetchNFLRecentGames(teamName) {
+  try {
+    const teamId = nflTeamIds[teamName];
+    if (!teamId) return null;
+    const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${teamId}/schedule`;
+    const response = await cachedGet(url, { timeout: 5000 });
+    const events = response.data.events || [];
+
+    const regularSeason = events.filter(e => {
+      const comp = e.competitions?.[0];
+      if (!comp?.status?.type?.completed) return false;
+      const type = e.seasonType?.id ?? e.seasonType?.type ?? e.season?.type;
+      // 1 = preseason, 2 = regular, 3 = post. Keep 2 and 3; if ESPN omits the
+      // field entirely, keep the game rather than silently discarding data.
+      return type === undefined || type === null || Number(type) >= 2;
+    });
+    const recent = regularSeason.slice(-5);
+
+    let wins = 0, totalScored = 0, totalAllowed = 0, counted = 0;
+    recent.forEach(game => {
+      const comp = game.competitions[0];
+      const h = comp.competitors.find(c => c.homeAway === 'home');
+      const a = comp.competitors.find(c => c.homeAway === 'away');
+      const hs = parseScore(h), as = parseScore(a);
+      if (hs === null || as === null) return;
+      const isHome = h.team.id == teamId;
+      const ts = isHome ? hs : as;
+      const os = isHome ? as : hs;
+      counted++;
+      if (ts > os) wins++;
+      totalScored += ts;
+      totalAllowed += os;
+    });
+
+    if (counted === 0) return null;
+    return {
+      last5: `${wins}-${counted - wins}`,
+      avgScored: (totalScored / counted).toFixed(1),
+      avgAllowed: (totalAllowed / counted).toFixed(1),
+    };
+  } catch (error) {
+    return null;
+  }
+}
 
 async function fetchNHLTeamStats(teamName) {
   try {
@@ -1190,7 +1343,8 @@ async function fetchInjuries(teamFullName, sport) {
     const sportUrls = {
       'nba': 'https://www.espn.com/nba/injuries',
       'nhl': 'https://www.espn.com/nhl/injuries',
-      'mlb': 'https://www.espn.com/mlb/injuries'
+      'mlb': 'https://www.espn.com/mlb/injuries',
+      'nfl': 'https://www.espn.com/nfl/injuries'
     };
     const url = sportUrls[sport];
     if (!url) return [];
@@ -1759,14 +1913,16 @@ async function fetchCommentary(sport, prompt) {
   }
 }
 
-function buildGamesFromModel(sport, gamesWithStats, commentary) {
+function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
   const fields = FORM_FIELDS[sport] || FORM_FIELDS.nba;
   const scoredKey = fields[0];
   const allowedKey = fields[1];
 
   return gamesWithStats.map(g => {
     const odds = g.odds || {};
-    const projection = model.projectFromScoringAverages({
+    // skipReason states outright that we are declining to project, rather than
+    // letting it look like data merely happened to be missing.
+    const projection = skipReason ? null : model.projectFromScoringAverages({
       homeAvgScored: g.homeForm && g.homeForm[scoredKey],
       homeAvgAllowed: g.homeForm && g.homeForm[allowedKey],
       awayAvgScored: g.awayForm && g.awayForm[scoredKey],
@@ -1831,7 +1987,7 @@ function buildGamesFromModel(sport, gamesWithStats, commentary) {
         marketProbSpread: priced.spread ? +priced.spread.marketProb.toFixed(4) : null,
         modelProbSpread: priced.spread ? +priced.spread.modelProb.toFixed(4) : null,
         hold: priced.spread ? +priced.spread.hold.toFixed(4) : null,
-      } : { unavailable: 'insufficient recent-form data' },
+      } : { unavailable: skipReason || 'insufficient recent-form data' },
 
       stats: g,
     };
@@ -1889,7 +2045,7 @@ app.post('/api/predictions', async (req, res) => {
     if (sport === 'nhl') return await handleNHLPredictions(cachingRes, arbitrageAlerts, oddsData);
     if (sport === 'mlb') return await handleMLBPredictions(cachingRes, arbitrageAlerts, oddsData);
     if (sport === 'cbb') return res.json({ sport: 'CBB', games: [], arbitrageAlerts: [], message: 'Coming soon.' });
-    if (sport === 'nfl') return res.json({ sport: 'NFL', games: [], arbitrageAlerts: [], message: 'Coming soon.' });
+    if (sport === 'nfl') return await handleNFLPredictions(cachingRes, arbitrageAlerts, oddsData);
 
     return res.json({ sport: sport.toUpperCase(), games: [], arbitrageAlerts: [], message: `${sport.toUpperCase()} not supported.` });
   } catch (error) {
@@ -1901,6 +2057,130 @@ app.post('/api/predictions', async (req, res) => {
 // ============================================================================
 // NBA HANDLER
 // ============================================================================
+
+// ============================================================================
+// NFL HANDLER
+// ============================================================================
+
+async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
+  try {
+    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?limit=50`;
+    const scoreboardResponse = await cachedGet(scoreboardUrl, { timeout: 10000 });
+    const payload = scoreboardResponse.data || {};
+    let events = payload.events || [];
+    events = events.filter(e => {
+      const status = e.competitions?.[0]?.status?.type?.state;
+      return status === 'pre' || status === 'in';
+    });
+
+    if (events.length === 0) {
+      return res.json({ sport: 'NFL', games: [], arbitrageAlerts: [], message: 'No NFL games scheduled' });
+    }
+
+    // ESPN season types: 1 preseason, 2 regular, 3 post.
+    const seasonType = Number(payload.season?.type ?? events[0]?.season?.type ?? 2);
+    const isPreseason = seasonType === 1;
+    const skipReason = isPreseason
+      ? 'preseason — starters play a quarter, so scoring averages do not describe these teams'
+      : null;
+
+    const espnOpeningLines = await fetchEspnOpeningLines('nfl');
+    const eventMap = {};
+
+    const gamesWithStats = await Promise.all(events.map(async (event) => {
+      const comp = event.competitions[0];
+      const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
+      const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
+      const homeTeamName = teamNickname(homeTeam.team.displayName, nflTeamIds);
+      const awayTeamName = teamNickname(awayTeam.team.displayName, nflTeamIds);
+      const homeFullName = homeTeam.team.displayName;
+      const awayFullName = awayTeam.team.displayName;
+
+      eventMap[`${homeFullName}|${awayFullName}`] = event.id;
+
+      // Skip the stats round-trips entirely in preseason; nothing would use them.
+      const [homeStats, awayStats, homeForm, awayForm, travelData, homeInjuries, awayInjuries] =
+        await Promise.all([
+          fetchNFLTeamStats(homeTeamName),
+          fetchNFLTeamStats(awayTeamName),
+          isPreseason ? Promise.resolve(null) : fetchNFLRecentGames(homeTeamName),
+          isPreseason ? Promise.resolve(null) : fetchNFLRecentGames(awayTeamName),
+          fetchTravelData(awayTeamName, homeTeamName, 'nfl'),
+          fetchInjuries(homeFullName, 'nfl'),
+          fetchInjuries(awayFullName, 'nfl'),
+        ]);
+
+      const odds = matchOddsToGame(oddsData, homeFullName, awayFullName);
+      const espnLines = espnOpeningLines[event.id] || null;
+      const sharpSignals = espnLines
+        ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
+        : [];
+
+      const venue = nflTeamLocations[homeTeamName] || null;
+
+      return {
+        homeTeam: homeFullName,
+        awayTeam: awayFullName,
+        gameTime: new Date(event.date).toLocaleString(),
+        homeData: homeStats,
+        awayData: awayStats,
+        homeForm,
+        awayForm,
+        travel: travelData,
+        dome: venue ? venue.dome : null,
+        injuries: { home: homeInjuries, away: awayInjuries },
+        odds,
+        lineMovement: espnLines,
+        sharpSignals,
+      };
+    }));
+
+    const matched = gamesWithStats.filter(g => g.odds).length;
+    const withLines = gamesWithStats.filter(g => g.lineMovement).length;
+    console.log(`[NFL] Matched odds to ${matched}/${gamesWithStats.length}, ESPN lines ${withLines}/${gamesWithStats.length}${isPreseason ? ' (PRESEASON — projections suppressed)' : ''}`);
+
+    // Claude writes notes only; every number comes from model.js. Kept short on
+    // purpose — the long legacy prompts still ask the other three sports for
+    // figures that are now discarded.
+    const prompt = `You are helping annotate NFL betting matchups. For each game below, write 2-3 short factual observations a bettor would care about: injuries, rest, travel, venue, form.
+
+Do NOT predict scores, edges, probabilities or bet sizes. Those are computed elsewhere and anything you invent will be discarded.
+
+${isPreseason ? 'NOTE: these are PRESEASON games. Starters play limited snaps and results are not predictive. Say so where relevant.\n' : ''}
+Games:
+${JSON.stringify(gamesWithStats.map(g => ({
+      homeTeam: g.homeTeam, awayTeam: g.awayTeam, gameTime: g.gameTime,
+      homeRecord: g.homeData?.record, awayRecord: g.awayData?.record,
+      homeForm: g.homeForm, awayForm: g.awayForm,
+      travel: g.travel, dome: g.dome,
+      injuries: {
+        home: (g.injuries.home || []).slice(0, 6),
+        away: (g.injuries.away || []).slice(0, 6),
+      },
+    })), null, 1)}
+
+Reply with JSON only:
+{"games":[{"homeTeam":"<exact name>","awayTeam":"<exact name>","keyFactors":["...","..."]}]}`;
+
+    console.log('[NFL] Fetching commentary...');
+    const commentary = await fetchCommentary('nfl', prompt);
+    const formattedGames = buildGamesFromModel('nfl', gamesWithStats, commentary, skipReason);
+
+    await savePicksFromGames('nfl', formattedGames, eventMap);
+
+    return res.json({
+      sport: 'NFL',
+      games: formattedGames,
+      arbitrageAlerts,
+      ...(isPreseason ? {
+        message: 'Preseason: lines and injuries are shown, but no picks are made. Starters play a quarter and backups decide results, so scoring averages do not describe these teams. Projections resume automatically once regular-season games have been played.',
+      } : {}),
+    });
+  } catch (error) {
+    console.error('NFL Prediction error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+}
 
 async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
   try {
@@ -1938,7 +2218,7 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
         fetchRecentGames(awayTeamName),
         fetchPaceData(homeTeamName),
         fetchPaceData(awayTeamName),
-        fetchTravelData(awayTeamName, homeTeamName),
+        fetchTravelData(awayTeamName, homeTeamName, 'nba'),
         fetchInjuries(homeFullName, 'nba'),  // FIX: pass full name not nickname
         fetchInjuries(awayFullName, 'nba')   // FIX: pass full name not nickname
       ]);
@@ -2064,7 +2344,7 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
         fetchNHLTeamStats(awayTeamName),
         fetchNHLRecentGames(homeTeamName),
         fetchNHLRecentGames(awayTeamName),
-        fetchTravelData(awayTeamName, homeTeamName),
+        fetchTravelData(awayTeamName, homeTeamName, 'nhl'),
         fetchInjuries(homeFullName, 'nhl'),
         fetchInjuries(awayFullName, 'nhl')
       ]);
