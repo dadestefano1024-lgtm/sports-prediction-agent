@@ -471,3 +471,34 @@ test('priceGame respects a worse price', () => {
   assert.ok(dear.spread.stake < cheap.spread.stake,
     `paying more juice should stake less: ${dear.spread.stake} vs ${cheap.spread.stake}`);
 });
+
+// ----------------------------------------------------------------------------
+test('plausibleSpread accepts real lines', () => {
+  assert.ok(m.plausibleSpread('nfl', -3));
+  assert.ok(m.plausibleSpread('nfl', 7.5));
+  assert.ok(m.plausibleSpread('nba', -12.5));
+  assert.ok(m.plausibleSpread('mlb', -1.5));
+  assert.ok(m.plausibleSpread('nhl', 1.5));
+  assert.ok(m.plausibleSpread('mlb', 2.5), 'alternate run lines exist');
+});
+
+test('plausibleSpread rejects what the ESPN scrape actually produced', () => {
+  // Observed live: a constant openSpread per sport, and impossible run lines.
+  assert.equal(m.plausibleSpread('mlb', -8), false, 'MLB never posts -8');
+  assert.equal(m.plausibleSpread('nhl', -9), false);
+  assert.equal(m.plausibleSpread('nba', -10), true, 'plausible for basketball, just wrong here');
+  assert.equal(m.plausibleSpread('mlb', 0), false, 'no pick-em run line');
+  assert.equal(m.plausibleSpread('nhl', 0), false);
+  assert.equal(m.plausibleSpread('mlb', -3), false, 'out of range for a run line');
+});
+
+test('plausibleSpread rejects malformed values', () => {
+  assert.equal(m.plausibleSpread('nfl', NaN), false);
+  assert.equal(m.plausibleSpread('nfl', null), false);
+  assert.equal(m.plausibleSpread('nfl', undefined), false);
+  assert.equal(m.plausibleSpread('nfl', ''), false);
+  assert.ok(m.plausibleSpread('nfl', 0), 'but a real pick-em is valid in football');
+  assert.equal(m.plausibleSpread('nfl', -3.3), false, 'spreads move in half points');
+  assert.equal(m.plausibleSpread('nfl', 99), false);
+  assert.equal(m.plausibleSpread('cricket', -3), false, 'unknown sport is not trusted');
+});

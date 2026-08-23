@@ -369,7 +369,7 @@ async function captureClosingLines() {
       (bySport[row.sport] = bySport[row.sport] || []).push(row.espn_game_id);
     }
 
-    let written = 0;
+    let written = 0, rejected = 0;
     for (const [sport, gameIds] of Object.entries(bySport)) {
       let lines;
       try {
@@ -380,8 +380,12 @@ async function captureClosingLines() {
       }
       for (const gameId of gameIds) {
         const current = lines && lines[gameId];
-        const closing = current && Number(current.currentSpread);
-        if (!Number.isFinite(closing)) continue;
+        const closing = current ? current.currentSpread : null;
+        // Refuse anything a book could not have posted. The ESPN spread parse
+        // is demonstrably broken — constant openSpread per sport, run lines of
+        // 0 and -3 — and a wrong closing line is worse than a missing one
+        // because it still reads as a measurement.
+        if (!model.plausibleSpread(sport, closing)) { rejected++; continue; }
         const res = await pool.query(
           `UPDATE picks SET closing_line = $1
              WHERE espn_game_id = $2 AND market = 'spread' AND closing_line IS NULL`,
@@ -390,6 +394,9 @@ async function captureClosingLines() {
       }
     }
     if (written > 0) console.log(`[CLV] captured closing lines for ${written} picks`);
+    if (rejected > 0) {
+      console.warn(`[CLV] rejected ${rejected} implausible lines from the ESPN scrape`);
+    }
   } catch (err) {
     console.error('[CLV] captureClosingLines error:', err.message);
   }
@@ -404,6 +411,25 @@ async function captureClosingLines() {
  * far more than a short-run win rate: 159 picks cannot distinguish skill from
  * noise, but a persistent CLV edge over a few weeks can.
  */
+/**
+ * Null out any stored closing line that could not have been a real posted line.
+ *
+ * Needed because the broken scrape already wrote one: a -9.5 average CLV on an
+ * MLB run line, which is arithmetically impossible when the line is always 1.5.
+ */
+async function clearImplausibleClosingLines() {
+  if (!dbReady || !pool) return 0;
+  const rows = await pool.query(
+    `SELECT id, sport, closing_line FROM picks WHERE closing_line IS NOT NULL`);
+  const bad = rows.rows
+    .filter(r => !model.plausibleSpread(r.sport, r.closing_line))
+    .map(r => r.id);
+  if (!bad.length) return 0;
+  await pool.query(`UPDATE picks SET closing_line = NULL WHERE id = ANY($1::int[])`, [bad]);
+  console.log(`[CLV] cleared ${bad.length} implausible closing lines`);
+  return bad.length;
+}
+
 async function getClvStats(sport = null) {
   if (!dbReady || !pool) return null;
   const filter = sport ? `AND sport = $1` : '';
@@ -2435,11 +2461,30 @@ app.post('/api/regrade', async (req, res) => {
   }
 });
 
+// Inspect what the ESPN line scrape actually returns for a sport. That parser
+// strips tags and pattern-matches numeric tokens positionally, so it is brittle
+// across sports and layout changes — and a wrong closing line makes CLV worse
+// than no CLV, because it looks like a measurement.
+app.get('/api/debug/lines/:sport', async (req, res) => {
+  try {
+    const lines = await fetchEspnOpeningLines(req.params.sport);
+    const ids = Object.keys(lines || {});
+    res.json({
+      sport: req.params.sport,
+      games: ids.length,
+      sample: ids.slice(0, 6).map(id => ({ id, ...lines[id] })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Manual closing-line capture, for testing the job without waiting for a game.
 app.post('/api/capture-closing', async (req, res) => {
+  const cleared = req.query.reset ? await clearImplausibleClosingLines() : 0;
   await captureClosingLines();
   const clv = await getClvStats(req.query.sport || null);
-  res.json({ ok: true, clv });
+  res.json({ ok: true, cleared, clv });
 });
 
 // Manual grade trigger (for testing)

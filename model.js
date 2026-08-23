@@ -500,6 +500,49 @@ function priceGame({
   return out;
 }
 
+// ----------------------------------------------------------------------------
+// Sanity gate for scraped lines
+// ----------------------------------------------------------------------------
+
+/**
+ * Largest credible spread per sport, in that sport's own units.
+ * Baseball and hockey effectively only ever post 1.5 (occasionally 2.5).
+ */
+const SPREAD_LIMITS = { nfl: 30, nba: 30, mlb: 2.5, nhl: 2.5 };
+
+/**
+ * Is this a line a book could actually have posted?
+ *
+ * The ESPN line scrape pattern-matches numeric tokens positionally and, for
+ * spreads, gets it wrong: it reported a constant openSpread of -8 for every MLB
+ * game, -9 for every NHL game and -10 for every NBA game, plus current spreads
+ * of 0 and -3 on runlines that are always 1.5. Totals and moneylines from the
+ * same scrape are fine.
+ *
+ * A wrong closing line is worse than a missing one, because it still looks like
+ * a measurement — it would quietly poison the one statistic meant to tell us
+ * whether the model works. So anything failing this check is dropped rather
+ * than stored, and the rejection is counted so a silently degrading scraper
+ * shows up in the logs instead of in the numbers.
+ */
+function plausibleSpread(sport, value) {
+  // Reject empties before Number(): Number(null) and Number('') are both 0, and
+  // 0 is a legitimate pick-em spread in football and basketball. Exactly the
+  // trap parseScore fell into with scores, so it is guarded the same way here.
+  if (value === null || value === undefined || value === '') return false;
+  const v = Number(value);
+  if (!Number.isFinite(v)) return false;
+  const limit = SPREAD_LIMITS[String(sport || '').toLowerCase()];
+  if (!limit) return false;
+  if (Math.abs(v) > limit) return false;
+  // Every posted spread is a multiple of a half point.
+  if (Math.abs(v * 2 - Math.round(v * 2)) > 1e-9) return false;
+  // Baseball and hockey do not post a pick-em run line or puck line.
+  const s = String(sport).toLowerCase();
+  if ((s === 'mlb' || s === 'nhl') && v === 0) return false;
+  return true;
+}
+
 module.exports = {
   SPORTS,
   sportConfig,
@@ -527,4 +570,6 @@ module.exports = {
   projectFromScoringAverages,
   confidenceFromEdge,
   priceGame,
+  SPREAD_LIMITS,
+  plausibleSpread,
 };
