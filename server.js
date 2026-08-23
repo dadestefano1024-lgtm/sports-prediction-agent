@@ -250,6 +250,38 @@ async function gradePendingPicks() {
 /**
  * Grade a single pick against final scores. Returns 'win', 'loss', or 'push'.
  */
+/**
+ * Which side of the spread a stored pick is on.
+ *
+ * Lifted out of gradePick so grading and CLV cannot drift apart in how they
+ * read the same row — if these two ever disagreed, CLV would be measured
+ * against the opposite side of the bet being graded.
+ *
+ * Matches on the full team name first. gradePick previously compared only the
+ * last word of each name, which collides whenever both teams share it: in
+ * "Boston Red Sox @ Chicago White Sox" both nicknames reduce to "sox", the home
+ * test runs first, and every such pick was read as home regardless of which
+ * side was actually taken. Stored picks carry the full team name, so full-name
+ * matching is both correct and available; the last-word test is kept only as a
+ * fallback for anything older or hand-entered.
+ */
+function pickedSide(pick) {
+  const text = (pick.pick || '').toLowerCase();
+  if (!text) return null;
+
+  const home = (pick.home_team || '').toLowerCase();
+  const away = (pick.away_team || '').toLowerCase();
+  if (home && text.includes(home)) return 'home';
+  if (away && text.includes(away)) return 'away';
+
+  const homeNick = home.split(' ').pop();
+  const awayNick = away.split(' ').pop();
+  if (homeNick && homeNick === awayNick) return null;   // ambiguous, refuse to guess
+  if (homeNick && text.includes(homeNick)) return 'home';
+  if (awayNick && text.includes(awayNick)) return 'away';
+  return null;
+}
+
 function gradePick(pick, homeScore, awayScore) {
   const line = parseFloat(pick.line);
   if (isNaN(line)) return null;
@@ -257,14 +289,9 @@ function gradePick(pick, homeScore, awayScore) {
   if (pick.market === 'spread') {
     // pick.pick contains text like "Lakers -5.5" or "Celtics +3.5"
     // Determine which team was picked: if pick contains home team name, picked home
-    const pickText = (pick.pick || '').toLowerCase();
-    const homeNickname = (pick.home_team || '').split(' ').pop().toLowerCase();
-    const awayNickname = (pick.away_team || '').split(' ').pop().toLowerCase();
-
-    const pickedHome = pickText.includes(homeNickname);
-    const pickedAway = pickText.includes(awayNickname);
-
-    if (!pickedHome && !pickedAway) return null;
+    const side = pickedSide(pick);
+    if (!side) return null;
+    const pickedHome = side === 'home';
 
     // `line` is the home spread (negative = home favored).
     //
@@ -299,6 +326,117 @@ function gradePick(pick, homeScore, awayScore) {
   }
 
   return null;
+}
+
+/**
+ * Capture closing lines for picks whose game is about to start.
+ *
+ * Closing line value is the only fast read on whether a model is doing
+ * anything. A win rate needs on the order of a thousand bets before skill
+ * separates from noise; repeatedly beating the number the market settles on is
+ * itself the evidence, and it shows up in weeks. The closing_line column has
+ * existed since the table was created and was never once written to.
+ *
+ * Lines come from the ESPN odds scrape rather than The Odds API. A job polling
+ * near every game start would burn the 500-request monthly quota in days, and
+ * ESPN's current line is free and already fetched and cached elsewhere in this
+ * file. It is a scrape and can break; a missing closing line costs one CLV
+ * sample and nothing else.
+ *
+ * The window is games starting within the next 30 minutes that have not yet
+ * started. Running every 10 minutes means each qualifying game is seen at least
+ * once before kickoff. After kickoff ESPN may serve live numbers, so games
+ * already under way are deliberately skipped rather than risk recording an
+ * in-play line as the close.
+ */
+async function captureClosingLines() {
+  if (!dbReady || !pool) return;
+  try {
+    const due = await pool.query(`
+      SELECT DISTINCT sport, espn_game_id
+      FROM picks
+      WHERE closing_line IS NULL
+        AND espn_game_id IS NOT NULL
+        AND game_time IS NOT NULL
+        AND game_time > NOW()
+        AND game_time <= NOW() + INTERVAL '30 minutes'
+      LIMIT 100;
+    `);
+    if (due.rows.length === 0) return;
+
+    const bySport = {};
+    for (const row of due.rows) {
+      (bySport[row.sport] = bySport[row.sport] || []).push(row.espn_game_id);
+    }
+
+    let written = 0;
+    for (const [sport, gameIds] of Object.entries(bySport)) {
+      let lines;
+      try {
+        lines = await fetchEspnOpeningLines(sport);
+      } catch (e) {
+        console.error(`[CLV] line fetch failed for ${sport}:`, e.message);
+        continue;
+      }
+      for (const gameId of gameIds) {
+        const current = lines && lines[gameId];
+        const closing = current && Number(current.currentSpread);
+        if (!Number.isFinite(closing)) continue;
+        const res = await pool.query(
+          `UPDATE picks SET closing_line = $1
+             WHERE espn_game_id = $2 AND market = 'spread' AND closing_line IS NULL`,
+          [closing, gameId]);
+        written += res.rowCount;
+      }
+    }
+    if (written > 0) console.log(`[CLV] captured closing lines for ${written} picks`);
+  } catch (err) {
+    console.error('[CLV] captureClosingLines error:', err.message);
+  }
+}
+
+/**
+ * Aggregate closing line value across graded spread picks.
+ *
+ * Positive means the line moved toward us after we bet — we took a better
+ * number than the market settled on. Beating the close more than half the time,
+ * consistently, is the signal that a model has genuine information. It is worth
+ * far more than a short-run win rate: 159 picks cannot distinguish skill from
+ * noise, but a persistent CLV edge over a few weeks can.
+ */
+async function getClvStats(sport = null) {
+  if (!dbReady || !pool) return null;
+  const filter = sport ? `AND sport = $1` : '';
+  const params = sport ? [sport] : [];
+  const rows = await pool.query(`
+    SELECT pick, home_team, away_team, line_at_pick, closing_line
+    FROM picks
+    WHERE market = 'spread'
+      AND closing_line IS NOT NULL
+      AND line_at_pick IS NOT NULL
+      ${filter};
+  `, params);
+
+  let beat = 0, tied = 0, lost = 0, sum = 0, n = 0;
+  for (const r of rows.rows) {
+    const side = pickedSide(r);
+    if (!side) continue;
+    const clv = model.closingLineValue({
+      betSpread: Number(r.line_at_pick),
+      closingSpread: Number(r.closing_line),
+      side,
+    });
+    if (clv === null || !Number.isFinite(clv)) continue;
+    n++; sum += clv;
+    if (clv > 0) beat++; else if (clv < 0) lost++; else tied++;
+  }
+
+  return {
+    samples: n,
+    avgCLV: n ? +(sum / n).toFixed(3) : null,
+    beat, tied, lost,
+    beatRate: n ? +(beat / n).toFixed(4) : null,
+  };
 }
 
 /**
@@ -369,6 +507,7 @@ async function getHistoryStats(sport = null, limit = 50) {
       overall: overall.rows[0],
       byMarket: byMarket.rows,
       byConfidence: byConfidence.rows,
+      clv: await getClvStats(sport),
       returned: recent.rows.length,
       recent: recent.rows
     };
@@ -2296,6 +2435,13 @@ app.post('/api/regrade', async (req, res) => {
   }
 });
 
+// Manual closing-line capture, for testing the job without waiting for a game.
+app.post('/api/capture-closing', async (req, res) => {
+  await captureClosingLines();
+  const clv = await getClvStats(req.query.sport || null);
+  res.json({ ok: true, clv });
+});
+
 // Manual grade trigger (for testing)
 app.post('/api/grade', async (req, res) => {
   await gradePendingPicks();
@@ -2316,6 +2462,18 @@ app.post('/api/grade', async (req, res) => {
 setInterval(() => {
   gradePendingPicks().catch(e => console.error('[GRADE_JOB]', e.message));
 }, 60 * 60 * 1000);
+
+// Closing lines every 10 minutes. The window in captureClosingLines is 30
+// minutes wide, so every qualifying game is seen at least once before it
+// starts. This only works because the service runs on a Starter instance and
+// stays awake — on a free instance that spins down after 15 minutes idle,
+// nothing would be running at kickoff and CLV would need an external trigger.
+setInterval(() => {
+  captureClosingLines().catch(e => console.error('[CLV_JOB]', e.message));
+}, 10 * 60 * 1000);
+setTimeout(() => {
+  captureClosingLines().catch(e => console.error('[CLV_JOB]', e.message));
+}, 45000);
 // Also run once 30 seconds after startup (gives DB time to initialize)
 setTimeout(() => {
   gradePendingPicks().catch(e => console.error('[GRADE_JOB]', e.message));
