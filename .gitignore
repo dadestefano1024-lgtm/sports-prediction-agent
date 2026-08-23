@@ -3,3 +3,4 @@ node_modules/
 *.log
 efftest-cache.json
 epatest-cache.json
+sharptest-cache.json
