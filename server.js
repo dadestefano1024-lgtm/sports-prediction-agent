@@ -746,9 +746,9 @@ function espnDayStamp(offsetDays) {
   return key ? key.replace(/-/g, '') : '';
 }
 
-function espnScoreboardUrl(sportPath) {
+function espnScoreboardUrl(sportPath, days = 1) {
   return `https://site.api.espn.com/apis/site/v2/sports/${sportPath}/scoreboard` +
-    `?dates=${espnDayStamp(0)}-${espnDayStamp(1)}&limit=100`;
+    `?dates=${espnDayStamp(0)}-${espnDayStamp(days)}&limit=100`;
 }
 
 /**
@@ -2450,6 +2450,141 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
     };
   });
 }
+
+// ============================================================================
+// PICK-EM POOL
+// ============================================================================
+// A weekly pool sets its lines once and leaves them. The market does not: it
+// spends the week absorbing information, and by kickoff the two numbers can be
+// several points apart. Backing the side the market moved toward, at the frozen
+// number, went 46-27 across 2025 when the move was two points or more.
+//
+// This is a genuinely different problem from the rest of the app. Everywhere
+// else the market is the opponent and the model tries to beat it, which it
+// measurably cannot. Here the market is the source of truth and the opponent is
+// a stale number — no model opinion is used at all, and none should be.
+
+/** Upcoming games for a whole week, with the current market spread and total. */
+app.get('/api/pool/:sport', async (req, res) => {
+  const sport = String(req.params.sport || '').toLowerCase();
+  const path = ESPN_SCOREBOARD_PATHS[sport];
+  if (!path) return res.status(400).json({ error: `Unsupported sport: ${sport}` });
+  try {
+    const [sb, oddsData] = await Promise.all([
+      cachedGet(espnScoreboardUrl(path, 7), { timeout: 10000 }),
+      fetchOdds(sport).catch(() => []),
+    ]);
+    const events = ((sb.data && sb.data.events) || []).filter(e =>
+      e.competitions?.[0]?.status?.type?.state === 'pre');
+
+    const games = events.map(event => {
+      const comp = event.competitions[0];
+      const home = comp.competitors.find(c => c.homeAway === 'home');
+      const away = comp.competitors.find(c => c.homeAway === 'away');
+      const homeFull = home.team.displayName;
+      const awayFull = away.team.displayName;
+      const odds = matchOddsToGame(oddsData, homeFull, awayFull);
+      const espnOdds = (comp.odds || [])[0] || null;
+
+      // The Odds API first, ESPN's own number as a fallback.
+      const marketSpread = odds && Number.isFinite(Number(odds.spread))
+        ? Number(odds.spread)
+        : (espnOdds && Number.isFinite(Number(espnOdds.spread)) ? Number(espnOdds.spread) : null);
+      const marketTotal = odds && Number.isFinite(Number(odds.total))
+        ? Number(odds.total)
+        : (espnOdds && Number.isFinite(Number(espnOdds.overUnder)) ? Number(espnOdds.overUnder) : null);
+
+      return {
+        id: event.id,
+        homeTeam: homeFull,
+        awayTeam: awayFull,
+        gameTime: new Date(event.date).toLocaleString(),
+        startTime: event.date,
+        marketSpread: (marketSpread !== null && model.plausibleSpread(sport, marketSpread))
+          ? marketSpread : null,
+        marketTotal,
+        bookmaker: odds ? odds.bookmaker : null,
+      };
+    });
+
+    games.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+    res.json({ sport: sport.toUpperCase(), games });
+  } catch (err) {
+    console.error(`[POOL] ${sport}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Score a set of frozen pool lines against the current market and rank them.
+ *
+ * Body: { lines: { "<gameId>": { spread: -3, total: 44 } }, count: 6 }
+ *
+ * Ranked on win probability rather than the raw point gap, because two points
+ * across a key number beats three points through empty space.
+ */
+app.post('/api/pool/:sport', async (req, res) => {
+  const sport = String(req.params.sport || '').toLowerCase();
+  const path = ESPN_SCOREBOARD_PATHS[sport];
+  if (!path) return res.status(400).json({ error: `Unsupported sport: ${sport}` });
+  const lines = (req.body && req.body.lines) || {};
+  const count = Math.min(Math.max(parseInt(req.body && req.body.count, 10) || 6, 1), 20);
+
+  try {
+    const [sb, oddsData] = await Promise.all([
+      cachedGet(espnScoreboardUrl(path, 7), { timeout: 10000 }),
+      fetchOdds(sport).catch(() => []),
+    ]);
+    const events = ((sb.data && sb.data.events) || []).filter(e =>
+      e.competitions?.[0]?.status?.type?.state === 'pre');
+
+    const candidates = [];
+    const games = [];
+    for (const event of events) {
+      const entry = lines[event.id];
+      const comp = event.competitions[0];
+      const home = comp.competitors.find(c => c.homeAway === 'home');
+      const away = comp.competitors.find(c => c.homeAway === 'away');
+      const homeFull = home.team.displayName;
+      const awayFull = away.team.displayName;
+      const odds = matchOddsToGame(oddsData, homeFull, awayFull);
+      const espnOdds = (comp.odds || [])[0] || null;
+      const marketSpread = odds && Number.isFinite(Number(odds.spread)) ? Number(odds.spread)
+        : (espnOdds && Number.isFinite(Number(espnOdds.spread)) ? Number(espnOdds.spread) : null);
+      const marketTotal = odds && Number.isFinite(Number(odds.total)) ? Number(odds.total)
+        : (espnOdds && Number.isFinite(Number(espnOdds.overUnder)) ? Number(espnOdds.overUnder) : null);
+
+      const usableSpread = marketSpread !== null && model.plausibleSpread(sport, marketSpread);
+      const poolSpread = entry && Number.isFinite(Number(entry.spread)) ? Number(entry.spread) : null;
+      const poolTotal = entry && Number.isFinite(Number(entry.total)) ? Number(entry.total) : null;
+
+      const edge = model.poolEdge({
+        sport,
+        poolSpread: usableSpread ? poolSpread : null,
+        marketSpread: usableSpread ? marketSpread : null,
+        poolTotal, marketTotal,
+        homeTeam: homeFull, awayTeam: awayFull,
+      });
+
+      const label = `${awayFull} @ ${homeFull}`;
+      games.push({ id: event.id, matchup: label, gameTime: new Date(event.date).toLocaleString(),
+                   marketSpread, marketTotal, spread: edge.spread, total: edge.total });
+      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label });
+      if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label });
+    }
+
+    res.json({
+      sport: sport.toUpperCase(),
+      count,
+      best: model.rankPoolPicks(candidates, count),
+      considered: candidates.length,
+      games,
+    });
+  } catch (err) {
+    console.error(`[POOL] ${sport}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ============================================================================
 // PREDICTION CACHE

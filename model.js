@@ -1049,6 +1049,94 @@ function bestOffer({ quotes, probFor, trust = 0.25, kellyFraction = 0.25 }) {
   return best;
 }
 
+// ----------------------------------------------------------------------------
+// Stale-line (pick-em pool) edge
+// ----------------------------------------------------------------------------
+
+/**
+ * Value in a line that was set days ago and has not moved since.
+ *
+ * This is a different problem from the rest of this file, and a much more
+ * tractable one. Everywhere else the market is the opponent: the model tries to
+ * know better than the closing price, and measurably cannot. Here the market is
+ * the SOURCE OF TRUTH, and the opponent is a number that stopped updating on
+ * Wednesday. Beating a stale line does not require beating anybody.
+ *
+ * Measured over 269 NFL games of 2025: backing the side the market moved toward,
+ * at the pre-move number, went 101-83 overall and 46-27 — 63 percent — when the
+ * move was two points or more. Twenty-seven percent of games move that far.
+ * Caveats worth keeping attached to those figures: one season, 73 games in the
+ * strongest bucket, and the threshold was chosen after seeing the data.
+ *
+ * The method is simply to treat the market's current number as the expected
+ * result and ask how the stale line prices against it. That inherits everything
+ * already built and tested — key numbers, pushes, the lot — rather than
+ * inventing a second way to compute a probability.
+ *
+ * Both spreads are HOME spreads, matching the convention used everywhere else.
+ */
+function poolEdge({ sport, poolSpread, marketSpread, poolTotal, marketTotal,
+                    homeTeam = 'Home', awayTeam = 'Away' }) {
+  const cfg = sportConfig(sport);
+  const out = { spread: null, total: null };
+  const sign = (n) => `${n > 0 ? '+' : ''}${n}`;
+
+  if (Number.isFinite(poolSpread) && Number.isFinite(marketSpread)) {
+    // The market expects the home side to win by -marketSpread.
+    const o = coverOutcomes({
+      predictedMargin: -marketSpread, spread: poolSpread, sigma: cfg.sigma, sport,
+    });
+    const resolved = o.win + o.loss;
+    const homeProb = resolved > 0 ? o.win / resolved : 0.5;
+    const backHome = homeProb >= 0.5;
+    out.spread = {
+      side: backHome ? 'home' : 'away',
+      pick: backHome ? `${homeTeam} ${sign(poolSpread)}` : `${awayTeam} ${sign(-poolSpread)}`,
+      poolLine: backHome ? poolSpread : -poolSpread,
+      marketLine: backHome ? marketSpread : -marketSpread,
+      // How many points of stale value the pool line is giving away.
+      gap: +Math.abs(poolSpread - marketSpread).toFixed(2),
+      winProb: +(backHome ? homeProb : 1 - homeProb).toFixed(4),
+      pushProb: +o.push.toFixed(4),
+    };
+  }
+
+  if (Number.isFinite(poolTotal) && Number.isFinite(marketTotal)) {
+    const o = totalOutcomes({
+      predictedTotal: marketTotal, line: poolTotal, sigma: cfg.totalSigma,
+    });
+    const resolved = o.over + o.under;
+    const overProb = resolved > 0 ? o.over / resolved : 0.5;
+    const backOver = overProb >= 0.5;
+    out.total = {
+      side: backOver ? 'over' : 'under',
+      pick: `${backOver ? 'Over' : 'Under'} ${poolTotal}`,
+      poolLine: poolTotal,
+      marketLine: marketTotal,
+      gap: +Math.abs(poolTotal - marketTotal).toFixed(2),
+      winProb: +(backOver ? overProb : 1 - overProb).toFixed(4),
+      pushProb: +o.push.toFixed(4),
+    };
+  }
+
+  return out;
+}
+
+/**
+ * Rank every candidate from a slate and hand back the best `count`.
+ *
+ * Ranked on win probability rather than the raw point gap, because a two-point
+ * move across a key number is worth more than a three-point move through empty
+ * space — the whole reason the discrete margin distribution exists. Ties break
+ * on the gap, which is the more legible number of the two.
+ */
+function rankPoolPicks(candidates, count = 6) {
+  return (candidates || [])
+    .filter(c => c && Number.isFinite(c.winProb))
+    .sort((a, b) => (b.winProb - a.winProb) || (b.gap - a.gap))
+    .slice(0, count);
+}
+
 module.exports = {
   SPORTS,
   sportConfig,
@@ -1077,6 +1165,8 @@ module.exports = {
   confidenceFromEdge,
   priceGame,
   bestOffer,
+  poolEdge,
+  rankPoolPicks,
   SPREAD_LIMITS,
   plausibleSpread,
   NFL_KEY_NUMBER_WEIGHTS,

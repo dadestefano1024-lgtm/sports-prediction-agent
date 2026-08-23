@@ -135,6 +135,29 @@
     }
     .card-body { padding: 14px 16px; }
 
+    .pool-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .pool-table th {
+      text-align: left; padding: 8px 6px; border-bottom: 1px solid #30363d;
+      color: #8b949e; font-weight: 600; font-size: 11px; text-transform: uppercase;
+    }
+    .pool-table td { padding: 7px 6px; border-bottom: 1px solid #21262d; }
+    .pool-table input {
+      width: 62px; background: #0d1117; color: #c9d1d9;
+      border: 1px solid #30363d; border-radius: 4px; padding: 4px 6px; font-size: 13px;
+    }
+    .pool-table input:focus { outline: none; border-color: #58a6ff; }
+    .pool-market { color: #8b949e; font-variant-numeric: tabular-nums; }
+    .pool-pick {
+      background: #161b22; border: 1px solid #30363d; border-left: 3px solid #58a6ff;
+      border-radius: 6px; padding: 10px 12px; margin-bottom: 8px;
+    }
+    .pool-pick.strong { border-left-color: #3fb950; }
+    .pool-pick .headline { font-weight: 700; font-size: 15px; }
+    .pool-pick .detail { color: #8b949e; font-size: 12px; margin-top: 3px; }
+    .pool-note {
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 12px 14px; margin-bottom: 14px; color: #8b949e; font-size: 12px; line-height: 1.5;
+    }
     .weather-badge {
       display: inline-flex;
       align-items: center;
@@ -516,6 +539,7 @@
     <button class="tab" onclick="switchTab('nfl', this)">🏈 NFL</button>
     <button class="tab" onclick="switchTab('mlb', this)">⚾ MLB</button>
     <button class="tab" onclick="switchTab('cbb', this)">🏫 CBB</button>
+    <button class="tab" onclick="switchTab('pool', this)">🎯 Pick 6</button>
     <button class="tab" onclick="switchTab('history', this)">📊 History</button>
   </div>
 
@@ -568,6 +592,14 @@
 
       const fetchBtn = document.getElementById('fetch-btn');
       const refreshInfo = document.getElementById('refresh-info');
+
+      if (sport === 'pool') {
+        fetchBtn.style.display = 'none';
+        refreshInfo.textContent = 'Score your pool lines against the current market';
+        document.getElementById('arb-container').innerHTML = '';
+        loadPool();
+        return;
+      }
 
       if (sport === 'history') {
         // History tab: hide the fetch button, load history immediately
@@ -978,6 +1010,139 @@
     // ========================================================================
     // HISTORY TAB
     // ========================================================================
+
+    // ---------------------------------------------------------------------
+    // PICK 6
+    // ---------------------------------------------------------------------
+    // A weekly pool freezes its lines; the market does not. By kickoff the two
+    // can be several points apart, and the gap is the edge — backing the side
+    // the market moved toward, at the frozen number, went 46-27 across 2025
+    // when the move was two points or more.
+    //
+    // No model opinion is involved. The market is treated as the truth and the
+    // pool line is scored against it, which is the opposite of what the rest of
+    // this app does and the reason it actually works.
+    let poolGames = [];
+    const POOL_KEY = 'poolLines:nfl';
+
+    const savedPoolLines = () => {
+      try { return JSON.parse(localStorage.getItem(POOL_KEY) || '{}'); } catch (e) { return {}; }
+    };
+    function persistPoolLines() {
+      const out = {};
+      for (const g of poolGames) {
+        const sp = document.getElementById('ps-' + g.id);
+        const tt = document.getElementById('pt-' + g.id);
+        const spread = sp && sp.value !== '' ? Number(sp.value) : null;
+        const total = tt && tt.value !== '' ? Number(tt.value) : null;
+        if (spread !== null || total !== null) out[g.id] = { spread, total };
+      }
+      try { localStorage.setItem(POOL_KEY, JSON.stringify(out)); } catch (e) { /* ignore */ }
+      return out;
+    }
+
+    async function loadPool() {
+      const content = document.getElementById('content');
+      content.innerHTML = '<div class="loading"><div class="spinner"></div><div>Loading this week&rsquo;s games and market lines...</div></div>';
+      try {
+        const res = await fetch('/api/pool/nfl');
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        poolGames = data.games || [];
+        renderPool();
+      } catch (err) {
+        content.innerHTML = `<div class="error">❌ ${err.message}</div>`;
+      }
+    }
+
+    function renderPool() {
+      const saved = savedPoolLines();
+      if (!poolGames.length) {
+        document.getElementById('content').innerHTML =
+          '<div class="no-games">No upcoming NFL games in the next week.</div>';
+        return;
+      }
+      const rows = poolGames.map(g => {
+        const v = saved[g.id] || {};
+        const ms = g.marketSpread === null ? '—' : (g.marketSpread > 0 ? '+' + g.marketSpread : g.marketSpread);
+        const mt = g.marketTotal === null ? '—' : g.marketTotal;
+        return `
+          <tr>
+            <td>${g.awayTeam} @ <strong>${g.homeTeam}</strong><div class="pool-market">${g.gameTime}</div></td>
+            <td class="pool-market">${ms}</td>
+            <td><input id="ps-${g.id}" type="number" step="0.5" placeholder="—"
+                       value="${v.spread ?? ''}" oninput="persistPoolLines()"></td>
+            <td class="pool-market">${mt}</td>
+            <td><input id="pt-${g.id}" type="number" step="0.5" placeholder="—"
+                       value="${v.total ?? ''}" oninput="persistPoolLines()"></td>
+          </tr>`;
+      }).join('');
+
+      document.getElementById('content').innerHTML = `
+        <div class="pool-note">
+          Enter your pool&rsquo;s lines beside the current market number. Spreads are from the
+          <strong>home</strong> team&rsquo;s side, the same way the market column reads them.
+          Your entries are saved in this browser, so you only type them once a week.
+          <br><br>
+          Ranking is by win probability rather than the size of the gap, because two points across
+          a key number is worth more than three through empty space.
+        </div>
+        <div style="margin-bottom:14px">
+          <button class="btn btn-primary" onclick="rankPool()">Rank my picks</button>
+        </div>
+        <div id="pool-results"></div>
+        <table class="pool-table">
+          <thead><tr>
+            <th>Game</th><th>Market spread</th><th>Your spread</th>
+            <th>Market total</th><th>Your total</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    async function rankPool() {
+      const lines = persistPoolLines();
+      const target = document.getElementById('pool-results');
+      if (!Object.keys(lines).length) {
+        target.innerHTML = '<div class="pool-note">Enter at least one of your pool&rsquo;s lines first.</div>';
+        return;
+      }
+      target.innerHTML = '<div class="loading"><div class="spinner"></div><div>Scoring against the market...</div></div>';
+      try {
+        const res = await fetch('/api/pool/nfl', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lines, count: 6 }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        if (!data.best || !data.best.length) {
+          target.innerHTML = '<div class="pool-note">Nothing to rank yet — the market has no line for those games.</div>';
+          return;
+        }
+        target.innerHTML = `
+          <h3 style="margin:0 0 10px">Best ${data.best.length} of ${data.considered}</h3>
+          ${data.best.map(b => `
+            <div class="pool-pick ${b.gap >= 2 ? 'strong' : ''}">
+              <div class="headline">${b.pick}
+                <span style="color:#8b949e;font-weight:400"> — ${(b.winProb * 100).toFixed(1)}%</span></div>
+              <div class="detail">${b.matchup}</div>
+              <div class="detail">
+                your line ${b.poolLine} &middot; market ${b.marketLine} &middot;
+                ${b.gap} pt${b.gap === 1 ? '' : 's'} stale${b.pushProb > 0.005
+                  ? ` &middot; ${(b.pushProb * 100).toFixed(1)}% push risk` : ''}
+              </div>
+            </div>`).join('')}
+          <div class="pool-note" style="margin-top:12px">
+            Percentages come from treating the current market number as the expected result and
+            pricing your frozen line against it. Measured over 269 games of 2025, the two-point-plus
+            bucket went 46-27. That is 73 games from one season with the threshold chosen after the
+            fact, so treat it as a promising signal rather than a settled one.
+          </div>`;
+      } catch (err) {
+        target.innerHTML = `<div class="error">❌ ${err.message}</div>`;
+      }
+    }
 
     async function loadHistory() {
       const content = document.getElementById('content');

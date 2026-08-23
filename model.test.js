@@ -933,3 +933,81 @@ test('priceGame ignores quotes with an unusable point', () => {
   assert.ok(g.spread);
   assert.equal(g.spread.book, 'Fine');
 });
+
+// ----------------------------------------------------------------------------
+test('poolEdge backs the side the market moved toward', () => {
+  // Pool says home -3. The market has since moved to -6, so the market thinks
+  // home is three points better than the pool line does. Taking home at -3 is
+  // the value side.
+  const a = m.poolEdge({ sport: 'nfl', poolSpread: -3, marketSpread: -6,
+                         homeTeam: 'Chiefs', awayTeam: 'Raiders' });
+  assert.equal(a.spread.side, 'home');
+  assert.equal(a.spread.pick, 'Chiefs -3');
+  close(a.spread.gap, 3, 1e-9);
+  assert.ok(a.spread.winProb > 0.5);
+
+  // And the mirror: the market cooled on home, so the away side is the value.
+  const b = m.poolEdge({ sport: 'nfl', poolSpread: -3, marketSpread: -1,
+                         homeTeam: 'Chiefs', awayTeam: 'Raiders' });
+  assert.equal(b.spread.side, 'away');
+  assert.equal(b.spread.pick, 'Raiders +3');
+  close(b.spread.gap, 2, 1e-9);
+  assert.ok(b.spread.winProb > 0.5);
+});
+
+test('poolEdge on an unmoved line is a coin flip', () => {
+  const r = m.poolEdge({ sport: 'nfl', poolSpread: -3, marketSpread: -3 });
+  close(r.spread.winProb, 0.5, 0.02, 'no move means no edge');
+  close(r.spread.gap, 0, 1e-9);
+});
+
+test('poolEdge values a key number above a raw point gap', () => {
+  // One point of movement, but it crosses the 3.
+  const acrossThree = m.poolEdge({ sport: 'nfl', poolSpread: -2.5, marketSpread: -3.5 });
+  // Two points of movement through empty space.
+  const emptySpace = m.poolEdge({ sport: 'nfl', poolSpread: -8.5, marketSpread: -10.5 });
+  assert.ok(acrossThree.spread.gap < emptySpace.spread.gap, 'smaller raw gap');
+  assert.ok(acrossThree.spread.winProb > 0.53,
+    `crossing the 3 should still be worth having: ${acrossThree.spread.winProb}`);
+});
+
+test('poolEdge handles totals in both directions', () => {
+  const over = m.poolEdge({ sport: 'nfl', poolTotal: 44, marketTotal: 48.5 });
+  assert.equal(over.total.side, 'over');
+  assert.equal(over.total.pick, 'Over 44');
+  assert.ok(over.total.winProb > 0.6);
+
+  const under = m.poolEdge({ sport: 'nfl', poolTotal: 50, marketTotal: 44 });
+  assert.equal(under.total.side, 'under');
+  assert.equal(under.total.pick, 'Under 50');
+  assert.ok(under.total.winProb > 0.6);
+});
+
+test('poolEdge reports push risk on whole numbers', () => {
+  const whole = m.poolEdge({ sport: 'nfl', poolSpread: -3, marketSpread: -6 });
+  assert.ok(whole.spread.pushProb > 0.03, 'a pool line of -3 can land on 3');
+  const half = m.poolEdge({ sport: 'nfl', poolSpread: -3.5, marketSpread: -6 });
+  close(half.spread.pushProb, 0, 1e-9);
+});
+
+test('poolEdge returns nothing for a market it was not given', () => {
+  const r = m.poolEdge({ sport: 'nfl', poolSpread: -3, marketSpread: -6 });
+  assert.equal(r.total, null);
+  const t = m.poolEdge({ sport: 'nfl', poolTotal: 44, marketTotal: 48 });
+  assert.equal(t.spread, null);
+});
+
+test('rankPoolPicks orders by win probability and trims to count', () => {
+  const cands = [
+    { pick: 'A', winProb: 0.55, gap: 5 },
+    { pick: 'B', winProb: 0.62, gap: 2 },
+    { pick: 'C', winProb: 0.58, gap: 9 },
+    { pick: 'D', winProb: 0.51, gap: 1 },
+    { pick: 'bad', gap: 3 },
+  ];
+  const top = m.rankPoolPicks(cands, 3);
+  assert.deepEqual(top.map(x => x.pick), ['B', 'C', 'A'],
+    'probability wins over raw gap — B beats C despite a much smaller gap');
+  assert.equal(m.rankPoolPicks(cands, 6).length, 4, 'the unscored candidate is dropped');
+  assert.deepEqual(m.rankPoolPicks(null, 6), []);
+});
