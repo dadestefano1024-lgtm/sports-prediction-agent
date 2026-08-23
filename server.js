@@ -1820,7 +1820,7 @@ function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
   const homeNorm = normalize(homeTeamFull);
   const awayNorm = normalize(awayTeamFull);
 
-  // FIX 1: Match BOTH teams (was OR), with loose substring matching
+  // Match BOTH teams (was OR), with loose substring matching
   const matchingOdds = oddsData.find(o => {
     const oHome = normalize(o.home_team);
     const oAway = normalize(o.away_team);
@@ -1833,27 +1833,6 @@ function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
     return null;
   }
 
-  // FIX 2: Walk all bookmakers, take first that has each market
-  let spreadOutcomes = null, totalOutcomes = null, h2hOutcomes = null;
-  let spreadBook = null, totalBook = null, h2hBook = null;
-
-  for (const book of matchingOdds.bookmakers) {
-    if (!spreadOutcomes) {
-      const m = book.markets?.find(m => m.key === 'spreads');
-      if (m && m.outcomes?.length) { spreadOutcomes = m.outcomes; spreadBook = book.title; }
-    }
-    if (!totalOutcomes) {
-      const m = book.markets?.find(m => m.key === 'totals');
-      if (m && m.outcomes?.length) { totalOutcomes = m.outcomes; totalBook = book.title; }
-    }
-    if (!h2hOutcomes) {
-      const m = book.markets?.find(m => m.key === 'h2h');
-      if (m && m.outcomes?.length) { h2hOutcomes = m.outcomes; h2hBook = book.title; }
-    }
-    if (spreadOutcomes && totalOutcomes && h2hOutcomes) break;
-  }
-
-  // FIX 3: Pull points AND prices for everything
   const findOutcome = (outcomes, teamName) => {
     if (!outcomes) return null;
     const teamNorm = normalize(teamName);
@@ -1863,25 +1842,145 @@ function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
     });
   };
 
-  const homeSpread = findOutcome(spreadOutcomes, homeTeamFull);
-  const awaySpread = findOutcome(spreadOutcomes, awayTeamFull);
-  const overOutcome = totalOutcomes?.find(o => o.name?.toLowerCase() === 'over');
-  const underOutcome = totalOutcomes?.find(o => o.name?.toLowerCase() === 'under');
-  const homeMLOutcome = findOutcome(h2hOutcomes, homeTeamFull);
-  const awayMLOutcome = findOutcome(h2hOutcomes, awayTeamFull);
+  // Decimal odds make "better price" unambiguous and let a comparison be
+  // checked by hand. Null on anything unreadable so it can never win a max().
+  const dec = (american) => {
+    try { return model.americanToDecimal(american); } catch (e) { return null; }
+  };
+
+  // ---------------------------------------------------------------------
+  // LINE SHOPPING
+  // ---------------------------------------------------------------------
+  // This used to take the FIRST bookmaker offering each market and discard
+  // every other quote, while already walking the whole list. Books disagree on
+  // price constantly, and taking a worse number for no reason is a real cost
+  // paid on every bet — the one source of edge here that requires no model to
+  // be right about anything.
+  //
+  // Prices are only compared at the SAME point. A better price on a worse
+  // number is not a better bet: -105 on -3.5 beats -110 on -3.5, but it does
+  // not beat -110 on -3. So the consensus point is chosen first — the one the
+  // most books post — and the best price is then found among the books
+  // offering it.
+  const spreadQuotes = [];   // { point, homePrice, awayPrice, book }
+  const totalQuotes = [];    // { point, overPrice, underPrice, book }
+  const mlQuotes = [];       // { homePrice, awayPrice, book }
+
+  for (const book of matchingOdds.bookmakers) {
+    const title = book.title || 'Unknown';
+
+    const sm = book.markets?.find(m => m.key === 'spreads');
+    if (sm?.outcomes?.length) {
+      const h = findOutcome(sm.outcomes, homeTeamFull);
+      const a = findOutcome(sm.outcomes, awayTeamFull);
+      if (h && a && Number.isFinite(h.point)) {
+        spreadQuotes.push({ point: h.point, homePrice: h.price, awayPrice: a.price, book: title });
+      }
+    }
+
+    const tm = book.markets?.find(m => m.key === 'totals');
+    if (tm?.outcomes?.length) {
+      const over = tm.outcomes.find(o => o.name?.toLowerCase() === 'over');
+      const under = tm.outcomes.find(o => o.name?.toLowerCase() === 'under');
+      const point = over?.point ?? under?.point;
+      if (Number.isFinite(point)) {
+        totalQuotes.push({ point, overPrice: over?.price ?? null, underPrice: under?.price ?? null, book: title });
+      }
+    }
+
+    const hm = book.markets?.find(m => m.key === 'h2h');
+    if (hm?.outcomes?.length) {
+      const h = findOutcome(hm.outcomes, homeTeamFull);
+      const a = findOutcome(hm.outcomes, awayTeamFull);
+      if (h || a) {
+        mlQuotes.push({ homePrice: h?.price ?? null, awayPrice: a?.price ?? null, book: title });
+      }
+    }
+  }
+
+  // The point the most books agree on. Ties go to whichever was seen first,
+  // which keeps the result stable rather than arbitrary.
+  const consensusPoint = (quotes) => {
+    if (!quotes.length) return null;
+    const counts = new Map();
+    for (const q of quotes) counts.set(q.point, (counts.get(q.point) || 0) + 1);
+    let best = null, bestCount = -1;
+    for (const q of quotes) {
+      const c = counts.get(q.point);
+      if (c > bestCount) { best = q.point; bestCount = c; }
+    }
+    return best;
+  };
+
+  // Highest decimal odds wins; ignore quotes with no readable price.
+  const bestQuote = (quotes, key) => quotes.reduce((best, q) => {
+    const d = dec(q[key]);
+    if (d === null) return best;
+    const bd = best ? dec(best[key]) : null;
+    return (bd === null || d > bd) ? q : best;
+  }, null);
+
+  const spreadPoint = consensusPoint(spreadQuotes);
+  const atSpread = spreadQuotes.filter(q => q.point === spreadPoint);
+  const bestHomeSpread = bestQuote(atSpread, 'homePrice');
+  const bestAwaySpread = bestQuote(atSpread, 'awayPrice');
+
+  const totalPoint = consensusPoint(totalQuotes);
+  const atTotal = totalQuotes.filter(q => q.point === totalPoint);
+  const bestOver = bestQuote(atTotal, 'overPrice');
+  const bestUnder = bestQuote(atTotal, 'underPrice');
+
+  const bestHomeML = bestQuote(mlQuotes, 'homePrice');
+  const bestAwayML = bestQuote(mlQuotes, 'awayPrice');
+
+  // What shopping actually saved, as the extra return on a winning bet. Worth
+  // surfacing: it is the part of the edge that does not depend on the model.
+  const gain = (quotes, key, best) => {
+    if (!best || quotes.length < 2) return null;
+    const prices = quotes.map(q => dec(q[key])).filter(d => d !== null);
+    if (prices.length < 2) return null;
+    const worst = Math.min(...prices);
+    const top = dec(best[key]);
+    if (!worst || top === null) return null;
+    return +(((top - worst) / worst) * 100).toFixed(2);
+  };
 
   return {
-    spread: homeSpread?.point ?? null,
-    spreadHomePrice: homeSpread?.price ?? null,
-    spreadAwayPrice: awaySpread?.price ?? null,
-    total: overOutcome?.point ?? underOutcome?.point ?? null,
-    overPrice: overOutcome?.price ?? null,
-    underPrice: underOutcome?.price ?? null,
-    homeML: homeMLOutcome?.price ?? null,
-    awayML: awayMLOutcome?.price ?? null,
-    bookmaker: spreadBook || totalBook || h2hBook || 'Unknown',
+    // Same shape as before, so every caller keeps working.
+    spread: spreadPoint,
+    spreadHomePrice: bestHomeSpread?.homePrice ?? null,
+    spreadAwayPrice: bestAwaySpread?.awayPrice ?? null,
+    total: totalPoint,
+    overPrice: bestOver?.overPrice ?? null,
+    underPrice: bestUnder?.underPrice ?? null,
+    homeML: bestHomeML?.homePrice ?? null,
+    awayML: bestAwayML?.awayPrice ?? null,
+    bookmaker: bestHomeSpread?.book || bestOver?.book || bestHomeML?.book || 'Unknown',
     matchedHome: matchingOdds.home_team,
-    matchedAway: matchingOdds.away_team
+    matchedAway: matchingOdds.away_team,
+
+    // Where each best price actually lives, so a bet can be placed at it.
+    bestBooks: {
+      spreadHome: bestHomeSpread?.book ?? null,
+      spreadAway: bestAwaySpread?.book ?? null,
+      over: bestOver?.book ?? null,
+      under: bestUnder?.book ?? null,
+      homeML: bestHomeML?.book ?? null,
+      awayML: bestAwayML?.book ?? null,
+    },
+    booksCompared: {
+      spread: atSpread.length,
+      total: atTotal.length,
+      moneyline: mlQuotes.length,
+      offered: matchingOdds.bookmakers.length,
+    },
+    // Percentage extra return versus the worst price on offer.
+    shoppingGainPct: {
+      spreadHome: gain(atSpread, 'homePrice', bestHomeSpread),
+      spreadAway: gain(atSpread, 'awayPrice', bestAwaySpread),
+      over: gain(atTotal, 'overPrice', bestOver),
+      under: gain(atTotal, 'underPrice', bestUnder),
+    },
   };
 }
 
