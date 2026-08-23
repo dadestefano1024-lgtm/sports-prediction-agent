@@ -715,6 +715,64 @@ const ballparkFactors = {
 // ============================================================================
 
 // ============================================================================
+// SCOREBOARD WINDOW
+// ============================================================================
+// The handlers only ever kept games in the 'pre' or 'in' state, and the
+// scoreboard defaults to today. On a day-heavy slate — Sunday baseball starts
+// around 11:35 and is finished by mid-afternoon — every game is final by the
+// evening and the app reported "0 games found" for a day on which fifteen games
+// were played.
+//
+// ESPN's scoreboard accepts ?dates=YYYYMMDD-YYYYMMDD, so the window covers
+// today and tomorrow and there is always a next slate to show.
+//
+// Dates are computed in US Eastern rather than UTC because that is the day
+// boundary ESPN schedules against. On a UTC server a 7pm Pacific start is
+// already "tomorrow", which would have quietly split a single evening's games
+// across two windows.
+
+const ESPN_DAY_TZ = 'America/New_York';
+
+/** YYYY-MM-DD for an instant, in the scheduling timezone. */
+function espnDayKey(when) {
+  const d = new Date(when);
+  if (isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-CA', { timeZone: ESPN_DAY_TZ });
+}
+
+/** YYYYMMDD for today plus an offset, in the scheduling timezone. */
+function espnDayStamp(offsetDays) {
+  const key = espnDayKey(Date.now() + (offsetDays * 86400000));
+  return key ? key.replace(/-/g, '') : '';
+}
+
+function espnScoreboardUrl(sportPath) {
+  return `https://site.api.espn.com/apis/site/v2/sports/${sportPath}/scoreboard` +
+    `?dates=${espnDayStamp(0)}-${espnDayStamp(1)}&limit=100`;
+}
+
+/**
+ * The next slate worth showing: unfinished games, narrowed to the single
+ * earliest day among them.
+ *
+ * Widening the window to two days would otherwise double the work — thirty
+ * baseball games instead of fifteen, each with its own stats and injury
+ * lookups — and show a slate nobody is betting yet. Grouping by scheduling day
+ * keeps one evening's games together while still rolling forward the moment
+ * today's are done.
+ */
+function nextSlate(events) {
+  const live = (events || []).filter(e => {
+    const state = e.competitions?.[0]?.status?.type?.state;
+    return state === 'pre' || state === 'in';
+  });
+  if (!live.length) return [];
+  live.sort((a, b) => new Date(a.date) - new Date(b.date));
+  const day = espnDayKey(live[0].date);
+  return day ? live.filter(e => espnDayKey(e.date) === day) : live;
+}
+
+// ============================================================================
 // SHARED HTTP CACHE (ESPN)
 // ============================================================================
 // Several fetchers request the exact same URL within a single prediction run.
@@ -1665,9 +1723,9 @@ async function fetchEspnOpeningLines(sport) {
   try {
     // One request for the slate. The handlers fetch this same URL, so the
     // shared HTTP cache usually makes it free.
-    const sb = await cachedGet(
-      `https://site.api.espn.com/apis/site/v2/sports/${scoreboardPath}/scoreboard?limit=100`,
-      { timeout: 10000 });
+    // Identical URL to the handlers', so this is a cache hit rather than a
+    // second request — and so both see exactly the same set of games.
+    const sb = await cachedGet(espnScoreboardUrl(scoreboardPath), { timeout: 10000 });
     const events = (sb.data && sb.data.events) || [];
 
     await Promise.all(events.map(async (event) => {
@@ -2188,9 +2246,9 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
     // them, and the old code priced them like any other — which means picks
     // have been generated against live lines for as long as this has existed.
     // Checked here rather than in each handler so every sport is covered once.
-    const started = odds.commenceTime
-      ? (new Date(odds.commenceTime).getTime() <= Date.now())
-      : false;
+    const startIso = odds.commenceTime || g.startTime || null;
+    const startedAt = startIso ? new Date(startIso).getTime() : NaN;
+    const started = Number.isFinite(startedAt) && startedAt <= Date.now();
 
     // A game may decline to be projected on its own account (a changed starting
     // quarterback, say) even when the rest of the slate is fine.
@@ -2360,14 +2418,9 @@ app.post('/api/predictions', async (req, res) => {
 
 async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
   try {
-    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?limit=50`;
-    const scoreboardResponse = await cachedGet(scoreboardUrl, { timeout: 10000 });
+    const scoreboardResponse = await cachedGet(espnScoreboardUrl('football/nfl'), { timeout: 10000 });
     const payload = scoreboardResponse.data || {};
-    let events = payload.events || [];
-    events = events.filter(e => {
-      const status = e.competitions?.[0]?.status?.type?.state;
-      return status === 'pre' || status === 'in';
-    });
+    const events = nextSlate(payload.events);
 
     if (events.length === 0) {
       return res.json({ sport: 'NFL', games: [], arbitrageAlerts: [], message: 'No NFL games scheduled' });
@@ -2440,6 +2493,10 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
+        // Raw ISO alongside the display string. The in-play check needs a
+        // parseable instant, and reading it from ESPN means it still works
+        // when The Odds API has no quote for the game.
+        startTime: event.date,
         homeData: homeStats,
         awayData: awayStats,
         homeForm,
@@ -2520,13 +2577,10 @@ Reply with JSON only:
 
 async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
   try {
-    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?limit=50`;
-    const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
-    let events = scoreboardResponse.data.events || [];
-    events = events.filter(e => {
-      const status = e.competitions?.[0]?.status?.type?.state;
-      return status === 'pre' || status === 'in';
-    });
+    // cachedGet, and the same URL fetchEspnOpeningLines uses, so the slate and
+    // its lines come from one request rather than two.
+    const scoreboardResponse = await cachedGet(espnScoreboardUrl('basketball/nba'), { timeout: 10000 });
+    const events = nextSlate(scoreboardResponse.data.events);
 
     if (events.length === 0) {
       return res.json({ sport: 'NBA', games: [], arbitrageAlerts: [], message: 'No NBA games scheduled' });
@@ -2571,6 +2625,10 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
+        // Raw ISO alongside the display string. The in-play check needs a
+        // parseable instant, and reading it from ESPN means it still works
+        // when The Odds API has no quote for the game.
+        startTime: event.date,
         homeData: homeStats,
         awayData: awayStats,
         homeForm: homeForm,
@@ -2648,13 +2706,10 @@ Respond ONLY with this JSON shape:
 
 async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
   try {
-    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?limit=50`;
-    const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
-    let events = scoreboardResponse.data.events || [];
-    events = events.filter(e => {
-      const status = e.competitions?.[0]?.status?.type?.state;
-      return status === 'pre' || status === 'in';
-    });
+    // cachedGet, and the same URL fetchEspnOpeningLines uses, so the slate and
+    // its lines come from one request rather than two.
+    const scoreboardResponse = await cachedGet(espnScoreboardUrl('hockey/nhl'), { timeout: 10000 });
+    const events = nextSlate(scoreboardResponse.data.events);
 
     if (events.length === 0) {
       return res.json({ sport: 'NHL', games: [], arbitrageAlerts: [], message: 'No NHL games scheduled' });
@@ -2695,6 +2750,10 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
+        // Raw ISO alongside the display string. The in-play check needs a
+        // parseable instant, and reading it from ESPN means it still works
+        // when The Odds API has no quote for the game.
+        startTime: event.date,
         homeData: homeStats,
         awayData: awayStats,
         homeForm: homeForm,
@@ -2772,13 +2831,10 @@ Respond ONLY with:
 
 async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
   try {
-    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?limit=50`;
-    const scoreboardResponse = await axios.get(scoreboardUrl, { timeout: 10000 });
-    let events = scoreboardResponse.data.events || [];
-    events = events.filter(e => {
-      const status = e.competitions?.[0]?.status?.type?.state;
-      return status === 'pre' || status === 'in';
-    });
+    // cachedGet, and the same URL fetchEspnOpeningLines uses, so the slate and
+    // its lines come from one request rather than two.
+    const scoreboardResponse = await cachedGet(espnScoreboardUrl('baseball/mlb'), { timeout: 10000 });
+    const events = nextSlate(scoreboardResponse.data.events);
 
     if (events.length === 0) {
       return res.json({ sport: 'MLB', games: [], arbitrageAlerts: [], message: 'No MLB games scheduled' });
@@ -2826,6 +2882,10 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
+        // Raw ISO alongside the display string. The in-play check needs a
+        // parseable instant, and reading it from ESPN means it still works
+        // when The Odds API has no quote for the game.
+        startTime: event.date,
         venue: venueName,
         ballparkFactor: getBallparkFactor(venueName),
         homeData: homeStats,
