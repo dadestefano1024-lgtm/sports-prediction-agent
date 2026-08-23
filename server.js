@@ -79,6 +79,20 @@ if (process.env.DATABASE_URL) {
 async function savePick(pickData) {
   if (!dbReady || !pool) return null;
   try {
+    // Dedup. The same slate is re-analyzed on every prediction cache miss, and
+    // savePick was a bare INSERT, so a game sitting pre-game all day would
+    // accumulate one duplicate row per run and silently inflate the History tab.
+    const dupe = pickData.espn_game_id
+      ? await pool.query(
+          `SELECT id FROM picks WHERE espn_game_id = $1 AND market = $2 LIMIT 1`,
+          [pickData.espn_game_id, pickData.market])
+      : await pool.query(
+          `SELECT id FROM picks WHERE sport = $1 AND home_team = $2 AND away_team = $3
+             AND market = $4 AND game_time = $5 LIMIT 1`,
+          [pickData.sport, pickData.home_team, pickData.away_team,
+           pickData.market, pickData.game_time]);
+    if (dupe.rows.length > 0) return null;
+
     const result = await pool.query(`
       INSERT INTO picks (
         sport, espn_game_id, home_team, away_team, game_time,
@@ -251,14 +265,22 @@ function gradePick(pick, homeScore, awayScore) {
 
     if (!pickedHome && !pickedAway) return null;
 
-    // The line stored is the home spread (negative = home favored)
-    // Home covers if (homeScore + homeSpread) > awayScore — i.e., homeScore - awayScore > -homeSpread
+    // `line` is the home spread (negative = home favored).
+    //
+    // This previously computed `margin + (pickedHome ? line : -line)`, which is
+    // wrong for away picks: it kept the margin from the HOME team's point of
+    // view while flipping only the spread, testing against a threshold off by
+    // twice the line. A Thunder +2.5 bet that lost by 2 (a winner, 108 + 2.5 >
+    // 110) was scored a loss. That systematically marked winning away bets as
+    // losses and is most of why the spread record read 39%.
+    //
+    // Evaluate the cover from the perspective of whichever side was picked:
+    // the away team's margin and spread are both the negation of the home ones.
     const margin = homeScore - awayScore;
-    const homeSpread = pickedHome ? line : -line;
-    const adjusted = margin + homeSpread;
+    const adjusted = pickedHome ? (margin + line) : (-margin - line);
 
-    if (adjusted > 0) return pickedHome ? 'win' : 'loss';
-    if (adjusted < 0) return pickedHome ? 'loss' : 'win';
+    if (adjusted > 0) return 'win';
+    if (adjusted < 0) return 'loss';
     return 'push';
   }
 
@@ -517,12 +539,51 @@ const ballparkFactors = {
 // ESPN STATS — NBA
 // ============================================================================
 
+// ============================================================================
+// SHARED HTTP CACHE (ESPN)
+// ============================================================================
+// Several fetchers request the exact same URL within a single prediction run.
+// fetchRecentGames and fetchPaceData both read /teams/{id}/schedule and parse
+// different fields out of it, and fetchInjuries pulls the league-wide injury
+// page once per team — 30 identical downloads on a 15-game slate. Roughly half
+// the outbound ESPN traffic was redundant.
+//
+// The inFlight map matters as much as the TTL here: the duplicate calls are
+// issued concurrently inside Promise.all, so a TTL alone would not help — both
+// would miss the cache and fetch anyway. Concurrent callers share one promise.
+//
+// Returns an axios-shaped { data } object so call sites keep reading .data.
+const httpCache = {};
+const inFlightRequests = {};
+const HTTP_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+async function cachedGet(url, options) {
+  const hit = httpCache[url];
+  if (hit && (Date.now() - hit.timestamp) < HTTP_CACHE_TTL_MS) {
+    return { data: hit.data };
+  }
+  if (inFlightRequests[url]) return inFlightRequests[url];
+
+  inFlightRequests[url] = axios.get(url, options)
+    .then(response => {
+      httpCache[url] = { timestamp: Date.now(), data: response.data };
+      delete inFlightRequests[url];
+      return { data: response.data };
+    })
+    .catch(err => {
+      delete inFlightRequests[url];
+      throw err;
+    });
+
+  return inFlightRequests[url];
+}
+
 async function fetchNBATeamStats(teamName) {
   try {
     const teamId = nbaTeamIds[teamName];
     if (!teamId) return null;
     const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}`;
-    const response = await axios.get(url, { timeout: 5000 });
+    const response = await cachedGet(url, { timeout: 5000 });
     const team = response.data.team;
     const record = team.record?.items?.find(r => r.type === 'total');
     const homeRecord = team.record?.items?.find(r => r.type === 'home');
@@ -545,7 +606,7 @@ async function fetchRecentGames(teamName) {
     const teamId = nbaTeamIds[teamName];
     if (!teamId) return null;
     const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
-    const response = await axios.get(url, { timeout: 5000 });
+    const response = await cachedGet(url, { timeout: 5000 });
     const events = response.data.events || [];
     const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
 
@@ -578,7 +639,7 @@ async function fetchPaceData(teamName) {
     const teamId = nbaTeamIds[teamName];
     if (!teamId) return null;
     const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
-    const response = await axios.get(url, { timeout: 5000 });
+    const response = await cachedGet(url, { timeout: 5000 });
     const events = response.data.events || [];
     const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
     if (completedGames.length === 0) return null;
@@ -641,7 +702,7 @@ async function fetchNHLTeamStats(teamName) {
     const teamId = nhlTeamIds[teamName];
     if (!teamId) return null;
     const url = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/${teamId}`;
-    const response = await axios.get(url, { timeout: 5000 });
+    const response = await cachedGet(url, { timeout: 5000 });
     const team = response.data.team;
     const record = team.record?.items?.find(r => r.type === 'total');
     return {
@@ -660,7 +721,7 @@ async function fetchNHLRecentGames(teamName) {
     const teamId = nhlTeamIds[teamName];
     if (!teamId) return null;
     const url = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/${teamId}/schedule`;
-    const response = await axios.get(url, { timeout: 5000 });
+    const response = await cachedGet(url, { timeout: 5000 });
     const events = response.data.events || [];
     const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
     let wins = 0, gf = 0, ga = 0;
@@ -693,7 +754,7 @@ async function fetchMLBTeamStats(teamName) {
     const teamId = mlbTeamIds[teamName];
     if (!teamId) return null;
     const url = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams/${teamId}`;
-    const response = await axios.get(url, { timeout: 5000 });
+    const response = await cachedGet(url, { timeout: 5000 });
     const team = response.data.team;
     const record = team.record?.items?.find(r => r.type === 'total');
     return {
@@ -711,7 +772,7 @@ async function fetchMLBRecentGames(teamName) {
     const teamId = mlbTeamIds[teamName];
     if (!teamId) return null;
     const url = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams/${teamId}/schedule`;
-    const response = await axios.get(url, { timeout: 5000 });
+    const response = await cachedGet(url, { timeout: 5000 });
     const events = response.data.events || [];
     const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
     let wins = 0, rf = 0, ra = 0;
@@ -764,7 +825,7 @@ async function fetchMLBPitcherFromProbable(probable) {
 
   try {
     const url = `https://site.api.espn.com/apis/common/v3/sports/baseball/mlb/athletes/${pitcherId}/statistics`;
-    const response = await axios.get(url, { timeout: 5000 });
+    const response = await cachedGet(url, { timeout: 5000 });
 
     // ESPN returns categories like "pitching" with stats nested inside
     const stats = response.data?.splits?.categories?.find(c => c.name === 'pitching')?.stats || [];
@@ -892,7 +953,7 @@ async function fetchInjuries(teamFullName, sport) {
     const url = sportUrls[sport];
     if (!url) return [];
 
-    const response = await axios.get(url, {
+    const response = await cachedGet(url, {
       timeout: 10000,
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
@@ -1431,18 +1492,56 @@ function findArbitrageOpportunities(oddsData) {
 // MAIN PREDICTION ENDPOINT
 // ============================================================================
 
+// ============================================================================
+// PREDICTION CACHE
+// ============================================================================
+// The finished prediction was never cached — only the raw odds were. Every
+// request re-ran the whole pipeline: ~120 ESPN fetches plus a Claude call. A
+// hundred people opening the app on an NFL Sunday produced a hundred identical
+// Claude calls for the same slate, so cost scaled linearly with traffic for
+// byte-identical output. This collapses that to one run per sport per TTL.
+//
+// It also stops duplicate picks being written on every request, and lets a
+// cached slate return instantly instead of rebuilding — which matters on a
+// sleeping free-tier instance where a cold rebuild can outlast the proxy.
+const predictionCache = {};
+const PREDICTION_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+// Handlers write straight to res, so intercept .json() to capture the payload.
+// .status() deliberately returns the real res, so error responses pass through
+// uncached.
+function makeCachingRes(res, sport) {
+  return {
+    json: (payload) => {
+      if (payload && !payload.error) {
+        predictionCache[sport] = { timestamp: Date.now(), data: payload };
+      }
+      return res.json(payload);
+    },
+    status: (code) => res.status(code)
+  };
+}
+
 app.post('/api/predictions', async (req, res) => {
   try {
     const { sport } = req.body;
     if (!sport) return res.status(400).json({ error: 'Sport parameter required' });
 
+    const cached = predictionCache[sport];
+    if (cached && (Date.now() - cached.timestamp) < PREDICTION_CACHE_TTL_MS) {
+      const ageSec = Math.round((Date.now() - cached.timestamp) / 1000);
+      console.log(`[PREDICTIONS] Cache hit for ${sport} (${ageSec}s old) — no Claude call`);
+      return res.json(cached.data);
+    }
+
     console.log(`\n=== Fetching predictions for ${sport.toUpperCase()} ===`);
     const oddsData = await fetchOdds(sport);
     const arbitrageAlerts = findArbitrageOpportunities(oddsData);
+    const cachingRes = makeCachingRes(res, sport);
 
-    if (sport === 'nba') return await handleNBAPredictions(res, arbitrageAlerts, oddsData);
-    if (sport === 'nhl') return await handleNHLPredictions(res, arbitrageAlerts, oddsData);
-    if (sport === 'mlb') return await handleMLBPredictions(res, arbitrageAlerts, oddsData);
+    if (sport === 'nba') return await handleNBAPredictions(cachingRes, arbitrageAlerts, oddsData);
+    if (sport === 'nhl') return await handleNHLPredictions(cachingRes, arbitrageAlerts, oddsData);
+    if (sport === 'mlb') return await handleMLBPredictions(cachingRes, arbitrageAlerts, oddsData);
     if (sport === 'cbb') return res.json({ sport: 'CBB', games: [], arbitrageAlerts: [], message: 'Coming soon.' });
     if (sport === 'nfl') return res.json({ sport: 'NFL', games: [], arbitrageAlerts: [], message: 'Coming soon.' });
 
@@ -1568,12 +1667,14 @@ Respond ONLY with this JSON shape:
 
     console.log('[NBA] Sending to Claude...');
     const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-5',
       max_tokens: 8000,
       messages: [{ role: 'user', content: prompt }]
     });
 
-    const responseText = message.content[0].text;
+    // Never index content[0] blindly: current models can return a thinking
+      // block first, which has no .text and would throw before the JSON parse.
+      const responseText = (message.content.find(b => b.type === 'text') || {}).text || '';
     let predictions;
     try {
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -1720,12 +1821,14 @@ Respond ONLY with:
 
     console.log('[NHL] Sending to Claude...');
     const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-5',
       max_tokens: 8000,
       messages: [{ role: 'user', content: prompt }]
     });
 
-    const responseText = message.content[0].text;
+    // Never index content[0] blindly: current models can return a thinking
+      // block first, which has no .text and would throw before the JSON parse.
+      const responseText = (message.content.find(b => b.type === 'text') || {}).text || '';
     let predictions;
     try {
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -1890,12 +1993,14 @@ Respond ONLY with:
 
     console.log('[MLB] Sending to Claude...');
     const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-5',
       max_tokens: 8000,
       messages: [{ role: 'user', content: prompt }]
     });
 
-    const responseText = message.content[0].text;
+    // Never index content[0] blindly: current models can return a thinking
+      // block first, which has no .text and would throw before the JSON parse.
+      const responseText = (message.content.find(b => b.type === 'text') || {}).text || '';
     let predictions;
     try {
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -2012,6 +2117,31 @@ app.get('/api/history', async (req, res) => {
   const sport = req.query.sport || null;
   const stats = await getHistoryStats(sport);
   res.json(stats);
+});
+
+// One-time recompute for picks already graded under the broken away-spread
+// logic. Final scores are already stored on each row, so this is pure
+// arithmetic — no ESPN calls, and nothing is nulled out first.
+app.post('/api/regrade', async (req, res) => {
+  if (!dbReady || !pool) return res.status(503).json({ error: 'Database not available' });
+  try {
+    const graded = await pool.query(
+      `SELECT * FROM picks WHERE actual_home IS NOT NULL AND actual_away IS NOT NULL`);
+    let corrected = 0;
+    for (const pick of graded.rows) {
+      const result = gradePick(pick, pick.actual_home, pick.actual_away);
+      if (result && result !== pick.result) {
+        await pool.query(`UPDATE picks SET result = $1, graded_at = NOW() WHERE id = $2`,
+          [result, pick.id]);
+        corrected++;
+      }
+    }
+    console.log(`[REGRADE] examined ${graded.rows.length}, corrected ${corrected}`);
+    res.json({ ok: true, examined: graded.rows.length, corrected });
+  } catch (err) {
+    console.error('[REGRADE]', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Manual grade trigger (for testing)
