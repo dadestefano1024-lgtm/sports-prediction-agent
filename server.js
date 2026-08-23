@@ -954,7 +954,13 @@ async function fetchRecentGames(teamName) {
     const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
     const response = await cachedGet(url, { timeout: 5000 });
     const events = response.data.events || [];
-    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
+    // slice(-10), not slice(0, 10). ESPN returns a team's schedule in ascending
+    // date order, so taking from the front returned the first ten games of the
+    // SEASON and called them recent form. In late August that meant a baseball
+    // model reading March results — five months stale — while the field was
+    // named last10 and nothing ever looked wrong. Recent form is the only input
+    // the projection has.
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(-10);
 
     let wins = 0, totalScored = 0, totalAllowed = 0, counted = 0;
     completedGames.forEach(game => {
@@ -990,7 +996,13 @@ async function fetchPaceData(teamName) {
     const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/schedule`;
     const response = await cachedGet(url, { timeout: 5000 });
     const events = response.data.events || [];
-    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
+    // slice(-10), not slice(0, 10). ESPN returns a team's schedule in ascending
+    // date order, so taking from the front returned the first ten games of the
+    // SEASON and called them recent form. In late August that meant a baseball
+    // model reading March results — five months stale — while the field was
+    // named last10 and nothing ever looked wrong. Recent form is the only input
+    // the projection has.
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(-10);
     if (completedGames.length === 0) return null;
     let totalPoints = 0, counted = 0;
     completedGames.forEach(game => {
@@ -1328,7 +1340,13 @@ async function fetchNHLRecentGames(teamName) {
     const url = `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/${teamId}/schedule`;
     const response = await cachedGet(url, { timeout: 5000 });
     const events = response.data.events || [];
-    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
+    // slice(-10), not slice(0, 10). ESPN returns a team's schedule in ascending
+    // date order, so taking from the front returned the first ten games of the
+    // SEASON and called them recent form. In late August that meant a baseball
+    // model reading March results — five months stale — while the field was
+    // named last10 and nothing ever looked wrong. Recent form is the only input
+    // the projection has.
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(-10);
     let wins = 0, gf = 0, ga = 0, counted = 0;
     completedGames.forEach(game => {
       const comp = game.competitions[0];
@@ -1382,7 +1400,13 @@ async function fetchMLBRecentGames(teamName) {
     const url = `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams/${teamId}/schedule`;
     const response = await cachedGet(url, { timeout: 5000 });
     const events = response.data.events || [];
-    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
+    // slice(-10), not slice(0, 10). ESPN returns a team's schedule in ascending
+    // date order, so taking from the front returned the first ten games of the
+    // SEASON and called them recent form. In late August that meant a baseball
+    // model reading March results — five months stale — while the field was
+    // named last10 and nothing ever looked wrong. Recent form is the only input
+    // the projection has.
+    const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(-10);
     let wins = 0, rf = 0, ra = 0, counted = 0;
     completedGames.forEach(game => {
       const comp = game.competitions[0];
