@@ -4,7 +4,8 @@
   "description": "AI-powered sports betting predictions",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
