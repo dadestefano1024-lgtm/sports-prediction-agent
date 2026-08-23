@@ -385,6 +385,121 @@ function closingLineValue({ betSpread, closingSpread, side }) {
   return side === 'home' ? betSpread - closingSpread : closingSpread - betSpread;
 }
 
+// ----------------------------------------------------------------------------
+// Projecting a game from scoring averages
+// ----------------------------------------------------------------------------
+
+/**
+ * Project a score from each side's recent scoring averages.
+ *
+ * Expected home points are the average of what the home side scores and what
+ * the away side concedes; expected away points are the mirror. Home advantage
+ * is split across the two scores so it moves the margin by exactly `hfa`
+ * without inflating the total.
+ *
+ * IMPORTANT LIMITATION: these averages are not opponent-adjusted. A team off a
+ * soft run of fixtures looks better than it is, and this will systematically
+ * misprice them. That is a real weakness and the honest reason `trust` defaults
+ * low — this projection is not good enough to override a market price, only to
+ * lean on it. Opponent adjustment (or the Elo path above, fed by results) is
+ * the upgrade.
+ */
+function projectFromScoringAverages({
+  homeAvgScored, homeAvgAllowed, awayAvgScored, awayAvgAllowed,
+  sport, neutralSite = false,
+}) {
+  const nums = [homeAvgScored, homeAvgAllowed, awayAvgScored, awayAvgAllowed].map(Number);
+  if (!nums.every(Number.isFinite)) return null;
+  if (nums.some(n => n <= 0)) return null;      // a zero average means missing data, not a real average
+
+  const [hs, ha, as, aa] = nums;
+  const { hfa } = sportConfig(sport);
+  const expHome = (hs + aa) / 2;
+  const expAway = (as + ha) / 2;
+  const homeEdge = neutralSite ? 0 : hfa;
+
+  return {
+    predictedHome: expHome + homeEdge / 2,
+    predictedAway: expAway - homeEdge / 2,
+    predictedMargin: (expHome - expAway) + homeEdge,
+    predictedTotal: expHome + expAway,
+  };
+}
+
+/**
+ * Bucket an edge into the Low/Medium/High label the UI and picks table use.
+ * Derived from the number rather than asserted by a language model.
+ */
+function confidenceFromEdge(edgeValue) {
+  const e = Math.abs(edgeValue);
+  if (e >= 0.04) return 'High';
+  if (e >= 0.02) return 'Medium';
+  return 'Low';
+}
+
+// ----------------------------------------------------------------------------
+// Pricing a whole game
+// ----------------------------------------------------------------------------
+
+const DEFAULT_PRICE = -110;
+
+function bestSide(a, b) {
+  // Only one side of a two-way market can be +EV once the vig is removed, but
+  // guard anyway and never return a side that is not worth betting.
+  const candidates = [a, b].filter(x => x && x.expectedValue > 0 && x.stake > 0);
+  if (!candidates.length) return null;
+  return candidates.reduce((best, x) => (x.expectedValue > best.expectedValue ? x : best));
+}
+
+/**
+ * Price both markets for one game and return only the sides worth backing.
+ *
+ * Returns `{ spread, total }`, each either a priced side or null. Null means
+ * exactly what it says: after de-vigging and blending toward the market, no
+ * side of that market clears the juice. That is the common and correct answer,
+ * and the old code had no way to express it — it always produced a pick.
+ */
+function priceGame({
+  sport, predictedMargin, predictedTotal,
+  spread, spreadHomePrice, spreadAwayPrice,
+  total, overPrice, underPrice,
+  homeTeam = 'Home', awayTeam = 'Away',
+  trust = 0.25, kellyFraction = 0.25,
+}) {
+  const cfg = sportConfig(sport);
+  const out = { spread: null, total: null };
+
+  if (Number.isFinite(spread) && Number.isFinite(predictedMargin)) {
+    const hp = Number.isFinite(spreadHomePrice) ? spreadHomePrice : DEFAULT_PRICE;
+    const ap = Number.isFinite(spreadAwayPrice) ? spreadAwayPrice : DEFAULT_PRICE;
+    const homeProb = coverProbability({ predictedMargin, spread, sigma: cfg.sigma });
+
+    const home = { ...priceSide({ americanOdds: hp, oppositeAmericanOdds: ap, modelProb: homeProb, trust, kellyFraction }),
+                   side: 'home', line: spread, pick: `${homeTeam} ${spread > 0 ? '+' : ''}${spread}` };
+    const away = { ...priceSide({ americanOdds: ap, oppositeAmericanOdds: hp, modelProb: 1 - homeProb, trust, kellyFraction }),
+                   side: 'away', line: -spread, pick: `${awayTeam} ${-spread > 0 ? '+' : ''}${-spread}` };
+
+    const winner = bestSide(home, away);
+    if (winner) out.spread = { ...winner, confidence: confidenceFromEdge(winner.edge) };
+  }
+
+  if (Number.isFinite(total) && Number.isFinite(predictedTotal)) {
+    const op = Number.isFinite(overPrice) ? overPrice : DEFAULT_PRICE;
+    const up = Number.isFinite(underPrice) ? underPrice : DEFAULT_PRICE;
+    const overProb = overProbability({ predictedTotal, line: total, sigma: cfg.totalSigma });
+
+    const over = { ...priceSide({ americanOdds: op, oppositeAmericanOdds: up, modelProb: overProb, trust, kellyFraction }),
+                   side: 'over', line: total, pick: `Over ${total}` };
+    const under = { ...priceSide({ americanOdds: up, oppositeAmericanOdds: op, modelProb: 1 - overProb, trust, kellyFraction }),
+                    side: 'under', line: total, pick: `Under ${total}` };
+
+    const winner = bestSide(over, under);
+    if (winner) out.total = { ...winner, confidence: confidenceFromEdge(winner.edge) };
+  }
+
+  return out;
+}
+
 module.exports = {
   SPORTS,
   sportConfig,
@@ -409,4 +524,7 @@ module.exports = {
   predictedMargin,
   calibrateSigma,
   closingLineValue,
+  projectFromScoringAverages,
+  confidenceFromEdge,
+  priceGame,
 };

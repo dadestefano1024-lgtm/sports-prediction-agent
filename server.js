@@ -3,6 +3,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const axios = require('axios');
 const { Pool } = require('pg');
 
+const model = require('./model');
 const app = express();
 app.use(express.json());
 app.use(express.static('public'));
@@ -219,10 +220,10 @@ async function gradePendingPicks() {
 
         const home = comp.competitors.find(c => c.homeAway === 'home');
         const away = comp.competitors.find(c => c.homeAway === 'away');
-        const homeScore = parseInt(home?.score);
-        const awayScore = parseInt(away?.score);
+        const homeScore = parseScore(home);
+        const awayScore = parseScore(away);
 
-        if (isNaN(homeScore) || isNaN(awayScore)) continue;
+        if (homeScore === null || awayScore === null) continue;
 
         // Get all picks for this game
         const picks = await pool.query(
@@ -586,6 +587,34 @@ async function cachedGet(url, options) {
   return inFlightRequests[url];
 }
 
+/**
+ * Read a score off an ESPN competitor, whichever shape it arrives in.
+ *
+ * The two ESPN endpoints disagree. /summary (used by grading) returns a plain
+ * string, "3". /teams/{id}/schedule (used by every recent-form fetcher) returns
+ * an object, {value: 3, displayValue: "3"}. All the schedule callers did
+ * parseInt(competitor.score), which on the object form is
+ * parseInt("[object Object]") === NaN.
+ *
+ * So every last-10 record read 0-10 and every scoring average was NaN, for all
+ * three sports, and those NaNs were interpolated into the prompt and sent to
+ * Claude as the string "NaN". Nothing objected, because nothing checked — the
+ * model was happy to write confident numbers on top of missing data. It only
+ * surfaced when model.js started validating its inputs and refused to project.
+ *
+ * Returns null rather than NaN so callers must decide what to do about it.
+ */
+function parseScore(competitor) {
+  const raw = competitor && competitor.score;
+  const val = raw !== null && typeof raw === 'object' ? raw.value : raw;
+  // Reject empties explicitly before Number(): Number(null) and Number('') are
+  // both 0, and 0 is a perfectly real score in hockey and baseball. Coercing
+  // missing data into a shutout would be worse than dropping the game.
+  if (val === null || val === undefined || val === '') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
 async function fetchNBATeamStats(teamName) {
   try {
     const teamId = nbaTeamIds[teamName];
@@ -618,23 +647,26 @@ async function fetchRecentGames(teamName) {
     const events = response.data.events || [];
     const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
 
-    let wins = 0, totalScored = 0, totalAllowed = 0;
+    let wins = 0, totalScored = 0, totalAllowed = 0, counted = 0;
     completedGames.forEach(game => {
       const comp = game.competitions[0];
       const h = comp.competitors.find(c => c.homeAway === 'home');
       const a = comp.competitors.find(c => c.homeAway === 'away');
+      const hs = parseScore(h), as = parseScore(a);
+      if (hs === null || as === null) return;   // unscored game contributes nothing
       const isHome = h.team.id == teamId;
-      const ts = isHome ? parseInt(h.score) : parseInt(a.score);
-      const os = isHome ? parseInt(a.score) : parseInt(h.score);
+      const ts = isHome ? hs : as;
+      const os = isHome ? as : hs;
+      counted++;
       if (ts > os) wins++;
       totalScored += ts;
       totalAllowed += os;
     });
 
     return {
-      last10: `${wins}-${completedGames.length - wins}`,
-      avgScored: completedGames.length > 0 ? (totalScored / completedGames.length).toFixed(1) : 0,
-      avgAllowed: completedGames.length > 0 ? (totalAllowed / completedGames.length).toFixed(1) : 0
+      last10: `${wins}-${counted - wins}`,
+      avgScored: counted > 0 ? (totalScored / counted).toFixed(1) : 0,
+      avgAllowed: counted > 0 ? (totalAllowed / counted).toFixed(1) : 0
     };
   } catch (error) {
     console.error(`Error fetching recent games for ${teamName}:`, error.message);
@@ -651,14 +683,18 @@ async function fetchPaceData(teamName) {
     const events = response.data.events || [];
     const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
     if (completedGames.length === 0) return null;
-    let totalPoints = 0;
+    let totalPoints = 0, counted = 0;
     completedGames.forEach(game => {
       const comp = game.competitions[0];
       const h = comp.competitors.find(c => c.homeAway === 'home');
       const a = comp.competitors.find(c => c.homeAway === 'away');
-      totalPoints += parseInt(h.score) + parseInt(a.score);
+      const hs = parseScore(h), as = parseScore(a);
+      if (hs === null || as === null) return;
+      totalPoints += hs + as;
+      counted++;
     });
-    const avgTotal = totalPoints / completedGames.length;
+    if (counted === 0) return null;
+    const avgTotal = totalPoints / counted;
     let pace = 'Average';
     if (avgTotal > 225) pace = 'Fast';
     else if (avgTotal < 215) pace = 'Slow';
@@ -732,21 +768,24 @@ async function fetchNHLRecentGames(teamName) {
     const response = await cachedGet(url, { timeout: 5000 });
     const events = response.data.events || [];
     const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
-    let wins = 0, gf = 0, ga = 0;
+    let wins = 0, gf = 0, ga = 0, counted = 0;
     completedGames.forEach(game => {
       const comp = game.competitions[0];
       const h = comp.competitors.find(c => c.homeAway === 'home');
       const a = comp.competitors.find(c => c.homeAway === 'away');
+      const hs = parseScore(h), as = parseScore(a);
+      if (hs === null || as === null) return;   // unscored game contributes nothing
       const isHome = h.team.id == teamId;
-      const ts = isHome ? parseInt(h.score) : parseInt(a.score);
-      const os = isHome ? parseInt(a.score) : parseInt(h.score);
+      const ts = isHome ? hs : as;
+      const os = isHome ? as : hs;
+      counted++;
       if (ts > os) wins++;
       gf += ts; ga += os;
     });
     return {
-      last10: `${wins}-${completedGames.length - wins}`,
-      avgGoalsFor: completedGames.length > 0 ? (gf / completedGames.length).toFixed(1) : 0,
-      avgGoalsAgainst: completedGames.length > 0 ? (ga / completedGames.length).toFixed(1) : 0
+      last10: `${wins}-${counted - wins}`,
+      avgGoalsFor: counted > 0 ? (gf / counted).toFixed(1) : 0,
+      avgGoalsAgainst: counted > 0 ? (ga / counted).toFixed(1) : 0
     };
   } catch (error) {
     return null;
@@ -783,21 +822,24 @@ async function fetchMLBRecentGames(teamName) {
     const response = await cachedGet(url, { timeout: 5000 });
     const events = response.data.events || [];
     const completedGames = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(0, 10);
-    let wins = 0, rf = 0, ra = 0;
+    let wins = 0, rf = 0, ra = 0, counted = 0;
     completedGames.forEach(game => {
       const comp = game.competitions[0];
       const h = comp.competitors.find(c => c.homeAway === 'home');
       const a = comp.competitors.find(c => c.homeAway === 'away');
+      const hs = parseScore(h), as = parseScore(a);
+      if (hs === null || as === null) return;   // unscored game contributes nothing
       const isHome = h.team.id == teamId;
-      const ts = isHome ? parseInt(h.score) : parseInt(a.score);
-      const os = isHome ? parseInt(a.score) : parseInt(h.score);
+      const ts = isHome ? hs : as;
+      const os = isHome ? as : hs;
+      counted++;
       if (ts > os) wins++;
       rf += ts; ra += os;
     });
     return {
-      last10: `${wins}-${completedGames.length - wins}`,
-      avgRunsFor: completedGames.length > 0 ? (rf / completedGames.length).toFixed(1) : 0,
-      avgRunsAgainst: completedGames.length > 0 ? (ra / completedGames.length).toFixed(1) : 0
+      last10: `${wins}-${counted - wins}`,
+      avgRunsFor: counted > 0 ? (rf / counted).toFixed(1) : 0,
+      avgRunsAgainst: counted > 0 ? (ra / counted).toFixed(1) : 0
     };
   } catch (error) {
     return null;
@@ -1501,6 +1543,162 @@ function findArbitrageOpportunities(oddsData) {
 // ============================================================================
 
 // ============================================================================
+// MODEL WIRING
+// ============================================================================
+// Every number the UI shows and every number saved as a pick now comes from
+// model.js. Claude is left with the one job it is actually good at: writing the
+// qualitative notes.
+//
+// MODEL_TRUST is how far the projection may pull away from the de-vigged market
+// price. 0 reproduces the market and backs nothing; 1 asserts the model beats
+// the closing line. Overridable by environment so it can be tuned without a
+// deploy, and deliberately low until closing line value earns more.
+const MODEL_TRUST = Number(process.env.MODEL_TRUST ?? 0.25);
+const KELLY_FRACTION = Number(process.env.KELLY_FRACTION ?? 0.25);
+
+// Recent-form field names differ per sport.
+const FORM_FIELDS = {
+  nba: ['avgScored', 'avgAllowed'],
+  nfl: ['avgScored', 'avgAllowed'],
+  nhl: ['avgGoalsFor', 'avgGoalsAgainst'],
+  mlb: ['avgRunsFor', 'avgRunsAgainst'],
+};
+
+function toNum(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+
+/** Claude's array keyed by matchup. Commentary only — no numbers are read. */
+function commentaryByMatchup(predictions) {
+  const out = {};
+  for (const g of (predictions && predictions.games) || []) {
+    if (g && g.homeTeam && g.awayTeam) out[g.homeTeam + '|' + g.awayTeam] = g.keyFactors || [];
+  }
+  return out;
+}
+
+/**
+ * Build the response from REAL data, using Claude only for commentary.
+ *
+ * The old code mapped over Claude's array and looked up stats by the team names
+ * Claude echoed back. When those did not match exactly the lookup returned
+ * undefined and every odds field silently fell back to Claude's own values —
+ * exactly what the "override Claude's odds" guard existed to prevent. Real data
+ * is now the spine; commentary is optional decoration that cannot corrupt it.
+ *
+ * Edges and Kelly stakes are emitted in percentage points, which is what the
+ * frontend formatters render and what the >= 2 save threshold compares against.
+ */
+/**
+ * Ask Claude for the qualitative notes. Never throws.
+ *
+ * model.js supplies every number now, so a Claude outage, a rate limit or a
+ * malformed reply should cost the commentary line and nothing else. Until this
+ * change any of those returned a 500 and the whole slate vanished — which was
+ * defensible when Claude produced the picks, and is not any more.
+ *
+ * Returns a matchup-keyed map, empty if anything at all went wrong.
+ */
+async function fetchCommentary(sport, prompt) {
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-opus-5',
+      max_tokens: 8000,
+      messages: [{ role: 'user', content: prompt }]
+    });
+    // Never index content[0] blindly: current models can return a thinking
+    // block first, which has no .text and would throw before the JSON parse.
+    const text = (message.content.find(b => b.type === 'text') || {}).text || '';
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) {
+      console.warn(`[${sport.toUpperCase()}] no JSON in commentary reply`);
+      return {};
+    }
+    return commentaryByMatchup(JSON.parse(match[0]));
+  } catch (err) {
+    console.error(`[${sport.toUpperCase()}] commentary unavailable:`, err.message);
+    return {};
+  }
+}
+
+function buildGamesFromModel(sport, gamesWithStats, commentary) {
+  const fields = FORM_FIELDS[sport] || FORM_FIELDS.nba;
+  const scoredKey = fields[0];
+  const allowedKey = fields[1];
+
+  return gamesWithStats.map(g => {
+    const odds = g.odds || {};
+    const projection = model.projectFromScoringAverages({
+      homeAvgScored: g.homeForm && g.homeForm[scoredKey],
+      homeAvgAllowed: g.homeForm && g.homeForm[allowedKey],
+      awayAvgScored: g.awayForm && g.awayForm[scoredKey],
+      awayAvgAllowed: g.awayForm && g.awayForm[allowedKey],
+      sport,
+    });
+
+    let priced = { spread: null, total: null };
+    if (projection) {
+      priced = model.priceGame({
+        sport,
+        predictedMargin: projection.predictedMargin,
+        predictedTotal: projection.predictedTotal,
+        spread: toNum(odds.spread),
+        spreadHomePrice: toNum(odds.spreadHomePrice),
+        spreadAwayPrice: toNum(odds.spreadAwayPrice),
+        total: toNum(odds.total),
+        overPrice: toNum(odds.overPrice),
+        underPrice: toNum(odds.underPrice),
+        homeTeam: g.homeTeam,
+        awayTeam: g.awayTeam,
+        trust: MODEL_TRUST,
+        kellyFraction: KELLY_FRACTION,
+      });
+    }
+    const best = priced.spread || priced.total;
+
+    return {
+      homeTeam: g.homeTeam,
+      awayTeam: g.awayTeam,
+      gameTime: g.gameTime,
+      spread: odds.spread ?? null,
+      total: odds.total ?? null,
+      homeML: odds.homeML ?? null,
+      awayML: odds.awayML ?? null,
+      bookmaker: odds.bookmaker ?? null,
+      lineMovement: g.lineMovement ?? null,
+      sharpSignals: g.sharpSignals ?? [],
+
+      predictedScore: projection
+        ? { home: Math.round(projection.predictedHome), away: Math.round(projection.predictedAway) }
+        : { home: null, away: null },
+
+      // "No edge" is a real, common and correct answer. The old pipeline had no
+      // way to say it — it produced a pick for every game, always.
+      spreadPick: priced.spread ? priced.spread.pick : 'No edge',
+      spreadEdge: priced.spread ? +(priced.spread.edge * 100).toFixed(2) : 0,
+      kellySpread: priced.spread ? +(priced.spread.stake * 100).toFixed(2) : 0,
+      totalPick: priced.total ? priced.total.pick : 'No edge',
+      totalEdge: priced.total ? +(priced.total.edge * 100).toFixed(2) : 0,
+      kellyTotal: priced.total ? +(priced.total.stake * 100).toFixed(2) : 0,
+      confidence: best ? best.confidence : 'Low',
+
+      keyFactors: commentary[g.homeTeam + '|' + g.awayTeam] || [],
+
+      // Exposed so a number can be taken apart rather than trusted. An edge you
+      // cannot decompose is how the old ones went unquestioned for months.
+      modelDetail: projection ? {
+        predictedMargin: +projection.predictedMargin.toFixed(2),
+        predictedTotal: +projection.predictedTotal.toFixed(2),
+        trust: MODEL_TRUST,
+        marketProbSpread: priced.spread ? +priced.spread.marketProb.toFixed(4) : null,
+        modelProbSpread: priced.spread ? +priced.spread.modelProb.toFixed(4) : null,
+        hold: priced.spread ? +priced.spread.hold.toFixed(4) : null,
+      } : { unavailable: 'insufficient recent-form data' },
+
+      stats: g,
+    };
+  });
+}
+
+// ============================================================================
 // PREDICTION CACHE
 // ============================================================================
 // The finished prediction was never cached — only the raw odds were. Every
@@ -1673,40 +1871,10 @@ Respond ONLY with this JSON shape:
   ]
 }`;
 
-    console.log('[NBA] Sending to Claude...');
-    const message = await anthropic.messages.create({
-      model: 'claude-opus-5',
-      max_tokens: 8000,
-      messages: [{ role: 'user', content: prompt }]
-    });
-
-    // Never index content[0] blindly: current models can return a thinking
-      // block first, which has no .text and would throw before the JSON parse.
-      const responseText = (message.content.find(b => b.type === 'text') || {}).text || '';
-    let predictions;
-    try {
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      predictions = JSON.parse(jsonMatch[0]);
-    } catch (parseError) {
-      console.error('[NBA] Parse error:', parseError);
-      return res.status(500).json({ error: 'Failed to parse predictions' });
-    }
-
-    // Override Claude's odds fields with the real fetched odds (in case Claude hallucinated)
-    const formattedGames = predictions.games.map(game => {
-      const stats = gamesWithStats.find(g => g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam);
-      return {
-        ...game,
-        spread: stats?.odds?.spread ?? game.spread,
-        total: stats?.odds?.total ?? game.total,
-        homeML: stats?.odds?.homeML ?? game.homeML,
-        awayML: stats?.odds?.awayML ?? game.awayML,
-        bookmaker: stats?.odds?.bookmaker ?? null,
-        lineMovement: stats?.lineMovement ?? null,
-        sharpSignals: stats?.sharpSignals ?? [],
-        stats
-      };
-    });
+    // Numbers come from model.js; Claude only annotates, and may fail freely.
+    console.log('[NBA] Fetching commentary...');
+    const commentary = await fetchCommentary('nba', prompt);
+    const formattedGames = buildGamesFromModel('nba', gamesWithStats, commentary);
 
     // Save picks to DB for tracking
     await savePicksFromGames('nba', formattedGames, eventMap);
@@ -1827,50 +1995,10 @@ Respond ONLY with:
   ]
 }`;
 
-    console.log('[NHL] Sending to Claude...');
-    const message = await anthropic.messages.create({
-      model: 'claude-opus-5',
-      max_tokens: 8000,
-      messages: [{ role: 'user', content: prompt }]
-    });
-
-    // Never index content[0] blindly: current models can return a thinking
-      // block first, which has no .text and would throw before the JSON parse.
-      const responseText = (message.content.find(b => b.type === 'text') || {}).text || '';
-    let predictions;
-    try {
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      predictions = JSON.parse(jsonMatch[0]);
-    } catch (parseError) {
-      console.error('[NHL] Parse error:', parseError);
-      return res.status(500).json({ error: 'Failed to parse NHL predictions' });
-    }
-
-    const formattedGames = predictions.games.map(game => {
-      const stats = gamesWithStats.find(g => g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam);
-      return {
-        homeTeam: game.homeTeam,
-        awayTeam: game.awayTeam,
-        gameTime: game.gameTime,
-        spread: stats?.odds?.spread ?? game.puckLine,
-        total: stats?.odds?.total ?? game.total,
-        homeML: stats?.odds?.homeML ?? game.homeML,
-        awayML: stats?.odds?.awayML ?? game.awayML,
-        bookmaker: stats?.odds?.bookmaker ?? null,
-        lineMovement: stats?.lineMovement ?? null,
-        sharpSignals: stats?.sharpSignals ?? [],
-        predictedScore: game.predictedScore,
-        spreadPick: game.puckLinePick,
-        spreadEdge: game.puckLineEdge,
-        totalPick: game.totalPick,
-        totalEdge: game.totalEdge,
-        kellySpread: game.kellyPuckLine,
-        kellyTotal: game.kellyTotal,
-        confidence: game.confidence,
-        keyFactors: game.keyFactors,
-        stats
-      };
-    });
+    // Numbers come from model.js; Claude only annotates, and may fail freely.
+    console.log('[NHL] Fetching commentary...');
+    const commentary = await fetchCommentary('nhl', prompt);
+    const formattedGames = buildGamesFromModel('nhl', gamesWithStats, commentary);
 
     // Save picks to DB for tracking
     await savePicksFromGames('nhl', formattedGames, eventMap);
@@ -1999,50 +2127,10 @@ Respond ONLY with:
   ]
 }`;
 
-    console.log('[MLB] Sending to Claude...');
-    const message = await anthropic.messages.create({
-      model: 'claude-opus-5',
-      max_tokens: 8000,
-      messages: [{ role: 'user', content: prompt }]
-    });
-
-    // Never index content[0] blindly: current models can return a thinking
-      // block first, which has no .text and would throw before the JSON parse.
-      const responseText = (message.content.find(b => b.type === 'text') || {}).text || '';
-    let predictions;
-    try {
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      predictions = JSON.parse(jsonMatch[0]);
-    } catch (parseError) {
-      console.error('[MLB] Parse error:', parseError);
-      return res.status(500).json({ error: 'Failed to parse MLB predictions' });
-    }
-
-    const formattedGames = predictions.games.map(game => {
-      const stats = gamesWithStats.find(g => g.homeTeam === game.homeTeam && g.awayTeam === game.awayTeam);
-      return {
-        homeTeam: game.homeTeam,
-        awayTeam: game.awayTeam,
-        gameTime: game.gameTime,
-        spread: stats?.odds?.spread ?? game.runLine,
-        total: stats?.odds?.total ?? game.total,
-        homeML: stats?.odds?.homeML ?? game.homeML,
-        awayML: stats?.odds?.awayML ?? game.awayML,
-        bookmaker: stats?.odds?.bookmaker ?? null,
-        lineMovement: stats?.lineMovement ?? null,
-        sharpSignals: stats?.sharpSignals ?? [],
-        predictedScore: game.predictedScore,
-        spreadPick: game.runLinePick,
-        spreadEdge: game.runLineEdge,
-        totalPick: game.totalPick,
-        totalEdge: game.totalEdge,
-        kellySpread: game.kellyRunLine,
-        kellyTotal: game.kellyTotal,
-        confidence: game.confidence,
-        keyFactors: game.keyFactors,
-        stats
-      };
-    });
+    // Numbers come from model.js; Claude only annotates, and may fail freely.
+    console.log('[MLB] Fetching commentary...');
+    const commentary = await fetchCommentary('mlb', prompt);
+    const formattedGames = buildGamesFromModel('mlb', gamesWithStats, commentary);
 
     // Save picks to DB for tracking
     await savePicksFromGames('mlb', formattedGames, eventMap);

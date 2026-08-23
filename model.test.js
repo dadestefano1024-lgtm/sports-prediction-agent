@@ -321,3 +321,153 @@ test('sportConfig', () => {
   m.sportConfig('nfl').sigma = 999;
   assert.equal(m.sportConfig('nfl').sigma, 13.5, 'config must be returned by value');
 });
+
+// ----------------------------------------------------------------------------
+test('projectFromScoringAverages: hand-computed NBA game', () => {
+  // expHome = (115 + 112)/2 = 113.5 ; expAway = (108 + 110)/2 = 109
+  // hfa 2.5 splits +1.25 / -1.25 -> margin 7.0, total unchanged at 222.5
+  const p = m.projectFromScoringAverages({
+    homeAvgScored: 115, homeAvgAllowed: 110,
+    awayAvgScored: 108, awayAvgAllowed: 112,
+    sport: 'nba',
+  });
+  close(p.predictedHome, 114.75, 1e-9);
+  close(p.predictedAway, 107.75, 1e-9);
+  close(p.predictedMargin, 7.0, 1e-9);
+  close(p.predictedTotal, 222.5, 1e-9);
+  // internal consistency: the score must reproduce the margin and the total
+  close(p.predictedHome - p.predictedAway, p.predictedMargin, 1e-9);
+  close(p.predictedHome + p.predictedAway, p.predictedTotal, 1e-9);
+});
+
+test('projectFromScoringAverages: home advantage moves margin but not total', () => {
+  const args = {
+    homeAvgScored: 115, homeAvgAllowed: 110,
+    awayAvgScored: 108, awayAvgAllowed: 112, sport: 'nba',
+  };
+  const home = m.projectFromScoringAverages(args);
+  const neutral = m.projectFromScoringAverages({ ...args, neutralSite: true });
+  close(home.predictedMargin - neutral.predictedMargin, m.sportConfig('nba').hfa, 1e-9);
+  close(home.predictedTotal, neutral.predictedTotal, 1e-9);
+});
+
+test('projectFromScoringAverages returns null on missing or zero data', () => {
+  const base = { homeAvgScored: 115, homeAvgAllowed: 110, awayAvgScored: 108, awayAvgAllowed: 112, sport: 'nba' };
+  assert.equal(m.projectFromScoringAverages({ ...base, homeAvgScored: 0 }), null,
+    'a zero average means missing data, not a real average');
+  assert.equal(m.projectFromScoringAverages({ ...base, awayAvgAllowed: null }), null);
+  assert.equal(m.projectFromScoringAverages({ ...base, homeAvgScored: undefined }), null);
+});
+
+test('projectFromScoringAverages accepts numeric strings', () => {
+  // fetchRecentGames returns toFixed(1) strings, not numbers
+  const p = m.projectFromScoringAverages({
+    homeAvgScored: '115.0', homeAvgAllowed: '110.0',
+    awayAvgScored: '108.0', awayAvgAllowed: '112.0', sport: 'nba',
+  });
+  close(p.predictedMargin, 7.0, 1e-9);
+});
+
+test('confidenceFromEdge', () => {
+  assert.equal(m.confidenceFromEdge(0.05), 'High');
+  assert.equal(m.confidenceFromEdge(0.04), 'High');
+  assert.equal(m.confidenceFromEdge(0.03), 'Medium');
+  assert.equal(m.confidenceFromEdge(0.02), 'Medium');
+  assert.equal(m.confidenceFromEdge(0.01), 'Low');
+  assert.equal(m.confidenceFromEdge(-0.05), 'High', 'magnitude, not direction');
+});
+
+// ----------------------------------------------------------------------------
+test('priceGame at trust=0 backs nothing at all', () => {
+  // The market is reproduced exactly, so no side can clear the vig.
+  const g = m.priceGame({
+    sport: 'nba', predictedMargin: 7, predictedTotal: 230,
+    spread: -3, spreadHomePrice: -110, spreadAwayPrice: -110,
+    total: 220, overPrice: -110, underPrice: -110,
+    trust: 0,
+  });
+  assert.equal(g.spread, null);
+  assert.equal(g.total, null);
+});
+
+test('priceGame backs the side the projection likes', () => {
+  const g = m.priceGame({
+    sport: 'nba', predictedMargin: 7, predictedTotal: 230,
+    spread: -3, spreadHomePrice: -110, spreadAwayPrice: -110,
+    total: 220, overPrice: -110, underPrice: -110,
+    homeTeam: 'Lakers', awayTeam: 'Suns', trust: 0.25,
+  });
+  assert.equal(g.spread.side, 'home', 'projected by 7 while laying 3 favours home');
+  assert.equal(g.spread.pick, 'Lakers -3');
+  assert.ok(g.spread.expectedValue > 0);
+  assert.ok(g.spread.stake > 0);
+  assert.equal(g.total.side, 'over', 'projecting 230 against a 220 line favours the over');
+  assert.equal(g.total.pick, 'Over 220');
+});
+
+test('priceGame backs the away side and labels the line from its perspective', () => {
+  const g = m.priceGame({
+    sport: 'nba', predictedMargin: -8,
+    spread: -3, spreadHomePrice: -110, spreadAwayPrice: -110,
+    homeTeam: 'Lakers', awayTeam: 'Suns', trust: 0.25,
+  });
+  assert.equal(g.spread.side, 'away');
+  assert.equal(g.spread.pick, 'Suns +3');
+  close(g.spread.line, 3, 1e-9);
+  assert.equal(g.total, null, 'no total offered means no total pick');
+});
+
+test('priceGame declines when the projection agrees with the market', () => {
+  // Projected margin equals the spread: a true coin flip, which loses to the vig.
+  const g = m.priceGame({
+    sport: 'nfl', predictedMargin: 3, predictedTotal: 44,
+    spread: -3, spreadHomePrice: -110, spreadAwayPrice: -110,
+    total: 44, overPrice: -110, underPrice: -110,
+    trust: 1,
+  });
+  assert.equal(g.spread, null, 'agreeing with the market is not a bet');
+  assert.equal(g.total, null);
+});
+
+test('priceGame never returns both sides of the same market', () => {
+  for (const margin of [-14, -3, 0, 3, 14]) {
+    const g = m.priceGame({
+      sport: 'nfl', predictedMargin: margin,
+      spread: -3, spreadHomePrice: -110, spreadAwayPrice: -110,
+      trust: 1,
+    });
+    if (g.spread) assert.ok(['home', 'away'].includes(g.spread.side));
+  }
+});
+
+test('priceGame defaults missing prices to -110 rather than crashing', () => {
+  const g = m.priceGame({
+    sport: 'nba', predictedMargin: 9,
+    spread: -3, spreadHomePrice: null, spreadAwayPrice: undefined,
+    trust: 0.5,
+  });
+  assert.ok(g.spread, 'should still price with default juice');
+  close(g.spread.decimalOdds, m.americanToDecimal(-110), 1e-9);
+});
+
+test('priceGame skips a market with no line', () => {
+  const g = m.priceGame({
+    sport: 'nba', predictedMargin: 9, predictedTotal: 230,
+    spread: null, total: null, trust: 1,
+  });
+  assert.equal(g.spread, null);
+  assert.equal(g.total, null);
+});
+
+test('priceGame respects a worse price', () => {
+  // Same projection, but laying -140 instead of -110 should shrink the stake.
+  const args = {
+    sport: 'nba', predictedMargin: 9,
+    spread: -3, total: null, trust: 0.5,
+  };
+  const cheap = m.priceGame({ ...args, spreadHomePrice: -110, spreadAwayPrice: -110 });
+  const dear = m.priceGame({ ...args, spreadHomePrice: -140, spreadAwayPrice: +120 });
+  assert.ok(cheap.spread && dear.spread);
+  assert.ok(dear.spread.stake < cheap.spread.stake,
+    `paying more juice should stake less: ${dear.spread.stake} vs ${cheap.spread.stake}`);
+});
