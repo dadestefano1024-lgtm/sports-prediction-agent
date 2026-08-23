@@ -2118,13 +2118,23 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       sport,
     });
 
+    // The same gate that protects closing-line capture now protects pricing.
+    // A spread the sport could not have posted means the feed is being read
+    // wrong, and pricing against it would turn a data fault into a bet.
+    const rawSpread = toNum(odds.spread);
+    const spreadUsable = rawSpread !== null && model.plausibleSpread(sport, rawSpread);
+    if (rawSpread !== null && !spreadUsable) {
+      console.warn(`[${sport.toUpperCase()}] implausible spread ${rawSpread} for ` +
+        `${g.awayTeam} @ ${g.homeTeam} — not pricing the spread`);
+    }
+
     let priced = { spread: null, total: null };
     if (projection) {
       priced = model.priceGame({
         sport,
         predictedMargin: projection.predictedMargin,
         predictedTotal: projection.predictedTotal,
-        spread: toNum(odds.spread),
+        spread: spreadUsable ? rawSpread : null,
         spreadHomePrice: toNum(odds.spreadHomePrice),
         spreadAwayPrice: toNum(odds.spreadAwayPrice),
         total: toNum(odds.total),
@@ -2899,6 +2909,30 @@ app.post('/api/regrade', async (req, res) => {
     res.json({ ok: true, examined: graded.rows.length, corrected });
   } catch (err) {
     console.error('[REGRADE]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Dump the raw per-book quotes behind a matched game, so a surprising spread
+// or total can be traced to the feed instead of guessed at.
+app.get('/api/debug/shop/:sport', async (req, res) => {
+  try {
+    const oddsData = await fetchOdds(req.params.sport);
+    const out = (oddsData || []).slice(0, 4).map(g => ({
+      home: g.home_team,
+      away: g.away_team,
+      commence: g.commence_time,
+      books: (g.bookmakers || []).map(b => ({
+        book: b.title,
+        spreads: (b.markets?.find(m => m.key === 'spreads')?.outcomes || [])
+          .map(o => `${o.name} ${o.point} @ ${o.price}`),
+        totals: (b.markets?.find(m => m.key === 'totals')?.outcomes || [])
+          .map(o => `${o.name} ${o.point} @ ${o.price}`),
+      })),
+      resolved: matchOddsToGame(oddsData, g.home_team, g.away_team),
+    }));
+    res.json({ sport: req.params.sport, games: oddsData?.length ?? 0, sample: out });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
