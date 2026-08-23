@@ -1009,6 +1009,92 @@ function calculateProjectedTotal(homePace, awayPace) {
 /**
  * NFL season record.
  */
+// Statuses that mean the listed starter is not taking the snaps. "Questionable"
+// is deliberately absent — most questionable players do play, and treating them
+// as out would suppress most of the slate for no good reason.
+const QB_UNAVAILABLE = new Set(['out', 'doubtful', 'injured reserve', 'ir', 'suspension', 'suspended']);
+
+/**
+ * A team's quarterback depth chart, and whether the listed starter is available.
+ *
+ * QB is the largest single-player swing in the sport, worth something like 5-7
+ * points. It is also the input most likely to make a recent scoring average
+ * lie: those averages were produced by whoever was playing, so if the starter
+ * changes, the numbers describe a team that is not the one about to play.
+ *
+ * Two requests per team, both cached. The depth chart gives the rank order and
+ * an athlete $ref per slot; the roster gives names, ids and injury status. The
+ * athlete id is read straight out of the $ref URL, which avoids resolving one
+ * request per player — the core injuries endpoint alone lists 75 entries for a
+ * single team.
+ *
+ * NOTE ON HOW THIS IS USED: it does NOT adjust the projected margin. A QB
+ * injury that is public is already in the market price, so adding our own
+ * adjustment on top of a market-anchored model would count it twice. What it
+ * does instead is mark our own projection untrustworthy, because the form data
+ * feeding it came from a different quarterback.
+ */
+async function fetchNFLStartingQB(teamName, seasonYear) {
+  try {
+    const teamId = nflTeamIds[teamName];
+    if (!teamId) return null;
+    const year = Number(seasonYear) || new Date().getFullYear();
+
+    const [rosterRes, depthRes] = await Promise.all([
+      cachedGet(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${teamId}/roster`,
+        { timeout: 8000 }),
+      cachedGet(`https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/${year}/teams/${teamId}/depthcharts`,
+        { timeout: 8000 }),
+    ]);
+
+    const byId = {};
+    for (const group of (rosterRes.data && rosterRes.data.athletes) || []) {
+      for (const a of group.items || []) byId[String(a.id)] = a;
+    }
+
+    let slots = null;
+    for (const item of (depthRes.data && depthRes.data.items) || []) {
+      const qb = item.positions && item.positions.qb;
+      if (qb && Array.isArray(qb.athletes) && qb.athletes.length) { slots = qb.athletes; break; }
+    }
+    if (!slots) return null;
+
+    const ordered = slots
+      .slice()
+      .sort((a, b) => (a.rank == null ? 99 : a.rank) - (b.rank == null ? 99 : b.rank))
+      .map(slot => {
+        const ref = (slot.athlete && slot.athlete.$ref) || '';
+        const m = /\/athletes\/(\d+)/.exec(ref);
+        const athlete = m ? byId[m[1]] : null;
+        if (!athlete) return null;
+        const injury = (athlete.injuries || [])[0];
+        const status = injury && injury.status ? String(injury.status) : 'Active';
+        return {
+          name: athlete.displayName,
+          rank: slot.rank == null ? null : slot.rank,
+          status,
+          available: !QB_UNAVAILABLE.has(status.toLowerCase()),
+        };
+      })
+      .filter(Boolean);
+
+    if (!ordered.length) return null;
+    const listed = ordered[0];
+    const expected = ordered.find(q => q.available) || null;
+
+    return {
+      starter: listed.name,
+      status: listed.status,
+      starterAvailable: listed.available,
+      // Who actually takes the snaps if the listed starter cannot.
+      expectedStarter: expected ? expected.name : null,
+      depth: ordered.map(q => `${q.name} (${q.status})`),
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
 async function fetchNFLTeamStats(teamName) {
   try {
     const teamId = nflTeamIds[teamName];
@@ -1920,9 +2006,12 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
 
   return gamesWithStats.map(g => {
     const odds = g.odds || {};
-    // skipReason states outright that we are declining to project, rather than
+    // A game may decline to be projected on its own account (a changed starting
+    // quarterback, say) even when the rest of the slate is fine.
+    const reason = skipReason || g.skipReason || null;
+    // reason states outright that we are declining to project, rather than
     // letting it look like data merely happened to be missing.
-    const projection = skipReason ? null : model.projectFromScoringAverages({
+    const projection = reason ? null : model.projectFromScoringAverages({
       homeAvgScored: g.homeForm && g.homeForm[scoredKey],
       homeAvgAllowed: g.homeForm && g.homeForm[allowedKey],
       awayAvgScored: g.awayForm && g.awayForm[scoredKey],
@@ -1987,7 +2076,7 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
         marketProbSpread: priced.spread ? +priced.spread.marketProb.toFixed(4) : null,
         modelProbSpread: priced.spread ? +priced.spread.modelProb.toFixed(4) : null,
         hold: priced.spread ? +priced.spread.hold.toFixed(4) : null,
-      } : { unavailable: skipReason || 'insufficient recent-form data' },
+      } : { unavailable: reason || 'insufficient recent-form data' },
 
       stats: g,
     };
@@ -2079,6 +2168,7 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
 
     // ESPN season types: 1 preseason, 2 regular, 3 post.
     const seasonType = Number(payload.season?.type ?? events[0]?.season?.type ?? 2);
+    const seasonYear = Number(payload.season?.year ?? events[0]?.season?.year) || new Date().getFullYear();
     const isPreseason = seasonType === 1;
     const skipReason = isPreseason
       ? 'preseason — starters play a quarter, so scoring averages do not describe these teams'
@@ -2099,7 +2189,8 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
       eventMap[`${homeFullName}|${awayFullName}`] = event.id;
 
       // Skip the stats round-trips entirely in preseason; nothing would use them.
-      const [homeStats, awayStats, homeForm, awayForm, travelData, homeInjuries, awayInjuries] =
+      const [homeStats, awayStats, homeForm, awayForm, travelData,
+             homeInjuries, awayInjuries, homeQB, awayQB] =
         await Promise.all([
           fetchNFLTeamStats(homeTeamName),
           fetchNFLTeamStats(awayTeamName),
@@ -2108,7 +2199,23 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
           fetchTravelData(awayTeamName, homeTeamName, 'nfl'),
           fetchInjuries(homeFullName, 'nfl'),
           fetchInjuries(awayFullName, 'nfl'),
+          fetchNFLStartingQB(homeTeamName, seasonYear),
+          fetchNFLStartingQB(awayTeamName, seasonYear),
         ]);
+
+      // A changed starting quarterback invalidates our own projection, because
+      // the scoring averages behind it were produced by someone else. It is not
+      // a reason to outbid the market — a public QB injury is already in the
+      // price — so we decline to project rather than inventing an adjustment.
+      const qbNotes = [];
+      if (homeQB && !homeQB.starterAvailable) {
+        qbNotes.push(`${homeTeamName} QB ${homeQB.starter} is ${homeQB.status}` +
+          (homeQB.expectedStarter ? `, expect ${homeQB.expectedStarter}` : ''));
+      }
+      if (awayQB && !awayQB.starterAvailable) {
+        qbNotes.push(`${awayTeamName} QB ${awayQB.starter} is ${awayQB.status}` +
+          (awayQB.expectedStarter ? `, expect ${awayQB.expectedStarter}` : ''));
+      }
 
       const odds = matchOddsToGame(oddsData, homeFullName, awayFullName);
       const espnLines = espnOpeningLines[event.id] || null;
@@ -2128,6 +2235,10 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
         awayForm,
         travel: travelData,
         dome: venue ? venue.dome : null,
+        startingQB: { home: homeQB, away: awayQB },
+        skipReason: qbNotes.length
+          ? `starting QB change - ${qbNotes.join('; ')} - recent scoring averages describe a different team`
+          : null,
         injuries: { home: homeInjuries, away: awayInjuries },
         odds,
         lineMovement: espnLines,
@@ -2153,6 +2264,10 @@ ${JSON.stringify(gamesWithStats.map(g => ({
       homeRecord: g.homeData?.record, awayRecord: g.awayData?.record,
       homeForm: g.homeForm, awayForm: g.awayForm,
       travel: g.travel, dome: g.dome,
+      startingQB: {
+        home: g.startingQB.home && { name: g.startingQB.home.starter, status: g.startingQB.home.status },
+        away: g.startingQB.away && { name: g.startingQB.away.starter, status: g.startingQB.away.status },
+      },
       injuries: {
         home: (g.injuries.home || []).slice(0, 6),
         away: (g.injuries.away || []).slice(0, 6),
