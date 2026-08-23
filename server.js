@@ -1283,193 +1283,141 @@ async function fetchInjuries(teamFullName, sport) {
 // Each game has two team rows. The OPEN column shows opening spread on the
 // favorite's row and opening total on the underdog's row (or vice versa).
 
+// ESPN exposes odds as JSON on two endpoints. The scoreboard carries the
+// current spread and total for a whole slate in one request; the core API
+// carries opening and current numbers per event, including prices.
+const ESPN_SCOREBOARD_PATHS = {
+  nfl: 'football/nfl', nba: 'basketball/nba', nhl: 'hockey/nhl', mlb: 'baseball/mlb',
+};
+const ESPN_CORE_PATHS = {
+  nfl: 'football/leagues/nfl', nba: 'basketball/leagues/nba',
+  nhl: 'hockey/leagues/nhl', mlb: 'baseball/leagues/mlb',
+};
+
+/**
+ * Read one of ESPN's American-odds strings: "+1.5", "-1.5", "9", "EVEN", "PK".
+ * Returns null for anything unreadable rather than NaN, so callers must decide.
+ */
+function parseAmericanValue(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const s = String(v).trim();
+  if (/^(even|ev|pk|pick)$/i.test(s)) return 0;
+  const n = Number(s.replace(/^\+/, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Opening and current lines, read from ESPN's JSON rather than scraped.
+ *
+ * The previous implementation stripped tags off espn.com/{sport}/odds and
+ * pattern-matched numeric tokens by position. It got totals and moneylines
+ * right and spreads comprehensively wrong: a constant openSpread for every game
+ * in a sport (-8 MLB, -9 NHL, -10 NBA) and current spreads of 0 and -3 on run
+ * lines that are only ever 1.5.
+ *
+ * That mattered in two places. analyzeSharpAction derives its "sharp action"
+ * callouts from spreadMovement, so every one of those signals was computed from
+ * noise; and closing-line capture read currentSpread, which produced an average
+ * CLV of -9.5 on a market where the line cannot move more than a couple of
+ * points.
+ *
+ * Both endpoints are undocumented and can change without notice — the same risk
+ * the scrape carried — but reading named fields out of JSON fails loudly and
+ * visibly where positional token-matching failed silently and plausibly.
+ *
+ * `spread` is the HOME spread in both sources: it is negative when the home
+ * side lays points and positive when it receives them, matching the convention
+ * the picks table and gradePick already use. Verified across a full MLB slate.
+ *
+ * Note the top-level initialSpread and initialOverUnder fields are NOT the
+ * opening numbers — they come back as 0.0. The real openings live under
+ * homeTeamOdds.open.pointSpread and open.total.
+ */
 async function fetchEspnOpeningLines(sport) {
-  // Check cache first
-  const cached = espnOddsCache[sport];
+  const key = String(sport || '').toLowerCase();
+  const cached = espnOddsCache[key];
   if (cached && (Date.now() - cached.timestamp) < ESPN_ODDS_CACHE_TTL_MS) {
     const ageSec = Math.round((Date.now() - cached.timestamp) / 1000);
-    console.log(`[ESPN_ODDS] Cache hit for ${sport} (${ageSec}s old, ${Object.keys(cached.data).length} games)`);
+    console.log(`[ESPN_ODDS] Cache hit for ${key} (${ageSec}s old, ${Object.keys(cached.data).length} games)`);
     return cached.data;
   }
 
-  const sportUrls = {
-    'nba': 'https://www.espn.com/nba/odds',
-    'nhl': 'https://www.espn.com/nhl/odds',
-    'mlb': 'https://www.espn.com/mlb/odds'
-  };
-  const url = sportUrls[sport];
-  if (!url) return {};
-
-  console.log(`[ESPN_ODDS] Fetching ${sport} opening lines from ESPN...`);
-
-  try {
-    const response = await axios.get(url, {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-    const html = response.data;
-
-    // Result map: gameId -> { openSpread, currentSpread, openTotal, currentTotal, openHomeML, currentHomeML, ... }
-    const result = {};
-
-    // Find all game blocks. Each game is anchored by a /nba/game/_/gameId/<NUMBER>/ link.
-    // Use that link to identify the game and extract the surrounding row data.
-    const gameIdPattern = new RegExp(`/${sport}/game/_/gameId/(\\d+)/`, 'g');
-    const gameIdMatches = [...html.matchAll(gameIdPattern)];
-
-    // De-duplicate game IDs (each game ID appears multiple times in the HTML)
-    const seenGameIds = new Set();
-
-    for (const gidMatch of gameIdMatches) {
-      const gameId = gidMatch[1];
-      if (seenGameIds.has(gameId)) continue;
-      seenGameIds.add(gameId);
-
-      // Get a chunk of HTML around this game ID — should contain both team rows
-      const startIdx = gidMatch.index;
-      // Look for the next game ID or end of slate to bound this game's HTML
-      const nextGameMatch = html.indexOf('/game/_/gameId/', startIdx + 50);
-      const endIdx = nextGameMatch > 0 ? nextGameMatch + 200 : startIdx + 8000;
-      const gameHtml = html.substring(startIdx, endIdx);
-
-      // Strip HTML tags and decode entities to get plain text we can pattern-match
-      const plainText = gameHtml
-        .replace(/<script[\s\S]*?<\/script>/g, ' ')
-        .replace(/<style[\s\S]*?<\/style>/g, ' ')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&amp;/g, '&')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      // Extract all betting numbers from the row in order.
-      // Patterns we expect: spreads like "-1.5" or "+12.5", totals like "o226.5" or "u228.5",
-      // moneylines like "-122" or "+102" or "+550", and prices like "-110" or "-115".
-      // Numbers appear in this column order for each team row:
-      //   [team name + record] [OPEN value + price] [SPREAD pt + price] [TOTAL ou + price] [ML]
-      //
-      // Strategy: pull out all "betting tokens" in order and assign them by position.
-
-      // Pull tokens: a spread/ML number is just +/- digits with optional .5
-      //              a total is "o" or "u" followed by digits
-      //              a price is +/- digits (typically -100 to -120 range, or +100 to +200)
-      const tokenPattern = /([ou][\d.]+|[+\-]\d+\.?\d*)/g;
-      const tokens = plainText.match(tokenPattern) || [];
-
-      // Filter out the team records like "(46-25)" — these come through as "-25" "+46" etc.
-      // A valid betting token is either: starts with o/u, OR is between -2000 and +2000 ish.
-      // Records are typically small numbers in parens; we can spot them by checking if
-      // they're surrounded by parens in the original text.
-      const recordPattern = /\(\d+-\d+\)/g;
-      const records = plainText.match(recordPattern) || [];
-      // Remove record numbers from our token list
-      const recordNumbers = new Set();
-      records.forEach(r => {
-        const nums = r.match(/\d+/g);
-        if (nums) nums.forEach(n => recordNumbers.add(n));
-      });
-
-      const cleanTokens = tokens.filter(t => {
-        if (t.startsWith('o') || t.startsWith('u')) return true;
-        const num = t.replace(/[+\-]/, '');
-        // If this number appears in a record, it's not a betting token
-        // (this is imperfect but catches most cases)
-        return !recordNumbers.has(num) || Math.abs(parseFloat(t)) >= 100;
-      });
-
-      // For each game we expect roughly 14 tokens (7 per team row):
-      //   open_value, open_price, current_spread, current_spread_price,
-      //   current_total, current_total_price, current_ml
-      // Times two teams = 14. In practice ESPN's layout varies, so we'll be lenient.
-
-      if (cleanTokens.length >= 10) {
-        // Try to identify the OPEN spread (first +/- number that isn't a price)
-        // and OPEN total (first o/u number)
-        let openSpread = null, openTotal = null;
-        let currentSpread = null, currentTotal = null;
-        let homeML = null, awayML = null;
-
-        // First team row tokens: typically [open_spread, open_spread_price, current_spread, current_spread_price, current_total, current_total_price, current_ml]
-        // Find the first o/u token — that's an OPEN total (since one team's open is total, one's is spread)
-        const firstTotalIdx = cleanTokens.findIndex(t => t.startsWith('o') || t.startsWith('u'));
-
-        if (firstTotalIdx !== -1) {
-          openTotal = parseFloat(cleanTokens[firstTotalIdx].replace(/[ou]/, ''));
-        }
-
-        // First +/- token that's a "spread-shaped" number (between -30 and +30, often with .5)
-        const isSpreadShaped = (t) => {
-          const n = parseFloat(t);
-          return !isNaN(n) && Math.abs(n) <= 30 && (t.includes('.') || Math.abs(n) <= 20);
-        };
-        const firstSpreadIdx = cleanTokens.findIndex(t => !t.startsWith('o') && !t.startsWith('u') && isSpreadShaped(t));
-        if (firstSpreadIdx !== -1) {
-          openSpread = parseFloat(cleanTokens[firstSpreadIdx]);
-        }
-
-        // Find current spread: the SECOND spread-shaped number
-        let spreadCount = 0;
-        for (const t of cleanTokens) {
-          if (!t.startsWith('o') && !t.startsWith('u') && isSpreadShaped(t)) {
-            spreadCount++;
-            if (spreadCount === 2) {
-              currentSpread = parseFloat(t);
-              break;
-            }
-          }
-        }
-
-        // Find current total: the SECOND o/u number
-        let totalCount = 0;
-        for (const t of cleanTokens) {
-          if (t.startsWith('o') || t.startsWith('u')) {
-            totalCount++;
-            if (totalCount === 2) {
-              currentTotal = parseFloat(t.replace(/[ou]/, ''));
-              break;
-            }
-          }
-        }
-
-        // Moneylines: typically larger absolute numbers (>= 100), and they appear last in each row
-        const mlCandidates = cleanTokens.filter(t => {
-          if (t.startsWith('o') || t.startsWith('u')) return false;
-          const n = parseFloat(t);
-          return !isNaN(n) && Math.abs(n) >= 100 && Math.abs(n) <= 5000;
-        });
-
-        if (mlCandidates.length >= 2) {
-          awayML = parseFloat(mlCandidates[mlCandidates.length - 2]);
-          homeML = parseFloat(mlCandidates[mlCandidates.length - 1]);
-        }
-
-        result[gameId] = {
-          openSpread,
-          currentSpread,
-          openTotal,
-          currentTotal,
-          homeML,
-          awayML,
-          spreadMovement: (openSpread !== null && currentSpread !== null)
-            ? +(currentSpread - openSpread).toFixed(1)
-            : null,
-          totalMovement: (openTotal !== null && currentTotal !== null)
-            ? +(currentTotal - openTotal).toFixed(1)
-            : null
-        };
-      }
-    }
-
-    console.log(`[ESPN_ODDS] Parsed ${Object.keys(result).length} ${sport} games with opening lines`);
-    espnOddsCache[sport] = { timestamp: Date.now(), data: result };
-    return result;
-  } catch (error) {
-    console.error(`[ESPN_ODDS] Error fetching ${sport}:`, error.message);
-    if (cached) {
-      console.log(`[ESPN_ODDS] Falling back to stale cache for ${sport}`);
-      return cached.data;
-    }
+  const scoreboardPath = ESPN_SCOREBOARD_PATHS[key];
+  const corePath = ESPN_CORE_PATHS[key];
+  if (!scoreboardPath || !corePath) {
+    console.warn(`[ESPN_ODDS] no path mapped for ${key}`);
     return {};
+  }
+
+  const result = {};
+  try {
+    // One request for the slate. The handlers fetch this same URL, so the
+    // shared HTTP cache usually makes it free.
+    const sb = await cachedGet(
+      `https://site.api.espn.com/apis/site/v2/sports/${scoreboardPath}/scoreboard?limit=100`,
+      { timeout: 10000 });
+    const events = (sb.data && sb.data.events) || [];
+
+    await Promise.all(events.map(async (event) => {
+      const comp = (event.competitions || [])[0];
+      if (!comp) return;
+
+      // Current numbers are already here; treat them as the fallback so a
+      // failed per-event call still yields a usable current line.
+      const sbOdds = (comp.odds || [])[0] || null;
+      let currentSpread = sbOdds ? parseAmericanValue(sbOdds.spread) : null;
+      let currentTotal = sbOdds ? parseAmericanValue(sbOdds.overUnder) : null;
+      let openSpread = null, openTotal = null, homeML = null, awayML = null;
+
+      try {
+        const core = await cachedGet(
+          `https://sports.core.api.espn.com/v2/sports/${corePath}/events/${event.id}/competitions/${event.id}/odds`,
+          { timeout: 8000 });
+        const item = ((core.data && core.data.items) || [])[0];
+        if (item) {
+          const hto = item.homeTeamOdds || {};
+          const ato = item.awayTeamOdds || {};
+          const pick = (obj, phase, field) =>
+            obj && obj[phase] && obj[phase][field] ? obj[phase][field].american : null;
+
+          openSpread = parseAmericanValue(pick(hto, 'open', 'pointSpread'));
+          const coreCurrentSpread = parseAmericanValue(pick(hto, 'current', 'pointSpread'));
+          if (coreCurrentSpread !== null) currentSpread = coreCurrentSpread;
+
+          openTotal = parseAmericanValue(item.open && item.open.total && item.open.total.american);
+          const coreCurrentTotal = parseAmericanValue(
+            item.current && item.current.total && item.current.total.american);
+          if (coreCurrentTotal !== null) currentTotal = coreCurrentTotal;
+
+          homeML = parseAmericanValue(hto.moneyLine !== undefined ? hto.moneyLine : pick(hto, 'current', 'moneyLine'));
+          awayML = parseAmericanValue(ato.moneyLine !== undefined ? ato.moneyLine : pick(ato, 'current', 'moneyLine'));
+        }
+      } catch (e) {
+        // Per-event failure costs the opening line for that game only; the
+        // scoreboard's current numbers above still stand.
+      }
+
+      if (currentSpread === null && currentTotal === null) return;
+
+      result[event.id] = {
+        openSpread, currentSpread, openTotal, currentTotal, homeML, awayML,
+        // Movement is only meaningful when both ends are known. Null rather
+        // than 0, so "no data" cannot be mistaken for "the line did not move" —
+        // which is exactly how the old parser manufactured sharp signals.
+        spreadMovement: (openSpread !== null && currentSpread !== null)
+          ? +(currentSpread - openSpread).toFixed(2) : null,
+        totalMovement: (openTotal !== null && currentTotal !== null)
+          ? +(currentTotal - openTotal).toFixed(2) : null,
+      };
+    }));
+
+    const withSpread = Object.values(result).filter(r => r.currentSpread !== null).length;
+    console.log(`[ESPN_ODDS] Parsed ${Object.keys(result).length} ${key} games (${withSpread} with a spread)`);
+    espnOddsCache[key] = { timestamp: Date.now(), data: result };
+    return result;
+  } catch (err) {
+    console.error(`[ESPN_ODDS] ${key} failed:`, err.message);
+    return (cached && cached.data) || {};
   }
 }
 

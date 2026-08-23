@@ -683,7 +683,12 @@
 
     // Format a movement value with color and arrow
     function fmtMovement(val) {
-      if (val === null || val === undefined || isNaN(val) || val === 0) {
+      // Unknown and unmoved are different facts. Showing "no move" for a
+      // missing opening line is how a broken feed reads as a real measurement.
+      if (val === null || val === undefined || isNaN(val)) {
+        return { text: 'n/a', cls: 'move-flat' };
+      }
+      if (val === 0) {
         return { text: 'no move', cls: 'move-flat' };
       }
       const num = parseFloat(val);
