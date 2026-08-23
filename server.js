@@ -604,6 +604,33 @@ async function cachedGet(url, options) {
  *
  * Returns null rather than NaN so callers must decide what to do about it.
  */
+/**
+ * Resolve a team's map key from its ESPN display name.
+ *
+ * The handlers used displayName.split(' ').pop(), which keeps only the last
+ * word. That silently breaks every two-word nickname: "Boston Red Sox" became
+ * "Sox", "Toronto Blue Jays" became "Jays", "Chicago White Sox" became "Sox".
+ * The id lookup then missed, the fetcher returned null, and that team had no
+ * form data at all — with nothing logged and nothing failing. Eight teams were
+ * affected across the three sports: Red Sox, White Sox, Blue Jays, Maple Leafs,
+ * Blue Jackets, Golden Knights, Red Wings and Trail Blazers.
+ *
+ * Try progressively longer suffixes against the map and take the first that
+ * exists. Falls back to the last word when no map is given, so behaviour is
+ * unchanged for callers that do not have one.
+ */
+function teamNickname(displayName, idMap) {
+  const parts = String(displayName || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '';
+  if (idMap) {
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const candidate = parts.slice(i).join(' ');
+      if (Object.prototype.hasOwnProperty.call(idMap, candidate)) return candidate;
+    }
+  }
+  return parts[parts.length - 1];
+}
+
 function parseScore(competitor) {
   const raw = competitor && competitor.score;
   const val = raw !== null && typeof raw === 'object' ? raw.value : raw;
@@ -1784,8 +1811,8 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
       const comp = event.competitions[0];
       const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
       const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-      const homeTeamName = homeTeam.team.displayName.split(' ').pop();
-      const awayTeamName = awayTeam.team.displayName.split(' ').pop();
+      const homeTeamName = teamNickname(homeTeam.team.displayName, nbaTeamIds);
+      const awayTeamName = teamNickname(awayTeam.team.displayName, nbaTeamIds);
       const homeFullName = homeTeam.team.displayName;
       const awayFullName = awayTeam.team.displayName;
 
@@ -1912,8 +1939,8 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
       const comp = event.competitions[0];
       const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
       const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-      const homeTeamName = homeTeam.team.displayName.split(' ').pop();
-      const awayTeamName = awayTeam.team.displayName.split(' ').pop();
+      const homeTeamName = teamNickname(homeTeam.team.displayName, nhlTeamIds);
+      const awayTeamName = teamNickname(awayTeam.team.displayName, nhlTeamIds);
       const homeFullName = homeTeam.team.displayName;
       const awayFullName = awayTeam.team.displayName;
 
@@ -2035,8 +2062,8 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
       const comp = event.competitions[0];
       const homeTeam = comp.competitors.find(c => c.homeAway === 'home');
       const awayTeam = comp.competitors.find(c => c.homeAway === 'away');
-      const homeTeamName = homeTeam.team.displayName.split(' ').pop();
-      const awayTeamName = awayTeam.team.displayName.split(' ').pop();
+      const homeTeamName = teamNickname(homeTeam.team.displayName, mlbTeamIds);
+      const awayTeamName = teamNickname(awayTeam.team.displayName, mlbTeamIds);
       const homeFullName = homeTeam.team.displayName;
       const awayFullName = awayTeam.team.displayName;
       const venueName = comp.venue?.fullName || '';
