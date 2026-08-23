@@ -749,15 +749,23 @@
       // Sharp signals section
       let signalsHTML = '';
       if (game.sharpSignals && game.sharpSignals.length > 0) {
+        // Described as history, not advice. Backing the side a line moved
+        // toward, at the CURRENT price, went 48.1% over 269 games of 2025 —
+        // below break-even, because the move is already in the price offered.
+        // The same bet against a number set before the move went 63% when the
+        // move was 2+ points. So what matters is which number you hold, and the
+        // wording has to leave that to the reader rather than shout at them.
         signalsHTML = '<div class="sharp-signals">';
         game.sharpSignals.forEach(sig => {
-          const icon = sig.magnitude === 'strong' ? '🚨' : '⚠️';
-          const label = sig.magnitude === 'strong' ? 'STRONG' : 'Moderate';
+          const icon = sig.magnitude === 'strong' ? '📉' : '·';
           const moveStr = sig.movement > 0 ? '+' + sig.movement : sig.movement;
           signalsHTML += `
             <div class="sharp-signal-item ${sig.magnitude}">
               <span class="sharp-icon">${icon}</span>
-              <span><strong>${label} ${sig.market} signal:</strong> moved ${moveStr} ${sig.direction}</span>
+              <span><strong>${sig.market} moved ${moveStr}</strong> ${sig.direction} since open.
+                ${sig.magnitude === 'strong'
+                  ? 'A line set before this is now well behind the market.'
+                  : 'A line set before this is slightly behind the market.'}</span>
             </div>`;
         });
         signalsHTML += '</div>';
