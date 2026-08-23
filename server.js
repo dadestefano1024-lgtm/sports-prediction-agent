@@ -1012,6 +1012,78 @@ function calculateProjectedTotal(homePace, awayPace) {
 // Statuses that mean the listed starter is not taking the snaps. "Questionable"
 // is deliberately absent — most questionable players do play, and treating them
 // as out would suppress most of the slate for no good reason.
+// Wind is the largest weather effect on an NFL total by a wide margin — it
+// suppresses the deep passing game and makes field goals unreliable, while
+// temperature and light rain barely move a number. These are the points at
+// which our own scoring averages stop describing the game, not a claim about
+// where the total should sit.
+const WIND_SUSTAINED_LIMIT = 15;   // mph
+const WIND_GUST_LIMIT = 25;        // mph
+
+/**
+ * Forecast at kickoff for an outdoor stadium.
+ *
+ * Open-Meteo needs no API key, which is the reason it is used here: there is no
+ * new secret to manage or leak, and no quota to exhaust. Coordinates come from
+ * nflTeamLocations. Domed and retractable-roof stadiums are never requested at
+ * all — the flag comes from ESPN's venue.indoor — because a wind reading
+ * outside a covered building describes nothing that happens in the game.
+ *
+ * Returns the two fields the existing frontend badge already renders
+ * (temperature, windSpeed), which have never had data behind them, plus gusts
+ * and precipitation.
+ */
+async function fetchWeather(lat, lon, kickoffIso) {
+  try {
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    const kickoff = new Date(kickoffIso);
+    if (isNaN(kickoff.getTime())) return null;
+
+    // Open-Meteo forecasts about a week out; anything further has no data.
+    const daysOut = (kickoff.getTime() - Date.now()) / 86400000;
+    if (daysOut > 6.5 || daysOut < -0.5) return null;
+
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}` +
+      `&longitude=${lon.toFixed(4)}` +
+      `&hourly=temperature_2m,precipitation,wind_speed_10m,wind_gusts_10m` +
+      `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch` +
+      `&forecast_days=7&timezone=UTC`;
+    const response = await cachedGet(url, { timeout: 8000 });
+    const h = response.data && response.data.hourly;
+    if (!h || !Array.isArray(h.time) || !h.time.length) return null;
+
+    // Nearest hour to kickoff. Open-Meteo timestamps are UTC without a zone
+    // suffix, so make that explicit rather than letting Date guess local time.
+    let bestIdx = -1, bestGap = Infinity;
+    for (let i = 0; i < h.time.length; i++) {
+      const t = new Date(h.time[i] + 'Z').getTime();
+      const gap = Math.abs(t - kickoff.getTime());
+      if (gap < bestGap) { bestGap = gap; bestIdx = i; }
+    }
+    if (bestIdx < 0 || bestGap > 3 * 3600 * 1000) return null;
+
+    const num = (arr) => {
+      const v = arr && arr[bestIdx];
+      return Number.isFinite(v) ? v : null;
+    };
+    const wind = num(h.wind_speed_10m);
+    const gust = num(h.wind_gusts_10m);
+
+    return {
+      // Names the frontend badge already expects.
+      temperature: num(h.temperature_2m) === null ? null : Math.round(num(h.temperature_2m)),
+      windSpeed: wind === null ? null : Math.round(wind),
+      gustSpeed: gust === null ? null : Math.round(gust),
+      precipIn: num(h.precipitation),
+      forecastFor: h.time[bestIdx] + 'Z',
+      windy: (wind !== null && wind >= WIND_SUSTAINED_LIMIT) ||
+             (gust !== null && gust >= WIND_GUST_LIMIT),
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
 const QB_UNAVAILABLE = new Set(['out', 'doubtful', 'injured reserve', 'ir', 'suspension', 'suspended']);
 
 /**
@@ -2145,6 +2217,11 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
         `${g.awayTeam} @ ${g.homeTeam} — not pricing the spread`);
     }
 
+    // A total can be declined on its own account (high wind) while the spread
+    // is still perfectly priceable.
+    const rawTotal = toNum(odds.total);
+    const totalUsable = rawTotal !== null && !g.skipTotalReason;
+
     let priced = { spread: null, total: null };
     if (projection) {
       priced = model.priceGame({
@@ -2154,7 +2231,7 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
         spread: spreadUsable ? rawSpread : null,
         spreadHomePrice: toNum(odds.spreadHomePrice),
         spreadAwayPrice: toNum(odds.spreadAwayPrice),
-        total: toNum(odds.total),
+        total: totalUsable ? rawTotal : null,
         overPrice: toNum(odds.overPrice),
         underPrice: toNum(odds.underPrice),
         homeTeam: g.homeTeam,
@@ -2176,6 +2253,9 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       bookmaker: odds.bookmaker ?? null,
       lineMovement: g.lineMovement ?? null,
       sharpSignals: g.sharpSignals ?? [],
+      // The frontend has rendered a weather badge from this field since before
+      // anything set it. It finally has data.
+      weather: g.weather ?? null,
 
       predictedScore: projection
         ? { home: Math.round(projection.predictedHome), away: Math.round(projection.predictedAway) }
@@ -2199,6 +2279,7 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
         predictedMargin: +projection.predictedMargin.toFixed(2),
         predictedTotal: +projection.predictedTotal.toFixed(2),
         trust: MODEL_TRUST,
+        totalSkipped: g.skipTotalReason || null,
         marketProbSpread: priced.spread ? +priced.spread.marketProb.toFixed(4) : null,
         modelProbSpread: priced.spread ? +priced.spread.modelProb.toFixed(4) : null,
         hold: priced.spread ? +priced.spread.hold.toFixed(4) : null,
@@ -2315,8 +2396,10 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
       eventMap[`${homeFullName}|${awayFullName}`] = event.id;
 
       // Skip the stats round-trips entirely in preseason; nothing would use them.
+      const venue = nflTeamLocations[homeTeamName] || null;
+
       const [homeStats, awayStats, homeForm, awayForm, travelData,
-             homeInjuries, awayInjuries, homeQB, awayQB] =
+             homeInjuries, awayInjuries, homeQB, awayQB, weather] =
         await Promise.all([
           fetchNFLTeamStats(homeTeamName),
           fetchNFLTeamStats(awayTeamName),
@@ -2327,6 +2410,10 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
           fetchInjuries(awayFullName, 'nfl'),
           fetchNFLStartingQB(homeTeamName, seasonYear),
           fetchNFLStartingQB(awayTeamName, seasonYear),
+          // Never ask for a forecast for a covered stadium.
+          venue && !venue.dome
+            ? fetchWeather(venue.lat, venue.lon, event.date)
+            : Promise.resolve(null),
         ]);
 
       // A changed starting quarterback invalidates our own projection, because
@@ -2349,8 +2436,6 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
         ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
         : [];
 
-      const venue = nflTeamLocations[homeTeamName] || null;
-
       return {
         homeTeam: homeFullName,
         awayTeam: awayFullName,
@@ -2361,7 +2446,17 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
         awayForm,
         travel: travelData,
         dome: venue ? venue.dome : null,
+        weather,
         startingQB: { home: homeQB, away: awayQB },
+        // Wind invalidates our TOTAL only, not the spread. Scoring averages
+        // were accumulated in ordinary conditions, so in a gale they describe
+        // a different game. This is not an adjustment to the number: a public
+        // forecast is already in the market price, and shading the total on top
+        // of a market-anchored model would count it twice. It is a statement
+        // that our own input has stopped being usable.
+        skipTotalReason: weather && weather.windy
+          ? `wind ${weather.windSpeed} mph, gusting ${weather.gustSpeed} - scoring averages do not describe a game in this`
+          : null,
         skipReason: qbNotes.length
           ? `starting QB change - ${qbNotes.join('; ')} - recent scoring averages describe a different team`
           : null,
@@ -2389,7 +2484,7 @@ ${JSON.stringify(gamesWithStats.map(g => ({
       homeTeam: g.homeTeam, awayTeam: g.awayTeam, gameTime: g.gameTime,
       homeRecord: g.homeData?.record, awayRecord: g.awayData?.record,
       homeForm: g.homeForm, awayForm: g.awayForm,
-      travel: g.travel, dome: g.dome,
+      travel: g.travel, dome: g.dome, weather: g.weather,
       startingQB: {
         home: g.startingQB.home && { name: g.startingQB.home.starter, status: g.startingQB.home.status },
         away: g.startingQB.away && { name: g.startingQB.away.starter, status: g.startingQB.away.status },
