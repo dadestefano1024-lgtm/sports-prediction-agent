@@ -2527,11 +2527,23 @@ async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
     let ratings = null;
     if (!isPreseason) {
       try {
-        const logs = await fetchNFLGameLogs(seasonYear);
-        ratings = model.opponentAdjustedRatings(logs, { iterations: 3, minGames: 3 });
+        const [currentLogs, priorLogs] = await Promise.all([
+          fetchNFLGameLogs(seasonYear),
+          fetchNFLGameLogs(seasonYear - 1),
+        ]);
+        const current = model.opponentAdjustedRatings(currentLogs, { iterations: 3, minGames: 3 });
+        const prior = model.opponentAdjustedRatings(priorLogs, { iterations: 3, minGames: 3 });
+        // Last season regressed halfway to the mean, handed over to this season
+        // as games accumulate. Week 1 runs on the prior alone; by week 8 the
+        // prior is gone. Nothing has to be switched off — see blendSeasonRatings.
+        ratings = model.blendSeasonRatings({
+          prior, current, gamesForFullWeight: 8, priorRegression: 0.5,
+        });
         const rated = ratings ? Object.keys(ratings.ratings).length : 0;
-        console.log(`[NFL] opponent-adjusted ratings for ${rated} teams` +
-          (ratings ? `, league average ${ratings.leagueAvg.toFixed(1)} pts` : ' (not enough games yet)'));
+        const anyTeam = ratings && Object.values(ratings.ratings)[0];
+        console.log(`[NFL] ratings for ${rated} teams` +
+          (ratings ? `, league average ${ratings.leagueAvg.toFixed(1)} pts` +
+            `, prior season weight ${anyTeam ? (anyTeam.priorWeight ?? 0) : 0}` : ' (no data yet)'));
       } catch (e) {
         console.error('[NFL] rating build failed:', e.message);
       }

@@ -904,6 +904,66 @@ function regressRatings(rated, weight) {
   return { leagueAvg: L, ratings: out };
 }
 
+/**
+ * Combine last season's ratings with this season's, weighted by how much of
+ * this season actually exists.
+ *
+ * Week 1 has no current games, so a model that needs them produces nothing at
+ * all. Carrying last season forward fixes that, but a straight carryover would
+ * state last year's table with this year's confidence — rosters, coaches and
+ * quarterbacks change. So the prior is regressed toward league average first,
+ * and then handed over progressively.
+ *
+ * THE WEIGHTING IS THE POINT, and it is why nothing needs switching off later.
+ * Each team's own game count drives its own blend: w = games / gamesForFullWeight,
+ * capped at 1. Week 1 is pure prior, by week 4 the current season carries about
+ * a third, and from gamesForFullWeight onward the prior is gone entirely. The
+ * handover is continuous and automatic — there is no flag to remember, and no
+ * date at which behaviour jumps.
+ *
+ * Ratings are blended as RATIOS to their own league average rather than as raw
+ * points, so a change in scoring environment between seasons does not leak in.
+ * A team rated 10% above average last year stays 10% above average, expressed
+ * in this season's points.
+ */
+function blendSeasonRatings({ prior, current, gamesForFullWeight = 8, priorRegression = 0.5 }) {
+  if (!prior && !current) return null;
+  if (!prior) return current;
+
+  const regressed = regressRatings(prior, priorRegression);
+  const priorAvg = regressed.leagueAvg;
+  const leagueAvg = current ? current.leagueAvg : priorAvg;
+  if (!(leagueAvg > 0) || !(priorAvg > 0)) return null;
+  if (!(gamesForFullWeight > 0)) throw new Error('gamesForFullWeight must be positive');
+
+  const teams = new Set([
+    ...Object.keys(regressed.ratings),
+    ...(current ? Object.keys(current.ratings) : []),
+  ]);
+
+  const ratings = {};
+  for (const team of teams) {
+    const p = regressed.ratings[team];
+    const c = current && current.ratings[team];
+    const games = c ? c.games : 0;
+    const w = Math.min(1, games / gamesForFullWeight);
+
+    // Ratios to each season's own league average, so scoring shifts do not leak.
+    const pOff = p ? p.offense / priorAvg : 1;
+    const pDef = p ? p.defense / priorAvg : 1;
+    const cOff = c ? c.offense / current.leagueAvg : pOff;
+    const cDef = c ? c.defense / current.leagueAvg : pDef;
+
+    ratings[team] = {
+      offense: (pOff * (1 - w) + cOff * w) * leagueAvg,
+      defense: (pDef * (1 - w) + cDef * w) * leagueAvg,
+      games,
+      priorWeight: +(1 - w).toFixed(3),
+    };
+  }
+  return { leagueAvg, ratings, blended: true };
+}
+
 module.exports = {
   SPORTS,
   sportConfig,
@@ -942,5 +1002,6 @@ module.exports = {
   opponentAdjustedRatings,
   projectFromRatings,
   regressRatings,
+  blendSeasonRatings,
   calibrateMarginWeights,
 };

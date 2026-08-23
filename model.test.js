@@ -769,3 +769,73 @@ test('regressRatings pulls toward league average', () => {
   close(full.ratings.A.offense, 30, 1e-9, 'weight 1 leaves it alone');
   assert.throws(() => m.regressRatings(rated, 1.5));
 });
+
+// ----------------------------------------------------------------------------
+const mkRated = (leagueAvg, teams) => ({
+  leagueAvg,
+  ratings: Object.fromEntries(Object.entries(teams).map(([t, v]) =>
+    [t, { offense: v[0], defense: v[1], games: v[2] ?? 0 }])),
+});
+
+test('blendSeasonRatings: week 1 is pure prior, regressed', () => {
+  const prior = mkRated(22, { A: [30, 16, 17] });
+  const out = m.blendSeasonRatings({ prior, current: null, priorRegression: 0.5 });
+  // 0.5 regression pulls 30 -> 26 and 16 -> 19 before any blending.
+  close(out.ratings.A.offense, 26, 1e-9);
+  close(out.ratings.A.defense, 19, 1e-9);
+  close(out.ratings.A.priorWeight, 1, 1e-9, 'no current games means all prior');
+});
+
+test('blendSeasonRatings hands over progressively as games accumulate', () => {
+  const prior = mkRated(22, { A: [30, 16, 17] });     // regressed to 26 / 19
+  const seen = [];
+  for (const games of [0, 2, 4, 8, 12]) {
+    const current = mkRated(22, { A: [20, 24, games] });
+    const out = m.blendSeasonRatings({ prior, current, gamesForFullWeight: 8, priorRegression: 0.5 });
+    seen.push({ games, off: out.ratings.A.offense, pw: out.ratings.A.priorWeight });
+  }
+  // Prior offence is 26, current is 20, so the blend falls monotonically until
+  // the prior is exhausted, then holds — equal, not lower, once priorWeight
+  // hits zero. Asserting a strict fall past that point tests nothing real.
+  for (let i = 1; i < seen.length; i++) {
+    assert.ok(seen[i].off <= seen[i - 1].off,
+      `offence must never move back toward the prior: ${JSON.stringify(seen)}`);
+    assert.ok(seen[i].pw <= seen[i - 1].pw);
+    if (seen[i - 1].pw > 0) {
+      assert.ok(seen[i].off < seen[i - 1].off,
+        `while prior weight remains, offence should still be moving: ${JSON.stringify(seen)}`);
+    }
+  }
+  close(seen[0].off, 26, 1e-9, 'zero games = pure prior');
+  close(seen[3].off, 20, 1e-9, 'at full weight the prior is gone');
+  close(seen[4].off, 20, 1e-9, 'and stays gone beyond it');
+  close(seen[4].pw, 0, 1e-9);
+});
+
+test('blendSeasonRatings blends ratios, so a scoring-environment shift does not leak', () => {
+  // Last season averaged 20 and the team was 10% above it. This season averages
+  // 30. The team should come out 10% above 30, not carried across as points.
+  const prior = mkRated(20, { A: [22, 20, 17] });
+  const current = mkRated(30, { A: [33, 30, 0] });
+  const out = m.blendSeasonRatings({ prior, current, priorRegression: 1 });
+  close(out.leagueAvg, 30, 1e-9, 'the current environment wins');
+  close(out.ratings.A.offense, 33, 1e-9, '10% above a 30-point league');
+});
+
+test('blendSeasonRatings copes with a team present in only one season', () => {
+  const prior = mkRated(22, { A: [30, 16, 17] });
+  const current = mkRated(22, { B: [25, 21, 6] });
+  const out = m.blendSeasonRatings({ prior, current, gamesForFullWeight: 8 });
+  assert.ok(out.ratings.A, 'a team only in the prior still gets a rating');
+  assert.ok(out.ratings.B, 'and one only in the current season too');
+  close(out.ratings.A.priorWeight, 1, 1e-9, 'no current games for A');
+});
+
+test('blendSeasonRatings degenerate inputs', () => {
+  assert.equal(m.blendSeasonRatings({ prior: null, current: null }), null);
+  const current = mkRated(22, { A: [25, 21, 6] });
+  assert.equal(m.blendSeasonRatings({ prior: null, current }), current,
+    'with no prior it is just the current ratings');
+  assert.throws(() => m.blendSeasonRatings({
+    prior: mkRated(22, { A: [30, 16, 17] }), current, gamesForFullWeight: 0 }));
+});
