@@ -350,10 +350,15 @@ async function getHistoryStats(sport = null) {
 // ============================================================================
 // ODDS CACHE — prevents burning through Odds API quota on repeated page loads
 // The Odds API free tier is 500 requests/month. Without caching, every refresh
-// of the app burns 1 request per sport. Cache odds for 5 minutes.
+// of the app burns 1 request per sport. Cache odds for 60 minutes.
 // ============================================================================
 const oddsCache = {};
-const ODDS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const ODDS_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
+// This TTL is the real spend governor on The Odds API free tier (500 requests
+// per month, ~3 per fetch). It caps cost at ~3 requests/hour/sport no matter
+// how often the frontend asks. It was 5 minutes, which exactly matched the
+// frontend's 5-minute auto-refresh, so every single auto-refresh was a
+// guaranteed cache miss.
 
 // Separate cache for ESPN opening-line scrapes (also 5 min)
 const espnOddsCache = {};
@@ -2015,16 +2020,24 @@ app.post('/api/grade', async (req, res) => {
   res.json({ ok: true });
 });
 
-// Background grading job — runs every hour
-if (dbReady !== false) {
-  setInterval(() => {
-    gradePendingPicks().catch(e => console.error('[GRADE_JOB]', e.message));
-  }, 60 * 60 * 1000);
-  // Also run once 30 seconds after startup (gives DB time to initialize)
-  setTimeout(() => {
-    gradePendingPicks().catch(e => console.error('[GRADE_JOB]', e.message));
-  }, 30000);
-}
+// Background grading job — runs every hour.
+//
+// This was previously wrapped in `if (dbReady !== false)`. That guard could
+// never pass: dbReady is initialized to false and only flips to true inside an
+// async IIFE that has not resolved yet when module evaluation reaches this
+// line. So `false !== false` was always false, neither timer ever registered,
+// and no pick was graded in the lifetime of the app.
+//
+// No outer guard is needed — gradePendingPicks() already returns early when
+// !dbReady, and registering unconditionally means grading self-heals if the
+// database connects late.
+setInterval(() => {
+  gradePendingPicks().catch(e => console.error('[GRADE_JOB]', e.message));
+}, 60 * 60 * 1000);
+// Also run once 30 seconds after startup (gives DB time to initialize)
+setTimeout(() => {
+  gradePendingPicks().catch(e => console.error('[GRADE_JOB]', e.message));
+}, 30000);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

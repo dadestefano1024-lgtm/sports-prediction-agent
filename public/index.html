@@ -533,6 +533,32 @@
   <script>
     let currentSport = 'nba';
     let cache = {};
+
+    // Auto-refresh budget. The Odds API free tier is 500 requests/month and each
+    // prediction fetch costs ~3, so an uncapped loop in a tab left open all day
+    // would drain the entire month in well under 24 hours. Refresh now skips
+    // while the tab is hidden and stops after AUTO_REFRESH_MAX cycles; clicking
+    // Fetch Predictions resets the budget.
+    const AUTO_REFRESH_MS = 15 * 60 * 1000;
+    const AUTO_REFRESH_MAX = 8;
+    let autoRefreshCount = 0;
+    let autoRefreshTimer = null;
+
+    function scheduleAutoRefresh(sportOfLastFetch) {
+      clearTimeout(autoRefreshTimer);
+      if (autoRefreshCount >= AUTO_REFRESH_MAX) {
+        document.getElementById('refresh-info').textContent =
+          'Auto-refresh paused to protect API quota. Click Fetch Predictions to resume.';
+        return;
+      }
+      autoRefreshTimer = setTimeout(() => {
+        if (currentSport !== sportOfLastFetch) return;
+        // Hidden tab: reschedule without spending a request.
+        if (document.hidden) { scheduleAutoRefresh(sportOfLastFetch); return; }
+        autoRefreshCount++;
+        fetchPredictions(true);
+      }, AUTO_REFRESH_MS);
+    }
     let historyFilter = null; // null = all, 'nba', 'nhl', 'mlb'
 
     function switchTab(sport, el) {
@@ -564,7 +590,9 @@
       }
     }
 
-    async function fetchPredictions() {
+    async function fetchPredictions(isAuto) {
+      // A manual click resets the auto-refresh budget; an auto cycle does not.
+      if (!isAuto) { autoRefreshCount = 0; }
       const btn = document.getElementById('fetch-btn');
       const info = document.getElementById('refresh-info');
       btn.disabled = true;
@@ -601,9 +629,7 @@
         document.getElementById('last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
         info.textContent = `Loaded ${data.games?.length || 0} games`;
 
-        setTimeout(() => {
-          if (currentSport === data.sport?.toLowerCase()) fetchPredictions();
-        }, 300000);
+        scheduleAutoRefresh(data.sport?.toLowerCase());
 
       } catch (err) {
         document.getElementById('content').innerHTML = `<div class="error">❌ Error: ${err.message}</div>`;
