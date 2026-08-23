@@ -303,7 +303,7 @@ function gradePick(pick, homeScore, awayScore) {
 /**
  * Get aggregated history stats for the History tab.
  */
-async function getHistoryStats(sport = null) {
+async function getHistoryStats(sport = null, limit = 50) {
   if (!dbReady || !pool) {
     return { available: false, message: 'Database not configured' };
   }
@@ -348,19 +348,27 @@ async function getHistoryStats(sport = null) {
     `, params);
 
     // Recent picks (last 50)
+    // The History tab renders 50 rows, but analysing the bank (favourite vs
+    // underdog splits, duplicate detection) needs the whole set, so the caller
+    // can raise this. Clamped so a stray ?limit=999999 can't pull the table.
+    // espn_game_id and game_time are selected for duplicate detection; the
+    // frontend ignores the extra fields.
+    const rowLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 5000);
     const recent = await pool.query(`
-      SELECT id, created_at, sport, home_team, away_team, market, pick, line, edge, confidence, result, actual_home, actual_away
+      SELECT id, created_at, sport, espn_game_id, home_team, away_team, game_time,
+             market, pick, line, edge, confidence, result, actual_home, actual_away
       FROM picks
       ${sportFilter}
       ORDER BY created_at DESC
-      LIMIT 50;
-    `, params);
+      LIMIT $${params.length + 1};
+    `, [...params, rowLimit]);
 
     return {
       available: true,
       overall: overall.rows[0],
       byMarket: byMarket.rows,
       byConfidence: byConfidence.rows,
+      returned: recent.rows.length,
       recent: recent.rows
     };
   } catch (err) {
@@ -2115,7 +2123,7 @@ app.get('/api/health', (req, res) => {
 // History endpoint — returns picks history and W/L stats
 app.get('/api/history', async (req, res) => {
   const sport = req.query.sport || null;
-  const stats = await getHistoryStats(sport);
+  const stats = await getHistoryStats(sport, req.query.limit);
   res.json(stats);
 });
 
