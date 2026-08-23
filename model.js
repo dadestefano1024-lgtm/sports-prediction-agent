@@ -43,10 +43,9 @@
 //     margin distribution with per-margin weights, which also makes pushes
 //     representable. The weights themselves are still approximations rather
 //     than values fitted to data — see calibrateMarginWeights.
-//   * TOTALS still use a smooth curve and cannot push, so a whole-number total
-//     is priced slightly wrong. The same mechanism would fix it, but totals
-//     cluster differently from margins and inventing that shape without data
-//     would be worse than naming the gap.
+//   * Totals now push correctly, using a FLAT discrete distribution. Whether
+//     totals cluster on particular numbers the way margins do is still an open
+//     empirical question, and the weights are left at 1 rather than guessed.
 //   * De-vigging is proportional, which slightly overprices longshots relative
 //     to Shin's method. Fine at typical spread and total prices; less fine on
 //     big moneyline underdogs.
@@ -515,11 +514,15 @@ function priceGame({
   if (Number.isFinite(total) && Number.isFinite(predictedTotal)) {
     const op = Number.isFinite(overPrice) ? overPrice : DEFAULT_PRICE;
     const up = Number.isFinite(underPrice) ? underPrice : DEFAULT_PRICE;
-    const overProb = overProbability({ predictedTotal, line: total, sigma: cfg.totalSigma });
+    // Over/push/under, so a whole-number total can push. Both sides share it.
+    const tOut = totalOutcomes({ predictedTotal, line: total, sigma: cfg.totalSigma });
+    const tResolved = tOut.over + tOut.under;
+    const overProb = tResolved > 0 ? tOut.over / tResolved : 0.5;
+    const totalPush = tOut.push;
 
-    const over = { ...priceSide({ americanOdds: op, oppositeAmericanOdds: up, modelProb: overProb, trust, kellyFraction }),
+    const over = { ...priceSide({ americanOdds: op, oppositeAmericanOdds: up, modelProb: overProb, pushProb: totalPush, trust, kellyFraction }),
                    side: 'over', line: total, pick: `Over ${total}` };
-    const under = { ...priceSide({ americanOdds: up, oppositeAmericanOdds: op, modelProb: 1 - overProb, trust, kellyFraction }),
+    const under = { ...priceSide({ americanOdds: up, oppositeAmericanOdds: op, modelProb: 1 - overProb, pushProb: totalPush, trust, kellyFraction }),
                     side: 'under', line: total, pick: `Under ${total}` };
 
     const winner = bestSide(over, under);
@@ -631,23 +634,52 @@ const DISCRETE_MARGIN_SPORTS = new Set(['nfl', 'nba']);
  * unremarkable. Baseball and hockey never come here — run lines and puck lines
  * are 1.5, so they cannot push and a continuous curve is fine.
  */
-function marginPmf({ mean, sigma, sport, maxMargin = 70 }) {
+function buildIntegerPmf({ mean, sigma, lo, hi, weightFor }) {
   if (!(sigma > 0)) throw new Error(`sigma must be positive, got ${sigma}`);
-  const key = String(sport || '').toLowerCase();
-  const weights = key === 'nfl' ? NFL_KEY_NUMBER_WEIGHTS : {};
   const pmf = new Map();
   let total = 0;
-  for (let m = -maxMargin; m <= maxMargin; m++) {
-    const z = (m - mean) / sigma;
-    const w = Object.prototype.hasOwnProperty.call(weights, Math.abs(m))
-      ? weights[Math.abs(m)] : 1;
+  for (let v = lo; v <= hi; v++) {
+    const z = (v - mean) / sigma;
+    const w = weightFor ? weightFor(v) : 1;
     const p = Math.exp(-0.5 * z * z) * w;
-    pmf.set(m, p);
+    pmf.set(v, p);
     total += p;
   }
-  if (!(total > 0)) throw new Error('degenerate margin distribution');
-  for (const [m, p] of pmf) pmf.set(m, p / total);
+  if (!(total > 0)) throw new Error('degenerate distribution');
+  for (const [v, p] of pmf) pmf.set(v, p / total);
   return pmf;
+}
+
+function marginPmf({ mean, sigma, sport, maxMargin = 70 }) {
+  const key = String(sport || '').toLowerCase();
+  const weights = key === 'nfl' ? NFL_KEY_NUMBER_WEIGHTS : {};
+  return buildIntegerPmf({
+    mean, sigma, lo: -maxMargin, hi: maxMargin,
+    weightFor: (m) => Object.prototype.hasOwnProperty.call(weights, Math.abs(m))
+      ? weights[Math.abs(m)] : 1,
+  });
+}
+
+/**
+ * Probability of each integer combined score.
+ *
+ * Deliberately FLAT — no key-number weights. That is not an oversight, it is
+ * the line between what can be justified and what would be invented. Final
+ * totals are integers in all four sports, which is arithmetic and needs no
+ * data; whether they cluster on particular numbers is an empirical claim, and a
+ * total is a sum of two teams' scores so any clustering is far weaker and more
+ * diffuse than it is for margins. Asserting a shape here without measuring it
+ * would be exactly the kind of confident invention this rewrite exists to
+ * remove. calibrateMarginWeights can be pointed at totals when there is enough
+ * history to say something.
+ *
+ * Integrality alone is what makes pushes representable, and pushes were the
+ * actual error.
+ */
+function totalPmf({ mean, sigma }) {
+  const lo = Math.max(0, Math.floor(mean - 6 * sigma));
+  const hi = Math.ceil(mean + 6 * sigma);
+  return buildIntegerPmf({ mean, sigma, lo, hi });
 }
 
 /**
@@ -679,6 +711,30 @@ function coverOutcomes({ predictedMargin, spread, sigma, sport }) {
     else if (m === threshold) push += p;
   }
   return { win, push, loss: Math.max(0, 1 - win - push) };
+}
+
+/**
+ * Over, push and under probabilities for a total.
+ *
+ * A whole-number total can land exactly on the line and return the stake. Every
+ * version of this code treated that as a loss, which understated every
+ * whole-number total bet — and the error is larger here than on spreads,
+ * because totals sigma is small in the low-scoring sports. A baseball total of
+ * 9 at sigma 4.4 pushes roughly one time in eleven.
+ *
+ * Half-point lines cannot push and fall out of the arithmetic at zero without
+ * needing a special case.
+ */
+function totalOutcomes({ predictedTotal, line, sigma }) {
+  if (!Number.isFinite(predictedTotal)) throw new Error('predictedTotal must be finite');
+  if (!Number.isFinite(line)) throw new Error('line must be finite');
+  const pmf = totalPmf({ mean: predictedTotal, sigma });
+  let over = 0, push = 0;
+  for (const [v, p] of pmf) {
+    if (v > line) over += p;
+    else if (v === line) push += p;
+  }
+  return { over, push, under: Math.max(0, 1 - over - push) };
 }
 
 /**
@@ -745,7 +801,10 @@ module.exports = {
   SPREAD_LIMITS,
   plausibleSpread,
   NFL_KEY_NUMBER_WEIGHTS,
+  buildIntegerPmf,
   marginPmf,
+  totalPmf,
   coverOutcomes,
+  totalOutcomes,
   calibrateMarginWeights,
 };

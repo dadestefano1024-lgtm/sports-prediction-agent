@@ -609,3 +609,77 @@ test('calibrateMarginWeights recovers an injected spike', () => {
   assert.equal(out.samples, 600);
   assert.ok(out.weights[3] > 1.5, `should detect the 3 spike, got ${out.weights[3]}`);
 });
+
+// ----------------------------------------------------------------------------
+test('totalPmf is a proper distribution and never goes negative', () => {
+  const pmf = m.totalPmf({ mean: 8.5, sigma: 4.4 });
+  let total = 0;
+  for (const [v, p] of pmf) {
+    assert.ok(v >= 0, 'a combined score cannot be negative');
+    assert.ok(p >= 0);
+    total += p;
+  }
+  close(total, 1, 1e-9);
+});
+
+test('totalPmf is flat: no key numbers asserted', () => {
+  // Nearer the mean must always be likelier. If a weight were ever introduced
+  // here without evidence, this is the test that should fail.
+  const pmf = m.totalPmf({ mean: 44, sigma: 10.5 });
+  for (let v = 44; v < 60; v++) {
+    assert.ok(pmf.get(v) >= pmf.get(v + 1),
+      `total ${v} should be at least as likely as ${v + 1}`);
+  }
+});
+
+test('totalOutcomes: a whole-number total pushes, a half-point one cannot', () => {
+  const whole = m.totalOutcomes({ predictedTotal: 8.7, line: 9, sigma: 4.4 });
+  assert.ok(whole.push > 0, 'a total of 9 can land on 9');
+  const half = m.totalOutcomes({ predictedTotal: 8.7, line: 8.5, sigma: 4.4 });
+  close(half.push, 0, 1e-12, 'a half-point total cannot push');
+});
+
+test('totalOutcomes: the push is larger where sigma is smaller', () => {
+  // Baseball totals are tight, football totals are wide, so an identical
+  // whole-number line pushes far more often in baseball.
+  const mlb = m.totalOutcomes({ predictedTotal: 9, line: 9, sigma: m.sportConfig('mlb').totalSigma });
+  const nfl = m.totalOutcomes({ predictedTotal: 44, line: 44, sigma: m.sportConfig('nfl').totalSigma });
+  assert.ok(mlb.push > nfl.push, `mlb ${mlb.push} should exceed nfl ${nfl.push}`);
+  assert.ok(mlb.push > 0.07, `a baseball whole-number total should push often, got ${mlb.push}`);
+});
+
+test('totalOutcomes always partitions the space', () => {
+  for (const [line, sigma] of [[9, 4.4], [8.5, 4.4], [44, 10.5], [47.5, 10.5], [220, 15], [6, 2.4]]) {
+    const o = m.totalOutcomes({ predictedTotal: line + 0.4, line, sigma });
+    close(o.over + o.push + o.under, 1, 1e-9, `line ${line}`);
+    assert.ok(o.over >= 0 && o.push >= 0 && o.under >= 0);
+  }
+});
+
+test('totalOutcomes tracks the projection', () => {
+  const high = m.totalOutcomes({ predictedTotal: 52, line: 44, sigma: 10.5 });
+  const low = m.totalOutcomes({ predictedTotal: 36, line: 44, sigma: 10.5 });
+  assert.ok(high.over > high.under, 'projecting well above the line favours the over');
+  assert.ok(low.under > low.over, 'and well below favours the under');
+});
+
+test('totalOutcomes rejects bad input', () => {
+  assert.throws(() => m.totalOutcomes({ predictedTotal: NaN, line: 44, sigma: 10.5 }));
+  assert.throws(() => m.totalOutcomes({ predictedTotal: 44, line: NaN, sigma: 10.5 }));
+  assert.throws(() => m.totalOutcomes({ predictedTotal: 44, line: 44, sigma: 0 }));
+});
+
+test('priceGame: a whole-number total reports a push, a half-point one does not', () => {
+  const base = {
+    sport: 'mlb', predictedMargin: 0.3, predictedTotal: 9.6,
+    spread: -1.5, spreadHomePrice: -110, spreadAwayPrice: -110,
+    overPrice: -110, underPrice: -110, trust: 1,
+  };
+  const whole = m.priceGame({ ...base, total: 9 });
+  const half = m.priceGame({ ...base, total: 9.5 });
+  assert.ok(whole.total, 'the projection is well above 9, so a side should be backable');
+  assert.ok(whole.total.pushProb > 0.05, `expected a real push chance, got ${whole.total.pushProb}`);
+  if (half.total) close(half.total.pushProb, 0, 1e-12, 'half-point totals cannot push');
+  // The run line is 1.5 and cannot push either.
+  if (whole.spread) close(whole.spread.pushProb, 0, 1e-12);
+});
