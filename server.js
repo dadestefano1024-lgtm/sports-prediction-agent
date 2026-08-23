@@ -3216,6 +3216,51 @@ app.post('/api/regrade', async (req, res) => {
   }
 });
 
+// Probe what the SportsData.io key can actually reach. The handoff notes say
+// the free tier scrambles PLAYER data and to leave it alone; team-level data
+// may still be usable, and that is worth testing rather than assuming.
+//
+// The key is read from the environment and never echoed — only status codes,
+// record counts and field names come back.
+app.get('/api/debug/sportsdata', async (req, res) => {
+  const key = process.env.SPORTSDATA_API_KEY;
+  if (!key) return res.status(503).json({ error: 'SPORTSDATA_API_KEY is not set' });
+  const season = String(req.query.season || '2025REG').replace(/[^0-9A-Z]/gi, '');
+  const week = String(req.query.week || '10').replace(/[^0-9]/g, '');
+
+  const probes = [
+    ['TeamSeasonStats', `https://api.sportsdata.io/v3/nfl/scores/json/TeamSeasonStats/${season}`],
+    ['Standings', `https://api.sportsdata.io/v3/nfl/scores/json/Standings/${season}`],
+    ['TeamGameStats', `https://api.sportsdata.io/v3/nfl/scores/json/TeamGameStats/${season}/${week}`],
+    ['ScoresByWeek', `https://api.sportsdata.io/v3/nfl/scores/json/ScoresByWeek/${season}/${week}`],
+    ['Schedules', `https://api.sportsdata.io/v3/nfl/scores/json/Schedules/${season}`],
+    ['Stadiums', `https://api.sportsdata.io/v3/nfl/scores/json/Stadiums`],
+  ];
+
+  const results = [];
+  for (const [name, url] of probes) {
+    try {
+      const r = await axios.get(url, {
+        timeout: 12000,
+        headers: { 'Ocp-Apim-Subscription-Key': key },
+        validateStatus: () => true,
+      });
+      const body = r.data;
+      const first = Array.isArray(body) ? body[0] : body;
+      results.push({
+        name,
+        status: r.status,
+        records: Array.isArray(body) ? body.length : (body ? 1 : 0),
+        fields: first && typeof first === 'object' ? Object.keys(first).slice(0, 60) : null,
+        note: typeof body === 'string' ? String(body).slice(0, 120) : null,
+      });
+    } catch (err) {
+      results.push({ name, status: 'error', note: err.message.slice(0, 120) });
+    }
+  }
+  res.json({ season, week, results });
+});
+
 // Dump the raw per-book quotes behind a matched game, so a surprising spread
 // or total can be traced to the feed instead of guessed at.
 app.get('/api/debug/shop/:sport', async (req, res) => {
