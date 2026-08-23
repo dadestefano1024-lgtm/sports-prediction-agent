@@ -39,10 +39,14 @@
 //   * The sport constants below are published rules-of-thumb, not values fitted
 //     to data. They are the first thing that should be re-estimated once enough
 //     graded games exist. `calibrateSigma` is provided for exactly that.
-//   * `coverProbability` uses a normal distribution. Real margins are lumpy —
-//     NFL margins pile up on 3 and 7 — so probabilities near key numbers are
-//     wrong in a way no choice of sigma fixes. `marginDistribution` is the
-//     documented seam for swapping in an empirical distribution later.
+//   * Key numbers ARE now handled for football and basketball, via a discrete
+//     margin distribution with per-margin weights, which also makes pushes
+//     representable. The weights themselves are still approximations rather
+//     than values fitted to data — see calibrateMarginWeights.
+//   * TOTALS still use a smooth curve and cannot push, so a whole-number total
+//     is priced slightly wrong. The same mechanism would fix it, but totals
+//     cluster differently from margins and inventing that shape without data
+//     would be worse than naming the gap.
 //   * De-vigging is proportional, which slightly overprices longshots relative
 //     to Shin's method. Fine at typical spread and total prices; less fine on
 //     big moneyline underdogs.
@@ -279,19 +283,39 @@ function kellyStake({ prob, decimalOdds, fraction = 0.25 }) {
  * Returns every intermediate value, because a number you cannot decompose is a
  * number you cannot audit — which is exactly how the old edges got trusted.
  */
-function priceSide({ americanOdds, oppositeAmericanOdds, modelProb, trust = 0.25, kellyFraction = 0.25 }) {
+function priceSide({ americanOdds, oppositeAmericanOdds, modelProb, pushProb = 0,
+                     trust = 0.25, kellyFraction = 0.25 }) {
   const { probA: marketProb, hold } = deVigTwoWay(americanOdds, oppositeAmericanOdds);
+  if (!(pushProb >= 0 && pushProb < 1)) throw new Error('pushProb out of range');
+
+  // `modelProb` is the CONDITIONAL win probability, given the bet resolves at
+  // all. That is what the de-vigged market price is too: a two-way market
+  // prices two payouts, and a push voids the bet rather than settling it. The
+  // two are only comparable once pushes are excluded from both, so the blend
+  // happens on the conditional and pushes are reintroduced afterwards.
   const blendedProb = blendWithMarket(marketProb, modelProb, trust);
   const decimalOdds = americanToDecimal(americanOdds);
+
+  const live = 1 - pushProb;
+  const pWin = blendedProb * live;
+  const pLoss = (1 - blendedProb) * live;
+  const b = decimalOdds - 1;
+
+  // A push returns the stake, so it contributes nothing either way. With
+  // pushProb = 0 both of these collapse to the plain two-outcome formulas.
+  const ev = pWin * b - pLoss;
+  const rawKelly = b > 0 ? (b * pWin - pLoss) / b : 0;
+
   return {
     marketProb,
     modelProb,
     blendedProb,
+    pushProb,
     hold,
     decimalOdds,
     edge: edge({ modelProb: blendedProb, marketProb }),
-    expectedValue: expectedValue({ prob: blendedProb, decimalOdds }),
-    stake: kellyStake({ prob: blendedProb, decimalOdds, fraction: kellyFraction }),
+    expectedValue: ev,
+    stake: rawKelly <= KELLY_EPSILON ? 0 : rawKelly * kellyFraction,
   };
 }
 
@@ -472,11 +496,16 @@ function priceGame({
   if (Number.isFinite(spread) && Number.isFinite(predictedMargin)) {
     const hp = Number.isFinite(spreadHomePrice) ? spreadHomePrice : DEFAULT_PRICE;
     const ap = Number.isFinite(spreadAwayPrice) ? spreadAwayPrice : DEFAULT_PRICE;
-    const homeProb = coverProbability({ predictedMargin, spread, sigma: cfg.sigma });
+    // Win/push/loss rather than a bare cover probability, so a whole-number
+    // spread can push. Both sides share the same push chance.
+    const outcomes = coverOutcomes({ predictedMargin, spread, sigma: cfg.sigma, sport });
+    const resolved = outcomes.win + outcomes.loss;
+    const homeProb = resolved > 0 ? outcomes.win / resolved : 0.5;
+    const pushProb = outcomes.push;
 
-    const home = { ...priceSide({ americanOdds: hp, oppositeAmericanOdds: ap, modelProb: homeProb, trust, kellyFraction }),
+    const home = { ...priceSide({ americanOdds: hp, oppositeAmericanOdds: ap, modelProb: homeProb, pushProb, trust, kellyFraction }),
                    side: 'home', line: spread, pick: `${homeTeam} ${spread > 0 ? '+' : ''}${spread}` };
-    const away = { ...priceSide({ americanOdds: ap, oppositeAmericanOdds: hp, modelProb: 1 - homeProb, trust, kellyFraction }),
+    const away = { ...priceSide({ americanOdds: ap, oppositeAmericanOdds: hp, modelProb: 1 - homeProb, pushProb, trust, kellyFraction }),
                    side: 'away', line: -spread, pick: `${awayTeam} ${-spread > 0 ? '+' : ''}${-spread}` };
 
     const winner = bestSide(home, away);
@@ -543,6 +572,149 @@ function plausibleSpread(sport, value) {
   return true;
 }
 
+// ----------------------------------------------------------------------------
+// Key numbers and pushes
+// ----------------------------------------------------------------------------
+
+/**
+ * Relative weight of each absolute NFL margin against a smooth curve.
+ *
+ * NFL margins are not smoothly distributed. Scoring comes in 3s and 7s, so
+ * final margins pile up on 3 and 7 far above what any normal distribution
+ * predicts, with smaller bumps on 6, 10 and 14 and troughs either side. A
+ * normal curve therefore misprices exactly the spreads that occur most often —
+ * and -3 is the single most common line in the sport.
+ *
+ * TREAT THESE AS APPROXIMATIONS. They are the widely reported shape of the
+ * margin distribution, not values fitted to a specific dataset, and they are
+ * the second thing (after sigma) that should be re-estimated from real results.
+ * calibrateMarginWeights exists for that. What matters more than the exact
+ * numbers is that the mechanism is here at all: a smooth curve cannot represent
+ * a spike no matter how sigma is chosen.
+ *
+ * Anything not listed weighs 1, i.e. the smooth curve is left alone.
+ */
+const NFL_KEY_NUMBER_WEIGHTS = {
+  0: 0.45,   // ties are rare and only possible after overtime
+  1: 0.90,
+  2: 0.90,
+  3: 2.05,   // by far the most common margin: one field goal
+  4: 1.10,
+  5: 0.85,
+  6: 1.20,
+  7: 1.60,   // touchdown and extra point
+  8: 0.90,
+  9: 0.85,
+  10: 1.25,  // touchdown plus field goal
+  11: 0.90,
+  13: 0.95,
+  14: 1.20,  // two touchdowns
+  17: 1.10,
+  20: 1.05,
+  21: 1.05,
+};
+
+/** Sports whose margins are integers, so a whole-number line can push. */
+const DISCRETE_MARGIN_SPORTS = new Set(['nfl', 'nba']);
+
+/**
+ * Probability of each integer margin, as a Map from margin to probability.
+ *
+ * A normal density evaluated at each integer, multiplied by the key-number
+ * weight for that margin, then renormalised so the whole thing sums to 1.
+ * Weighting a density and renormalising keeps the mean close to `mean` without
+ * pretending the shape is smooth.
+ *
+ * Only NFL supplies weights. Basketball uses this too, with flat weights: its
+ * key numbers are weak, but its margins are still integers and its spreads are
+ * often whole numbers, so it needs pushes represented even where the shape is
+ * unremarkable. Baseball and hockey never come here — run lines and puck lines
+ * are 1.5, so they cannot push and a continuous curve is fine.
+ */
+function marginPmf({ mean, sigma, sport, maxMargin = 70 }) {
+  if (!(sigma > 0)) throw new Error(`sigma must be positive, got ${sigma}`);
+  const key = String(sport || '').toLowerCase();
+  const weights = key === 'nfl' ? NFL_KEY_NUMBER_WEIGHTS : {};
+  const pmf = new Map();
+  let total = 0;
+  for (let m = -maxMargin; m <= maxMargin; m++) {
+    const z = (m - mean) / sigma;
+    const w = Object.prototype.hasOwnProperty.call(weights, Math.abs(m))
+      ? weights[Math.abs(m)] : 1;
+    const p = Math.exp(-0.5 * z * z) * w;
+    pmf.set(m, p);
+    total += p;
+  }
+  if (!(total > 0)) throw new Error('degenerate margin distribution');
+  for (const [m, p] of pmf) pmf.set(m, p / total);
+  return pmf;
+}
+
+/**
+ * Win, push and loss probabilities for the HOME side of a spread.
+ *
+ * `spread` is the home spread. Home covers when margin + spread > 0, pushes
+ * when it is exactly 0, and loses otherwise. The push branch is the point of
+ * this function: a -3 in the NFL lands exactly on 3 often enough to matter, the
+ * stake comes back, and treating that as a loss understates every whole-number
+ * bet. coverProbability, kept for the continuous case, has no way to say it.
+ *
+ * Falls back to the smooth curve for sports whose lines cannot push.
+ */
+function coverOutcomes({ predictedMargin, spread, sigma, sport }) {
+  if (!Number.isFinite(predictedMargin)) throw new Error('predictedMargin must be finite');
+  if (!Number.isFinite(spread)) throw new Error('spread must be finite');
+  const key = String(sport || '').toLowerCase();
+
+  if (!DISCRETE_MARGIN_SPORTS.has(key)) {
+    const win = coverProbability({ predictedMargin, spread, sigma });
+    return { win, push: 0, loss: 1 - win };
+  }
+
+  const pmf = marginPmf({ mean: predictedMargin, sigma, sport: key });
+  const threshold = -spread;            // home covers when margin > -spread
+  let win = 0, push = 0;
+  for (const [m, p] of pmf) {
+    if (m > threshold) win += p;
+    else if (m === threshold) push += p;
+  }
+  return { win, push, loss: Math.max(0, 1 - win - push) };
+}
+
+/**
+ * Re-estimate the key-number weights from finished games.
+ *
+ * Counts how often each absolute margin occurred and compares it with what a
+ * normal of the same spread would have produced, which is exactly the ratio the
+ * table above holds. Returns null below 500 games: key numbers are a claim
+ * about the tail shape of a distribution, and a few dozen results cannot
+ * support one.
+ */
+function calibrateMarginWeights(margins, sigma, minSamples = 500) {
+  const values = (margins || []).map(Number).filter(Number.isFinite);
+  if (values.length < minSamples) return null;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+
+  const observed = new Map();
+  for (const m of values) {
+    const k = Math.abs(Math.round(m));
+    observed.set(k, (observed.get(k) || 0) + 1);
+  }
+  const flat = marginPmf({ mean, sigma, sport: 'other' });
+  const expected = new Map();
+  for (const [m, p] of flat) {
+    const k = Math.abs(m);
+    expected.set(k, (expected.get(k) || 0) + p);
+  }
+
+  const weights = {};
+  for (const [k, count] of observed) {
+    const exp = expected.get(k);
+    if (exp && exp > 0) weights[k] = +((count / values.length) / exp).toFixed(3);
+  }
+  return { weights, samples: values.length, mean: +mean.toFixed(3) };
+}
+
 module.exports = {
   SPORTS,
   sportConfig,
@@ -572,4 +744,8 @@ module.exports = {
   priceGame,
   SPREAD_LIMITS,
   plausibleSpread,
+  NFL_KEY_NUMBER_WEIGHTS,
+  marginPmf,
+  coverOutcomes,
+  calibrateMarginWeights,
 };

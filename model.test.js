@@ -502,3 +502,110 @@ test('plausibleSpread rejects malformed values', () => {
   assert.equal(m.plausibleSpread('nfl', 99), false);
   assert.equal(m.plausibleSpread('cricket', -3), false, 'unknown sport is not trusted');
 });
+
+// ----------------------------------------------------------------------------
+test('marginPmf is a proper distribution', () => {
+  for (const sport of ['nfl', 'nba']) {
+    const pmf = m.marginPmf({ mean: 2.5, sigma: 13.5, sport });
+    let total = 0;
+    for (const p of pmf.values()) {
+      assert.ok(p >= 0, 'no negative probabilities');
+      total += p;
+    }
+    close(total, 1, 1e-9, `${sport} pmf must sum to 1`);
+  }
+});
+
+test('marginPmf spikes on the NFL key numbers', () => {
+  // Centred on zero so 3 and 4 sit at comparable distance from the mean; a
+  // smooth curve would make 3 only slightly more likely than 4.
+  const nfl = m.marginPmf({ mean: 0, sigma: 13.5, sport: 'nfl' });
+  const flat = m.marginPmf({ mean: 0, sigma: 13.5, sport: 'nba' });
+
+  assert.ok(nfl.get(3) > nfl.get(2), '3 must beat 2');
+  assert.ok(nfl.get(3) > nfl.get(4), '3 must beat 4');
+  assert.ok(nfl.get(7) > nfl.get(8), '7 must beat 8');
+  assert.ok(nfl.get(7) > nfl.get(5), '7 must beat 5');
+
+  // A smooth curve does the opposite: nearer the mean is always likelier.
+  assert.ok(flat.get(2) > flat.get(3), 'flat weights are monotonic toward the mean');
+  assert.ok(flat.get(3) > flat.get(4));
+
+  // And the spike is a real reshaping, not a rounding artefact.
+  assert.ok(nfl.get(3) / flat.get(3) > 1.5, 'the 3 spike should be substantial');
+});
+
+test('coverOutcomes: a whole-number spread can push, a half-point one cannot', () => {
+  const whole = m.coverOutcomes({ predictedMargin: 2.5, spread: -3, sigma: 13.5, sport: 'nfl' });
+  assert.ok(whole.push > 0, 'a -3 must be able to land exactly on 3');
+  assert.ok(whole.push > 0.05, `the 3 push should be sizeable, got ${whole.push}`);
+
+  const half = m.coverOutcomes({ predictedMargin: 2.5, spread: -3.5, sigma: 13.5, sport: 'nfl' });
+  close(half.push, 0, 1e-12, 'a half-point line cannot push');
+});
+
+test('coverOutcomes: pushing on 3 is likelier than pushing on 4', () => {
+  const three = m.coverOutcomes({ predictedMargin: 0, spread: -3, sigma: 13.5, sport: 'nfl' });
+  const four = m.coverOutcomes({ predictedMargin: 0, spread: -4, sigma: 13.5, sport: 'nfl' });
+  assert.ok(three.push > four.push,
+    `key number 3 should push more often than 4: ${three.push} vs ${four.push}`);
+});
+
+test('coverOutcomes always partitions the space', () => {
+  for (const sport of ['nfl', 'nba', 'mlb', 'nhl']) {
+    for (const spread of [-7, -3.5, -3, 0, 2.5, 6]) {
+      const o = m.coverOutcomes({ predictedMargin: 1.5, spread, sigma: m.sportConfig(sport).sigma, sport });
+      close(o.win + o.push + o.loss, 1, 1e-9, `${sport} @ ${spread}`);
+      assert.ok(o.win >= 0 && o.push >= 0 && o.loss >= 0);
+    }
+  }
+});
+
+test('coverOutcomes: run lines and puck lines never push', () => {
+  for (const sport of ['mlb', 'nhl']) {
+    const o = m.coverOutcomes({ predictedMargin: 0.3, spread: -1.5, sigma: m.sportConfig(sport).sigma, sport });
+    close(o.push, 0, 1e-12, `${sport} cannot push on 1.5`);
+    close(o.win, m.coverProbability({ predictedMargin: 0.3, spread: -1.5, sigma: m.sportConfig(sport).sigma }), 1e-9);
+  }
+});
+
+// ----------------------------------------------------------------------------
+test('priceSide with no push reduces exactly to the old formulas', () => {
+  const args = { americanOdds: -110, oppositeAmericanOdds: -110, modelProb: 0.60, trust: 1, kellyFraction: 1 };
+  const r = m.priceSide(args);
+  const d = m.americanToDecimal(-110);
+  close(r.expectedValue, m.expectedValue({ prob: 0.60, decimalOdds: d }), 1e-12);
+  close(r.stake, m.kellyStake({ prob: 0.60, decimalOdds: d, fraction: 1 }), 1e-12);
+});
+
+test('a push shrinks both stake and expected value', () => {
+  const base = { americanOdds: -110, oppositeAmericanOdds: -110, modelProb: 0.60, trust: 1, kellyFraction: 1 };
+  const noPush = m.priceSide(base);
+  const withPush = m.priceSide({ ...base, pushProb: 0.09 });
+  assert.ok(withPush.stake < noPush.stake,
+    `push must reduce the stake: ${withPush.stake} vs ${noPush.stake}`);
+  assert.ok(withPush.expectedValue < noPush.expectedValue);
+  assert.ok(withPush.stake > 0, 'but a good bet is still a bet');
+  // Pushes scale the live portion, so EV scales with (1 - pushProb).
+  close(withPush.expectedValue, noPush.expectedValue * 0.91, 1e-9);
+});
+
+test('priceSide rejects an impossible push probability', () => {
+  const base = { americanOdds: -110, oppositeAmericanOdds: -110, modelProb: 0.6 };
+  assert.throws(() => m.priceSide({ ...base, pushProb: 1 }));
+  assert.throws(() => m.priceSide({ ...base, pushProb: -0.1 }));
+});
+
+test('calibrateMarginWeights refuses a small sample', () => {
+  assert.equal(m.calibrateMarginWeights([3, 7, 3, 10], 13.5), null);
+  assert.equal(m.calibrateMarginWeights(new Array(499).fill(3), 13.5), null);
+});
+
+test('calibrateMarginWeights recovers an injected spike', () => {
+  // 600 games, a third of them decided by exactly 3.
+  const margins = [];
+  for (let i = 0; i < 600; i++) margins.push(i % 3 === 0 ? 3 : (i % 7) - 3);
+  const out = m.calibrateMarginWeights(margins, 13.5);
+  assert.equal(out.samples, 600);
+  assert.ok(out.weights[3] > 1.5, `should detect the 3 spike, got ${out.weights[3]}`);
+});
