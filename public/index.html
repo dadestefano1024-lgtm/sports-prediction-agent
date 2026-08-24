@@ -928,7 +928,7 @@
                 // to confuse and mean opposite things: movement is an edge
                 // against a frozen line and nothing against a live one.
                 const pf = g.poolFlag
-                  ? `<div class="pool-flag">Pool 6: the line has moved ${g.poolFlag.points} pt${g.poolFlag.points === 1 ? '' : 's'} since it opened — ${
+                  ? `<div class="pool-flag">Pick 6: the line has moved ${g.poolFlag.points} pt${g.poolFlag.points === 1 ? '' : 's'} since it opened — ${
                       g.poolFlag.level === 'strong' ? 'strong candidate if your pool number is still the old one' : 'worth checking your pool number'}.</div>`
                   : '';
                 return `<div class="verdict ${r.level}">
