@@ -233,6 +233,16 @@
       padding-top: 5px; border-top: 1px solid #21262d;
     }
     .line-sub { font-size: 10px; color: #6e7681; margin-top: 2px; }
+    .rl-row { margin-bottom: 10px; padding: 8px 10px; background: #10151c; border-radius: 6px; }
+    .rl-label { font-size: 10px; color: #6e7681; text-transform: uppercase;
+                letter-spacing: 0.4px; margin-bottom: 6px; }
+    .rl-cells { display: flex; gap: 18px; }
+    .rl-item { flex: 1; }
+    .rl-team { font-size: 11px; color: #8b949e; }
+    .rl-price { font-size: 15px; font-weight: 700; color: #c9d1d9; }
+    .rl-price.rl-good { color: #3fb950; }
+    .rl-price.rl-bad { color: #8b949e; }
+    .rl-fair { font-size: 10px; color: #6e7681; margin-top: 1px; }
     .line-sub.better { color: #3fb950; }
     .line-value.favorite { color: #3fb950; }
 
@@ -878,7 +888,35 @@
         })();
 
         const bookLabel = mb ? mb.name : 'Market';
+        // For baseball and hockey the line is 1.5 on every game, so comparing
+        // that number against consensus says nothing and the row above always
+        // reads "at market". What actually varies is the price, and this is
+        // what the moneyline on the SAME game at the SAME book says that price
+        // should be. Shown whether or not it is trusted enough to bet on,
+        // because the comparison is worth reading either way.
+        let runLineHTML = '';
+        if (g.runLine) {
+          const rl = g.runLine;
+          const sign = (n) => `${n > 0 ? '+' : ''}${Math.round(n)}`;
+          const cell = (team, offered, fair, edge) => {
+            const cls = edge >= 1 ? 'rl-good' : edge <= -1 ? 'rl-bad' : '';
+            return `<div class="rl-item"><div class="rl-team">${team}</div>` +
+              `<div class="rl-price ${cls}">${sign(offered)}</div>` +
+              `<div class="rl-fair">fair ${sign(fair)} &middot; ${edge > 0 ? '+' : ''}${edge}</div></div>`;
+          };
+          const away = shortName(g.awayTeam), home = shortName(g.homeTeam);
+          runLineHTML = `
+            <div class="rl-row">
+              <div class="rl-label">What this game's own moneyline says the line is worth</div>
+              <div class="rl-cells">
+                ${cell(away, rl.offeredAwayPrice, rl.fairAwayPrice, rl.awayEdgePts)}
+                ${cell(home, rl.offeredHomePrice, rl.fairHomePrice, rl.homeEdgePts)}
+              </div>
+            </div>`;
+        }
+
         let linesHTML = `
+          ${runLineHTML}
           <div class="lines-row">
             ${lineCell(`Spread &middot; ${bookLabel}`, mb ? mb.spread : g.spread, g.spread, spreadBeneficiary, '')}
             ${lineCell(`Total &middot; ${bookLabel}`, mb ? mb.total : g.total, g.total, totalBeneficiary, '')}

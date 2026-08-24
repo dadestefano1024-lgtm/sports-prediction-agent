@@ -1432,3 +1432,218 @@ test('calibrateSigmaFromMarkets needs a slate, not a game', () => {
     { homeML: -160, awayML: 140, spread: -1.5, spreadHomePrice: 120, spreadAwayPrice: -145 },
   ]), null);
 });
+
+// ----------------------------------------------------------------------------
+// Counted margins, Shin, and the run-line verdict
+// ----------------------------------------------------------------------------
+
+test('the margin tables are real distributions', () => {
+  for (const sport of ['mlb', 'nhl']) {
+    const t = m.MARGIN_TABLES[sport];
+    const total = t.counts.reduce((a, b) => a + b, 0);
+    assert.equal(total, t.games, `${sport} counts must sum to the game count`);
+    assert.ok(t.counts.every(c => c >= 0));
+    // A margin of 1 is always the most common outcome in these sports.
+    assert.equal(Math.max(...t.counts), t.counts[0], `${sport}: 1 should be the mode`);
+    assert.equal(m.marginAtLeast(sport, 1), 1, 'someone always wins by at least 1');
+    assert.ok(m.marginAtLeast(sport, 2) < 1 && m.marginAtLeast(sport, 2) > 0.5);
+    // Monotone non-increasing as the bar rises.
+    let prev = 1;
+    for (let n = 1; n <= 6; n++) {
+      const p = m.marginAtLeast(sport, n);
+      assert.ok(p <= prev + 1e-12, `${sport} not monotone at ${n}`);
+      prev = p;
+    }
+  }
+  assert.throws(() => m.marginAtLeast('nfl', 2), /no measured margin table/);
+});
+
+test('the counted tables disagree with a normal curve where it matters', () => {
+  // The whole reason the tables exist. If a future change makes these agree,
+  // something has been quietly replaced by a curve again.
+  const mlbOne = 1 - m.marginAtLeast('mlb', 2);
+  const nhlOne = 1 - m.marginAtLeast('nhl', 2);
+  assert.ok(Math.abs(mlbOne - 0.2738) < 0.001, `mlb P(1) = ${mlbOne}`);
+  assert.ok(Math.abs(nhlOne - 0.4338) < 0.001, `nhl P(1) = ${nhlOne}`);
+
+  const normalOne = (sigma) => {
+    const d = m.marginDistribution(0, sigma);
+    return (d.probAbove(0.5) - d.probAbove(1.5)) * 2;
+  };
+  assert.ok(mlbOne - normalOne(4.4) > 0.08, 'a normal should be far too low on one-run games');
+  assert.ok(nhlOne - normalOne(2.2) > 0.08, 'a normal should be far too low on one-goal games');
+});
+
+test('coverProbFromWinProb: laying 1.5 is harder than winning', () => {
+  for (const sport of ['mlb', 'nhl']) {
+    for (const p of [0.35, 0.5, 0.65, 0.8]) {
+      const cover = m.coverProbFromWinProb({ sport, winProb: p, line: -1.5 });
+      assert.ok(cover < p, `${sport} at ${p}: covering must be harder than winning`);
+      assert.ok(cover > 0 && cover < 1);
+    }
+    // Monotone in the win probability.
+    let prev = 0;
+    for (const p of [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]) {
+      const c = m.coverProbFromWinProb({ sport, winProb: p, line: -1.5 });
+      assert.ok(c > prev, `${sport} not monotone at ${p}`);
+      prev = c;
+    }
+  }
+});
+
+test('coverProbFromWinProb uses the measured conditional by default', () => {
+  // Baseball's measured slope is nearly flat, hockey's is not. That difference
+  // came out of two seasons of results and must not silently become one value.
+  const mlb = m.MARGIN_TABLES.mlb.conditional;
+  const nhl = m.MARGIN_TABLES.nhl.conditional;
+  assert.ok(mlb.mismatch < 0.2, `mlb mismatch ${mlb.mismatch} should be near flat`);
+  assert.ok(nhl.mismatch > 0.35, `nhl mismatch ${nhl.mismatch} should be substantial`);
+
+  // At a coin flip the slope cannot matter, so both agree with the intercept.
+  const flip = m.coverProbFromWinProb({ sport: 'mlb', winProb: 0.5, line: -1.5 });
+  assert.ok(Math.abs(flip - 0.5 * mlb.base) < 1e-9);
+
+  // Explicitly passing a mismatch overrides the measured one.
+  const forced = m.coverProbFromWinProb({ sport: 'mlb', winProb: 0.7, line: -1.5, mismatch: 0 });
+  const measured = m.coverProbFromWinProb({ sport: 'mlb', winProb: 0.7, line: -1.5 });
+  assert.ok(measured > forced, 'the measured slope should help a favourite');
+});
+
+test('coverProbFromWinProb does not extrapolate to lines it never measured', () => {
+  // The conditional was measured at 1.5 and nowhere else. A 2.5 line has to
+  // fall back to the flat table rather than run the slope out to a value that
+  // was never checked.
+  const at25 = m.coverProbFromWinProb({ sport: 'mlb', winProb: 0.7, line: -2.5 });
+  const flat = 0.7 * m.marginAtLeast('mlb', 3);
+  assert.ok(Math.abs(at25 - flat) < 1e-9, 'a 2.5 line must use the unconditional table');
+  assert.ok(at25 < m.coverProbFromWinProb({ sport: 'mlb', winProb: 0.7, line: -1.5 }),
+    'laying more runs must be harder');
+});
+
+test('Shin de-vigging equals proportional when there is nothing to correct', () => {
+  // Equal prices carry no favourite-longshot bias, so the two methods must
+  // agree exactly. This is the check that Shin is not just always different.
+  const shin = m.deVigTwoWayShin(-110, -110);
+  const prop = m.deVigTwoWayShin(-110, -110, 'proportional');
+  assert.ok(Math.abs(shin.probA - prop.probA) < 1e-9);
+  assert.ok(Math.abs(shin.probA - 0.5) < 1e-9);
+  // And a market with no hold at all comes back untouched.
+  assert.deepEqual(m.removeVigShin([0.5, 0.5]), [0.5, 0.5]);
+});
+
+test('Shin takes probability off the longshot, more as the price lengthens', () => {
+  let previousGap = 0;
+  for (const [fav, dog] of [[-160, 140], [-196, 161], [-265, 215], [-400, 320]]) {
+    const shin = m.deVigTwoWayShin(fav, dog);
+    const prop = m.deVigTwoWayShin(fav, dog, 'proportional');
+    const gap = shin.probA - prop.probA;
+    assert.ok(gap > 0, `Shin should raise the favourite at ${fav}/${dog}`);
+    assert.ok(gap > previousGap, 'the correction must grow with the price');
+    previousGap = gap;
+    // Both still describe a probability.
+    assert.ok(Math.abs(shin.probA + shin.probB - 1) < 1e-9);
+  }
+});
+
+test('removeVigShin refuses input that is not a market', () => {
+  assert.throws(() => m.removeVigShin([0.5]), /at least two/);
+  assert.throws(() => m.removeVigShin(null), /at least two/);
+  assert.throws(() => m.removeVigShin([0.5, 0]), /implied probability/);
+  assert.throws(() => m.removeVigShin([0.5, NaN]), /implied probability/);
+});
+
+test('runLineEdge finds nothing when the two markets agree', () => {
+  // Price the run line off the moneyline exactly, add a normal hold, and the
+  // edge must be negative on both sides — the vig is the whole difference.
+  const sport = 'mlb';
+  const p = m.deVigTwoWayShin(-160, 140).probA;
+  const cover = m.coverProbFromWinProb({ sport, winProb: p, line: -1.5 });
+  const shade = (q) => m.decimalToAmerican(1 / (q * 1.023));
+  const r = m.runLineEdge({
+    sport, homeML: -160, awayML: 140, spread: -1.5,
+    spreadHomePrice: shade(cover), spreadAwayPrice: shade(1 - cover),
+  });
+  assert.ok(Math.abs(r.disagreementPts) < 0.3, `disagreement ${r.disagreementPts}`);
+  assert.ok(r.homeEdgePts < 0 && r.awayEdgePts < 0, 'the vig must show up as negative edge');
+});
+
+test('runLineEdge names the cheap side when they disagree', () => {
+  const sport = 'mlb';
+  const p = m.deVigTwoWayShin(-160, 140).probA;
+  const cover = m.coverProbFromWinProb({ sport, winProb: p, line: -1.5 });
+  const r = m.runLineEdge({
+    sport, homeML: -160, awayML: 140, spread: -1.5,
+    spreadHomePrice: m.decimalToAmerican(1 / (cover * 0.88)),
+    spreadAwayPrice: m.decimalToAmerican(1 / ((1 - cover) * 1.02)),
+  });
+  assert.ok(r.homeEdgePts > 4, `home edge ${r.homeEdgePts}`);
+  assert.ok(r.homeEdgePts > r.awayEdgePts);
+  assert.equal(r.offeredHomePrice, m.decimalToAmerican(1 / (cover * 0.88)));
+});
+
+test('runLineEdge returns null rather than guessing', () => {
+  const ok = { sport: 'mlb', homeML: -160, awayML: 140, spread: -1.5,
+               spreadHomePrice: 120, spreadAwayPrice: -145 };
+  assert.ok(m.runLineEdge(ok));
+  for (const bad of [{ spread: null }, { spreadHomePrice: null }, { spreadAwayPrice: undefined },
+                     { homeML: null }, { awayML: NaN }, { sport: 'nfl' }]) {
+    assert.equal(m.runLineEdge({ ...ok, ...bad }), null, JSON.stringify(bad));
+  }
+  assert.equal(m.runLineEdge(), null);
+});
+
+test('bestBet grades a baseball run line off the moneyline', () => {
+  const sport = 'mlb';
+  const p = m.deVigTwoWayShin(-160, 140).probA;
+  const cover = m.coverProbFromWinProb({ sport, winProb: p, line: -1.5 });
+
+  const at = (factor) => m.runLineEdge({
+    sport, homeML: -160, awayML: 140, spread: -1.5,
+    spreadHomePrice: m.decimalToAmerican(1 / (cover * factor)),
+    spreadAwayPrice: m.decimalToAmerican(1 / ((1 - cover) * 1.02)),
+  });
+
+  const strong = m.bestBet({ sport, marketSpread: -1.5, homeTeam: 'Cubs', awayTeam: 'Reds',
+                             runLine: at(0.9) });
+  assert.equal(strong.level, 'edge');
+  assert.equal(strong.pick, 'Cubs -1.5');
+  assert.match(strong.reason, /the moneyline on this game says/);
+  // A price edge is a fact, so it must not carry the projection's disclaimer.
+  assert.equal(strong.caveat, undefined);
+
+  const fair = m.bestBet({ sport, marketSpread: -1.5, homeTeam: 'Cubs', awayTeam: 'Reds',
+                           runLine: at(1.023) });
+  assert.equal(fair.level, 'coinflip');
+  assert.match(fair.reason, /agrees with the moneyline/);
+});
+
+test('bestBet says why it is silent when it cannot price the run line', () => {
+  const noML = m.bestBet({ sport: 'mlb', marketSpread: -1.5, homeTeam: 'H', awayTeam: 'A' });
+  assert.equal(noML.level, 'coinflip');
+  assert.match(noML.reason, /no moneyline here to price it against/);
+});
+
+test('bestBet withholds a hockey verdict until the sweep is explained', () => {
+  // Hockey calibrates as well as baseball, but every positive edge on a live
+  // card was the underdog — twelve for twelve, and still twelve for twelve
+  // after switching to Shin. Until that is understood it is shown, not
+  // recommended.
+  assert.equal(m.MARGIN_TABLES.nhl.verdict, false);
+  assert.equal(m.MARGIN_TABLES.mlb.verdict, true);
+
+  const sport = 'nhl';
+  const p = m.deVigTwoWayShin(-265, 215).probA;
+  const cover = m.coverProbFromWinProb({ sport, winProb: p, line: -1.5 });
+  const r = m.runLineEdge({
+    sport, homeML: -265, awayML: 215, spread: -1.5,
+    spreadHomePrice: m.decimalToAmerican(1 / (cover * 0.85)),
+    spreadAwayPrice: m.decimalToAmerican(1 / ((1 - cover) * 1.02)),
+  });
+  assert.ok(r.homeEdgePts > 5, 'the edge is real arithmetic');
+
+  const v = m.bestBet({ sport, marketSpread: -1.5, homeTeam: 'Oilers', awayTeam: 'Canucks',
+                        runLine: r });
+  assert.equal(v.level, 'coinflip', 'but it must not become a recommendation');
+  assert.equal(v.pick, null);
+  assert.match(v.reason, /not trusted yet/);
+});

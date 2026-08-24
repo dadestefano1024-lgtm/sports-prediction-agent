@@ -145,6 +145,79 @@ function deVigTwoWay(americanA, americanB) {
   return { probA, probB, hold: rawA + rawB - 1 };
 }
 
+
+/**
+ * Shin de-vigging: strip the margin while allowing for insider money.
+ *
+ * Proportional de-vigging divides the hold out pro rata, which assumes the book
+ * marks up every outcome by the same factor. Books do not: they take more out
+ * of longshots, because the people betting longshots are on average worse and
+ * because a book carries more risk on them. Dividing pro rata therefore hands
+ * back too much probability to the underdog, and a pipeline that then prices
+ * something off that number finds the underdog cheap everywhere.
+ *
+ * Which is exactly what happened. With proportional de-vigging, fourteen of
+ * fourteen positive puck-line edges on a thirty-two game card landed on the
+ * +1.5 dog — a clean sweep of the sort that has been an artifact every previous
+ * time it has appeared here. Baseball, whose moneylines are far less extreme,
+ * came out even.
+ *
+ * Shin models the market as a mixture: a proportion z of the money is informed,
+ * the rest is noise, and the quoted price is what a book must post to break
+ * even against both. Inverting that gives
+ *
+ *   p_i = [sqrt(z^2 + 4(1-z) * pi_i^2 / PI) - z] / (2 * (1 - z))
+ *
+ * where pi_i are the raw implied probabilities and PI is their sum. z is
+ * whatever makes the results sum to one, found by bisection because z enters
+ * through a square root and a closed form for it is not worth the trouble.
+ *
+ * z = 0 recovers proportional de-vigging exactly, so a market with no hold is
+ * unchanged and the two methods agree on a balanced one.
+ */
+function removeVigShin(rawProbs) {
+  if (!Array.isArray(rawProbs) || rawProbs.length < 2) {
+    throw new Error('removeVigShin needs at least two outcomes');
+  }
+  for (const p of rawProbs) {
+    if (!Number.isFinite(p) || p <= 0) throw new Error(`bad implied probability: ${p}`);
+  }
+  const total = rawProbs.reduce((a, b) => a + b, 0);
+  if (total <= 1) return removeVig(rawProbs);   // nothing to take out
+
+  const atZ = (z) => rawProbs.map(pi =>
+    (Math.sqrt(z * z + 4 * (1 - z) * pi * pi / total) - z) / (2 * (1 - z)));
+
+  // Sum is 1 at the right z and falls as z rises, so bisect on it.
+  let lo = 0, hi = 0.9;
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    const sum = atZ(mid).reduce((a, b) => a + b, 0);
+    if (sum > 1) lo = mid; else hi = mid;
+  }
+  const z = (lo + hi) / 2;
+  const out = atZ(z);
+  // Re-normalise away the last few ulps of bisection error.
+  const sum = out.reduce((a, b) => a + b, 0);
+  return out.map(p => p / sum);
+}
+
+/**
+ * De-vig a two-way market with whichever method is asked for.
+ *
+ * Defaults to Shin, because everything reading this is pricing one market off
+ * another and the favourite-longshot bias goes straight into that comparison.
+ * Pass method 'proportional' for the older behaviour.
+ */
+function deVigTwoWayShin(americanA, americanB, method = 'shin') {
+  const rawA = americanToImpliedProb(americanA);
+  const rawB = americanToImpliedProb(americanB);
+  const [probA, probB] = method === 'shin'
+    ? removeVigShin([rawA, rawB])
+    : removeVig([rawA, rawB]);
+  return { probA, probB, hold: rawA + rawB - 1, method };
+}
+
 // ----------------------------------------------------------------------------
 // Normal distribution
 // ----------------------------------------------------------------------------
@@ -213,6 +286,257 @@ function overProbability({ predictedTotal, line, sigma }) {
   return marginDistribution(predictedTotal, sigma).probAbove(line);
 }
 
+
+
+// ----------------------------------------------------------------------------
+// Winning margins, counted rather than assumed
+// ----------------------------------------------------------------------------
+
+/**
+ * How often a game is won by exactly one, by exactly two, and so on.
+ *
+ * Counted from ESPN final scores: 1,950 MLB games across the 2026 season to
+ * 23 August, and 1,450 NHL games across the 2025-26 season to the same date.
+ * Index 0 is a margin of 1. There is no entry for zero because neither sport
+ * can end level.
+ *
+ * This exists because the normal curve is wrong in precisely the place the run
+ * line asks about. Baseball is decided by exactly one run 27.4% of the time; a
+ * normal at the sigma this file carries says 17.6%. Hockey is 43.4% against the
+ * curve's 32.5%. Both understate by around ten points, and both do it at the
+ * single value that decides every 1.5 line — so pricing a run line off a normal
+ * makes the favourite laying 1.5 look systematically cheap when it is not.
+ *
+ * That error is not academic. It produced two confident "edges" on a live
+ * ten-game card, both on favourites, worth 3.7 and 2.7 percentage points. Both
+ * vanish when the real distribution is used.
+ *
+ * Football and basketball are absent deliberately. Their spreads are genuine
+ * estimates of the margin rather than a fixed 1.5, so nothing there hinges on
+ * one specific value the way a run line does.
+ */
+const MARGIN_TABLES = {
+  mlb: {
+    games: 1950, source: 'ESPN finals, 2026 season through Aug 23',
+    counts: [534, 373, 280, 192, 171, 135, 74, 71, 35, 22, 21, 15, 8, 9, 3, 2, 1, 0, 1, 1, 1, 1],
+    // P(won by 2+ | this side won) against how likely that side was to win,
+    // measured over 1,949 of those games. Pre-game probability came from log5
+    // on season records, so no odds source is involved.
+    //
+    //   winner <40% to win  68.31%     50-55%  74.31%
+    //   40-45%              73.68%     55-60%  74.86%
+    //   45-50%              69.55%     >60%    72.95%
+    //
+    // Which is to say: flat. The strongest bucket sits BELOW the one before it
+    // and barely above the weakest. In baseball, how likely a side was to win
+    // says almost nothing about how big the win is, and the slope below is
+    // small enough to be mostly noise.
+    conditional: { base: 0.7239, mismatch: 0.1484, games: 1949 },
+    // Checked against results: over 3,898 laying-1.5 observations the formula
+    // predicted 36.30% and 36.30% happened, every bucket inside 1.5 points.
+    // On a live card its positives split two laying, two taking. Trusted.
+    verdict: true,
+  },
+  nhl: {
+    games: 1450, source: 'ESPN finals, 2025-26 season through Aug 23',
+    counts: [629, 266, 325, 150, 57, 11, 8, 3, 1],
+    // Same measurement over 1,450 games, and here the effect is real:
+    //
+    //   winner <40% to win  55.19%     50-55%  56.98%
+    //   40-45%              50.60%     55-60%  58.33%
+    //   45-50%              48.91%     >60%    63.56%
+    //
+    // Monotone from 48.9% up to 63.6% once past a coin flip. Empty-net goals
+    // are the obvious mechanism — a stronger side protecting a lead turns
+    // one-goal wins into two-goal wins — and the slope is nearly three times
+    // baseball's.
+    conditional: { base: 0.5559, mismatch: 0.4031, games: 1450 },
+    // Calibration is just as good as baseball's — 2,900 observations,
+    // predicted 27.93% against 28.00% actual. What is NOT good is the shape of
+    // what it finds: on a thirty-two game card every single positive edge was
+    // the +1.5 dog, twelve for twelve, and it stayed twelve for twelve after
+    // switching to Shin de-vigging specifically to correct that bias.
+    //
+    // A clean sweep in one direction has been an artifact every previous time
+    // it has shown up in this project. It may well be real here — those games
+    // are opening night, priced five weeks out, in the thinnest market hockey
+    // has all year — but "may well be real" is not the standard for telling
+    // somebody to bet. The numbers are computed and shown; they do not produce
+    // a verdict until the season starts and they can be checked against
+    // results.
+    verdict: false,
+    verdictNote: 'every positive edge on the card was the underdog, which has ' +
+                 'been a modelling artifact before; waiting for results',
+  },
+};
+
+/**
+ * P(winning margin >= n), given somebody won. n = 1 is certain by definition.
+ */
+function marginAtLeast(sport, n) {
+  const table = MARGIN_TABLES[String(sport || '').toLowerCase()];
+  if (!table) throw new Error(`no measured margin table for ${sport}`);
+  if (!Number.isFinite(n)) throw new Error('n must be finite');
+  if (n <= 1) return 1;
+  const total = table.counts.reduce((a, b) => a + b, 0);
+  const below = table.counts.slice(0, Math.ceil(n) - 1).reduce((a, b) => a + b, 0);
+  return (total - below) / total;
+}
+
+/**
+ * P(a side covers when it lays `line`), given it wins outright `winProb` of the
+ * time.
+ *
+ * A side laying 1.5 covers exactly when it wins by two or more, so the answer
+ * is its win probability times the chance its win is a comfortable one. The
+ * other side is the complement, which is what makes this usable from either
+ * direction.
+ *
+ * The `conditional` numbers handle the one thing the raw table cannot: whether
+ * a heavy favourite, when it wins, wins by more than a coin-flip team does.
+ * They are MEASURED over a season of results, not fitted to prices.
+ *
+ * That distinction is the whole point. Fitting this parameter to a ten-game
+ * slate of market prices returned 0.71 for baseball; measuring it over 1,949
+ * actual games returned 0.148. The ten-game fit was reading noise, and it moved
+ * the headline answer on a live game by six percentage points — from no edge to
+ * a five-point edge. Prices are not evidence about how baseball behaves.
+ *
+ * Only the 1.5 line gets the conditional treatment, because 1.5 is the only
+ * line these sports post — 112 quotes checked across nine books, all of them
+ * 1.5. Any other line falls back to the unconditional table and says so.
+ */
+function coverProbFromWinProb({ sport, winProb, line = 1.5, mismatch = null } = {}) {
+  if (!Number.isFinite(winProb) || winProb <= 0 || winProb >= 1) {
+    throw new Error(`winProb must be strictly between 0 and 1, got ${winProb}`);
+  }
+  const key = String(sport || '').toLowerCase();
+  const table = MARGIN_TABLES[key];
+  if (!table) throw new Error(`no measured margin table for ${sport}`);
+
+  const need = Math.abs(line) + 0.5;          // lay 1.5 -> must win by 2
+  const measured = table.conditional;
+  const atStandardLine = Math.abs(Math.abs(line) - 1.5) < 1e-9;
+
+  // The measured intercept and slope apply at 1.5, which is what was measured.
+  // Anywhere else, fall back to the unconditional table with no slope at all
+  // rather than extrapolate a relationship that was never checked there.
+  const baseProb = atStandardLine && measured ? measured.base : marginAtLeast(sport, need);
+  const slope = mismatch !== null ? mismatch
+    : (atStandardLine && measured ? measured.mismatch : 0);
+
+  // Clamped so it can never leave probability space at an extreme price.
+  const cond = Math.min(0.999, Math.max(0.001, baseProb + slope * (winProb - 0.5)));
+  return winProb * cond;
+}
+
+/**
+ * The fair price of a 1.5 line, read off the moneyline of the same game.
+ *
+ * No forecast anywhere in this. The moneyline says how often each side wins,
+ * the counted table says how often a win is by two or more, and those two
+ * together fix what the run line has to be worth. When the offered price is
+ * better than that, the two markets contradict each other and the cheaper one
+ * is worth taking — which is an edge available to somebody with one account.
+ *
+ * `edgePts` is measured against the RAW offered price, vig included, because
+ * the vig is paid. `disagreementPts` strips vig from both and says only whether
+ * the markets differ, which is the diagnostic rather than the bet.
+ */
+function runLineEdge({
+  sport, homeML, awayML, spread, spreadHomePrice, spreadAwayPrice, mismatch = null,
+  deVigMethod = 'shin',
+} = {}) {
+  if (!Number.isFinite(spread)) return null;
+  if (!Number.isFinite(spreadHomePrice) || !Number.isFinite(spreadAwayPrice)) return null;
+
+  let pHome;
+  try {
+    // Shin rather than proportional. The moneyline is the input the whole
+    // calculation rests on, and proportional de-vigging systematically hands
+    // the underdog too much probability at the prices hockey posts.
+    const dv = deVigTwoWayShin(homeML, awayML, deVigMethod);
+    pHome = dv.probA;
+  } catch (e) { return null; }
+  if (!Number.isFinite(pHome) || pHome <= 0 || pHome >= 1) return null;
+
+  // Whichever side is laying the points is the one the formula is written for.
+  const homeLays = spread < 0;
+  const layingProb = homeLays ? pHome : 1 - pHome;
+  let layingCovers;
+  try {
+    layingCovers = coverProbFromWinProb({ sport, winProb: layingProb, line: spread, mismatch });
+  } catch (e) { return null; }
+
+  const fairHomeProb = homeLays ? layingCovers : 1 - layingCovers;
+  const fairAwayProb = 1 - fairHomeProb;
+
+  const rawHome = americanToImpliedProb(spreadHomePrice);
+  const rawAway = americanToImpliedProb(spreadAwayPrice);
+  const devigged = removeVig([rawHome, rawAway]);
+
+  return {
+    homeWinProb: pHome,
+    fairHomeProb,
+    fairHomePrice: decimalToAmerican(1 / fairHomeProb),
+    fairAwayPrice: decimalToAmerican(1 / fairAwayProb),
+    offeredHomePrice: spreadHomePrice,
+    offeredAwayPrice: spreadAwayPrice,
+    homeEdgePts: +((fairHomeProb - rawHome) * 100).toFixed(2),
+    awayEdgePts: +((fairAwayProb - rawAway) * 100).toFixed(2),
+    disagreementPts: +((fairHomeProb - devigged[0]) * 100).toFixed(2),
+    spreadHold: +((rawHome + rawAway - 1) * 100).toFixed(2),
+  };
+}
+
+/**
+ * Fit the mismatch parameter to a slate of prices. DIAGNOSTIC ONLY.
+ *
+ * Kept because comparing what the market implies against what the season
+ * actually did is a useful check — if a slate's fitted value drifts miles from
+ * the measured one, something has changed and is worth looking at.
+ *
+ * It is NOT how the shipped number is chosen, and must not become that. Run
+ * over ten baseball games it returned 0.71 where the season says 0.148, and
+ * pricing off that difference invented a five-point edge on a fairly priced
+ * game. A slate is too small to fit anything to.
+ */
+function fitMismatch(sport, games, { lo = -1, hi = 1.5, steps = 500 } = {}) {
+  const usable = (games || []).filter(g =>
+    Number.isFinite(g.spread) && Number.isFinite(g.spreadHomePrice) &&
+    Number.isFinite(g.spreadAwayPrice) && Number.isFinite(g.homeML) && Number.isFinite(g.awayML));
+  if (usable.length < 3) return null;
+
+  const medianOf = (xs) => {
+    const a = [...xs].sort((x, y) => x - y);
+    const i = a.length >> 1;
+    return a.length % 2 ? a[i] : (a[i - 1] + a[i]) / 2;
+  };
+
+  let best = null;
+  for (let i = 0; i <= steps; i++) {
+    const mismatch = lo + (hi - lo) * (i / steps);
+    const resid = [];
+    for (const g of usable) {
+      const r = runLineEdge({ sport, ...g, mismatch });
+      if (r) resid.push(r.disagreementPts);
+    }
+    if (resid.length < 3) continue;
+    const score = medianOf(resid.map(Math.abs));
+    if (!best || score < best.score) best = { mismatch, score, resid };
+  }
+  if (!best) return null;
+
+  const positive = best.resid.filter(x => x > 0).length;
+  return {
+    mismatch: +best.mismatch.toFixed(3),
+    medianAbsDisagreementPts: +best.score.toFixed(3),
+    games: best.resid.length,
+    leaningHome: positive,
+    leaningAway: best.resid.length - positive,
+    maxDisagreementPts: +Math.max(...best.resid.map(Math.abs)).toFixed(2),
+  };
+}
 
 // ----------------------------------------------------------------------------
 // Cross-market pricing
@@ -1517,17 +1841,23 @@ function bestBet({
   predictedMargin = null, marketSpread = null,
   situationFlags = [], inProgress = false,
   homeTeam = 'Home', awayTeam = 'Away',
+  runLine = null,
 } = {}) {
   if (inProgress) {
     return { level: 'pass', label: 'In progress', pick: null,
              reason: 'the book is pricing the rest of the game, not the whole one' };
   }
 
+  const no = (reason) => ({ level: 'coinflip', label: 'No lean', pick: null, reason });
+
   // Runs and goals are not points, and a verdict that calls them points reads
   // like it does not know which sport it is looking at.
   const unit = sport === 'mlb' ? 'run' : sport === 'nhl' ? 'goal' : 'point';
+  const cfg = SPORTS[sport] || SPORTS.nfl;
 
-  // A price advantage is the only thing here that is an edge.
+  // --------------------------------------------------------------------
+  // 1. A better NUMBER than the market. A fact about what is on offer.
+  // --------------------------------------------------------------------
   if (bookValuePts >= 1 && bookPick) {
     return { level: 'edge', label: 'Best bet', pick: bookPick, side: bookSide,
              reason: `the number is ${bookValuePts} ${unit}${bookValuePts === 1 ? '' : 's'} better than the market` };
@@ -1537,10 +1867,58 @@ function bestBet({
              reason: `the number is ${bookValuePts} of a ${unit} better than the market` };
   }
 
-  // No price advantage. Is there anything else pointing one way?
+  // --------------------------------------------------------------------
+  // 2. A better PRICE than the same game's other market.
+  // --------------------------------------------------------------------
+  // A run line and a puck line are 1.5 whoever is playing, so the number never
+  // moves and the comparison above is always zero. The price beside it moves
+  // constantly, and `runLine` is what the moneyline of this same game, at this
+  // same book, says that 1.5 has to be worth.
+  //
+  // No forecast anywhere in it. Two markets on one scoreboard describe one set
+  // of results; when they contradict each other, the cheaper one is worth
+  // taking. That is why this counts as an edge where the projection does not.
+  if (cfg.fixedSpread) {
+    const table = MARGIN_TABLES[sport];
+    const noun = sport === 'nhl' ? 'puck' : 'run';
+
+    if (!Number.isFinite(marketSpread)) return no(`there is no ${noun} line here to price`);
+    if (!runLine || !table) {
+      return no(`the ${noun} line is 1.5 whoever is playing, and there is no ` +
+                'moneyline here to price it against');
+    }
+    if (!table.verdict) return no(`priced but not trusted yet — ${table.verdictNote}`);
+
+    const takeHome = runLine.homeEdgePts >= runLine.awayEdgePts;
+    const pts = takeHome ? runLine.homeEdgePts : runLine.awayEdgePts;
+    const line = takeHome ? marketSpread : -marketSpread;
+    const fair = takeHome ? runLine.fairHomePrice : runLine.fairAwayPrice;
+    const offered = takeHome ? runLine.offeredHomePrice : runLine.offeredAwayPrice;
+    const priced = `${takeHome ? homeTeam : awayTeam} ${line > 0 ? '+' : ''}${line}`;
+    const show = (n) => `${n > 0 ? '+' : ''}${Math.round(n)}`;
+    const side = takeHome ? 'home' : 'away';
+
+    // Two points of probability is roughly four percent on the stake, which is
+    // a real bet. One point is thin but on the right side of the price. Below
+    // that the market is doing its job, which is most of the time.
+    if (pts >= 2) {
+      return { level: 'edge', label: 'Best bet', pick: priced, side,
+               reason: `the moneyline on this game says that is worth ${show(fair)} and it is ` +
+                       `offered at ${show(offered)} — ${pts} points of value` };
+    }
+    if (pts >= 1) {
+      return { level: 'slight', label: 'Slight edge', pick: priced, side,
+               reason: `a little better than this game's own moneyline says it is worth ` +
+                       `(fair ${show(fair)}, offered ${show(offered)}), ${pts} points` };
+    }
+    return no(`the ${noun} line agrees with the moneyline on this game, so neither side is mispriced`);
+  }
+
+  // --------------------------------------------------------------------
+  // 3. No better number and no second market. Does anything else point?
+  // --------------------------------------------------------------------
   if (!Number.isFinite(predictedMargin) || !Number.isFinite(marketSpread)) {
-    return { level: 'coinflip', label: 'No lean', pick: null,
-             reason: 'not enough to separate the two sides' };
+    return no('not enough to separate the two sides');
   }
 
   // Market's own expected margin is -marketSpread.
@@ -1548,34 +1926,15 @@ function bestBet({
   const leansHome = disagreement > 0;
   const size = Math.abs(disagreement);
 
-  const cfg = SPORTS[sport] || SPORTS.nfl;
-
-  // A run line and a puck line are 1.5 whoever is playing. That number is not
-  // the market's estimate of the margin, so the projection disagreeing with it
-  // measures nothing — and it disagrees in the SAME DIRECTION nearly every
-  // time, because a projected baseball margin is a run or so while the line
-  // stays at 1.5. Leaning on that produces "take the underdog run line" across
-  // most of the slate, which is a property of the market's shape rather than
-  // anything known about the teams.
-  //
-  // Caught by replaying a live ten-game card: six of the seven leans it
-  // produced were the +1.5 side. The information in these markets sits in the
-  // price next to the line, not in the line, and nothing here reads it yet.
-  if (cfg.fixedSpread) {
-    return { level: 'coinflip', label: 'No lean', pick: null,
-             reason: `the ${sport === 'nhl' ? 'puck' : 'run'} line is 1.5 whoever is playing, ` +
-                     'so there is no number here to disagree with' };
-  }
-
   // How far the projection has to sit from the market before it is worth
   // saying. A field goal in football, and the same FRACTION of the other
-  // sport's margin spread — three points of basketball being a good deal
-  // less than three points of football. NFL sigma is 13.5, so the football
-  // threshold is 0.22 of a standard deviation, which gives 2.5 for basketball.
+  // sport's margin spread — three points of basketball being a good deal less
+  // than three points of football. NFL sigma is 13.5, so the football threshold
+  // is 0.22 of a standard deviation, which gives 2.5 for basketball.
   const threshold = Math.max(0.5, Math.round(cfg.sigma * (3 / SPORTS.nfl.sigma) * 2) / 2);
 
   // Only a flag that names the side it is against may corroborate, and a flag
-  // against one side supports leaning to the OTHER - a quarterback ruled out is
+  // against one side supports leaning to the OTHER — a quarterback ruled out is
   // an argument against his own team.
   const corroborated = (situationFlags || []).some(f =>
     f && (f.against === 'home' ? !leansHome
@@ -1596,8 +1955,7 @@ function bestBet({
     };
   }
 
-  return { level: 'coinflip', label: 'No lean', pick: null,
-           reason: 'the projection agrees with the market, and nothing else separates the sides' };
+  return no('the projection agrees with the market, and nothing else separates the sides');
 }
 
 module.exports = {
@@ -1607,12 +1965,19 @@ module.exports = {
   decimalToAmerican,
   americanToImpliedProb,
   removeVig,
+  removeVigShin,
   deVigTwoWay,
+  deVigTwoWayShin,
   erf,
   normalCdf,
   marginDistribution,
   coverProbability,
   overProbability,
+  MARGIN_TABLES,
+  marginAtLeast,
+  coverProbFromWinProb,
+  runLineEdge,
+  fitMismatch,
   normalInv,
   marketMarginFromMoneyline,
   fairSpreadPrice,

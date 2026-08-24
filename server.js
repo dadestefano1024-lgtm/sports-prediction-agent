@@ -2639,6 +2639,17 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       // input here: at a current price, following it went 48.1% and fading it
       // 51.9% across 269 games, both under break-even.
       recommendedBet,
+      // Shown whether or not it produces a verdict, because "the moneyline on
+      // this same game says the run line is worth X" is worth reading even
+      // where it is not yet trusted enough to act on.
+      runLine: (odds.myBook && !g.inProgress) ? model.runLineEdge({
+        sport,
+        homeML: odds.myBook.homeML,
+        awayML: odds.myBook.awayML,
+        spread: odds.myBook.spread,
+        spreadHomePrice: odds.myBook.spreadHomePrice,
+        spreadAwayPrice: odds.myBook.spreadAwayPrice,
+      }) : null,
 
       // Two different questions, deliberately kept apart.
       //
@@ -2655,6 +2666,19 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       }),
       bestBet: model.bestBet({
         sport,
+        // Baseball and hockey post 1.5 whoever is playing, so the number says
+        // nothing and the price beside it says everything. This reads the
+        // moneyline of the same game AT THE SAME BOOK and works out what that
+        // 1.5 has to be worth — comparing against a different book's moneyline
+        // would be comparing two things that were never meant to agree.
+        runLine: (odds.myBook && !g.inProgress) ? model.runLineEdge({
+          sport,
+          homeML: odds.myBook.homeML,
+          awayML: odds.myBook.awayML,
+          spread: odds.myBook.spread,
+          spreadHomePrice: odds.myBook.spreadHomePrice,
+          spreadAwayPrice: odds.myBook.spreadAwayPrice,
+        }) : null,
         bookValuePts: bookValue,
         bookSide: recommendedBet ? recommendedBet.side : null,
         bookPick: recommendedBet ? recommendedBet.pick : null,
