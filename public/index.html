@@ -1576,6 +1576,37 @@
           </div>`;
       }
 
+      // THE PICK 6 RECORD.
+      //
+      // Separate from the live recommendations on purpose: a pool entry settles
+      // against a line frozen on Wednesday and a recommendation against the
+      // number on offer now, so one average would describe neither. A push is a
+      // loss here, which is this pool's rule.
+      let poolHTML = '';
+      if (data.poolRecord && data.poolRecord.picks > 0) {
+        const p = data.poolRecord;
+        const beat = p.winRate !== null && p.winRate > 52.4;
+        poolHTML = `
+          <div class="clv-box">
+            <div class="clv-head">Pick 6 record &middot; ${p.picks} logged, ${p.pending} still to play</div>
+            ${p.settled ? `
+              <div class="clv-row">
+                <div class="clv-fig ${beat ? 'clv-good' : 'clv-bad'}">${p.winRate}%</div>
+                <div class="clv-lab">${p.wins}-${p.losses}${p.pushes ? ` (${p.pushes} landed on the number, counted as losses)` : ''}</div>
+              </div>
+              <div class="clv-detail">
+                ${p.spread ? `spreads ${p.spread.wins}/${p.spread.n} (${p.spread.winRate}%)` : ''}
+                ${p.totals ? ` &middot; totals ${p.totals.wins}/${p.totals.n} (${p.totals.winRate}%)` : ''}
+              </div>` : '<div class="clv-detail">Nothing settled yet.</div>'}
+            <div class="clv-note">
+              Logged automatically whenever you rank, so this builds without anybody writing
+              anything down. The backtest that this rule rests on says a two-point stale spread
+              wins about 60% &mdash; this is the same rule measured on your pool rather than on
+              somebody else's lines.${p.settled && p.settled < 30 ? ' Far too few to mean anything yet.' : ''}
+            </div>
+          </div>`;
+      }
+
       let byConfidenceHTML = '';
       if (data.byConfidence && data.byConfidence.length > 0) {
         const order = { 'High': 0, 'Medium': 1, 'Low': 2 };
@@ -1653,7 +1684,7 @@
           </div>`;
       }
 
-      document.getElementById('content').innerHTML = filtersHTML + summaryHTML + clvHTML + marketHTML + byConfidenceHTML + recentHTML;
+      document.getElementById('content').innerHTML = filtersHTML + summaryHTML + poolHTML + clvHTML + marketHTML + byConfidenceHTML + recentHTML;
     }
   </script>
 </body>

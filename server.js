@@ -54,6 +54,12 @@ if (process.env.DATABASE_URL) {
           graded_at TIMESTAMPTZ
         );
       `);
+      // Added after the table existed, so it has to be a migration rather than
+      // a column in the CREATE. 'recommendation' is what the live tabs store;
+      // 'pool' is a Pick 6 entry, which is a different bet against a different
+      // number and must not be averaged in with the others.
+      await pool.query(
+        `ALTER TABLE picks ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'recommendation'`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_picks_game ON picks(espn_game_id);`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_picks_ungraded ON picks(result) WHERE result IS NULL;`);
       dbReady = true;
@@ -83,23 +89,29 @@ async function savePick(pickData) {
     // Dedup. The same slate is re-analyzed on every prediction cache miss, and
     // savePick was a bare INSERT, so a game sitting pre-game all day would
     // accumulate one duplicate row per run and silently inflate the History tab.
+    // Scoped by source as well. A Pick 6 entry and a live recommendation on the
+    // same game and market are different bets against different numbers, and
+    // without this the first one stored would silently block the second.
+    const src = pickData.source || 'recommendation';
     const dupe = pickData.espn_game_id
       ? await pool.query(
-          `SELECT id FROM picks WHERE espn_game_id = $1 AND market = $2 LIMIT 1`,
-          [pickData.espn_game_id, pickData.market])
+          `SELECT id FROM picks WHERE espn_game_id = $1 AND market = $2
+             AND COALESCE(source, 'recommendation') = $3 LIMIT 1`,
+          [pickData.espn_game_id, pickData.market, src])
       : await pool.query(
           `SELECT id FROM picks WHERE sport = $1 AND home_team = $2 AND away_team = $3
-             AND market = $4 AND game_time = $5 LIMIT 1`,
+             AND market = $4 AND game_time = $5
+             AND COALESCE(source, 'recommendation') = $6 LIMIT 1`,
           [pickData.sport, pickData.home_team, pickData.away_team,
-           pickData.market, pickData.game_time]);
+           pickData.market, pickData.game_time, src]);
     if (dupe.rows.length > 0) return null;
 
     const result = await pool.query(`
       INSERT INTO picks (
         sport, espn_game_id, home_team, away_team, game_time,
         market, pick, line, edge, confidence,
-        predicted_home, predicted_away, line_at_pick
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        predicted_home, predicted_away, line_at_pick, source
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING id;
     `, [
       pickData.sport,
@@ -114,7 +126,8 @@ async function savePick(pickData) {
       pickData.confidence,
       pickData.predicted_home,
       pickData.predicted_away,
-      pickData.line_at_pick
+      pickData.line_at_pick,
+      pickData.source || 'recommendation',
     ]);
     return result.rows[0].id;
   } catch (err) {
@@ -3133,6 +3146,64 @@ app.get('/api/pool/:sport', async (req, res) => {
  * Ranked on win probability rather than the raw point gap, because two points
  * across a key number beats three points through empty space.
  */
+/**
+ * Store the six the tab just ranked.
+ *
+ * The stale-line rule is the only edge in this app that has survived a holdout
+ * season, it gets used every week, and until now it produced no evidence: the
+ * tab ranked, the reader wrote the numbers down elsewhere, and nothing here
+ * ever learned whether they won. Next season would still be resting on a
+ * 543-game backtest of somebody else's lines rather than on this pool's.
+ *
+ * Recorded automatically at the moment of ranking, because the alternative —
+ * come back afterwards and log your bets — is a thing nobody does, and the app
+ * already knows the answer at that instant.
+ *
+ * Re-ranking REPLACES the ungraded entries for those games rather than adding
+ * to them, so editing a line mid-week corrects the record instead of
+ * duplicating it. Anything already graded is left alone.
+ */
+async function savePoolPicks(sport, best, gamesById) {
+  if (!dbReady || !pool || !Array.isArray(best) || !best.length) return 0;
+  try {
+    const ids = [...new Set(best.map(b => b.gameId).filter(Boolean))];
+    if (ids.length) {
+      await pool.query(
+        `DELETE FROM picks WHERE source = 'pool' AND result IS NULL AND espn_game_id = ANY($1)`,
+        [ids]);
+    }
+    let saved = 0;
+    for (const b of best) {
+      const g = gamesById[b.gameId] || {};
+      const id = await savePick({
+        sport,
+        espn_game_id: b.gameId || null,
+        home_team: g.homeTeam || (b.matchup || '').split(' @ ')[1] || 'Home',
+        away_team: g.awayTeam || (b.matchup || '').split(' @ ')[0] || 'Away',
+        game_time: g.startTime ? new Date(g.startTime) : null,
+        market: b.market === 'total' ? 'total' : 'spread',
+        pick: b.pick,
+        // The POOL number, which is what the bet actually settles against —
+        // not the market number it was scored against.
+        line: b.poolLine,
+        edge: b.gap,
+        confidence: b.tested === false ? 'untested' : null,
+        predicted_home: null,
+        predicted_away: null,
+        line_at_pick: b.poolLine,
+        source: 'pool',
+      });
+      if (id) saved++;
+    }
+    if (saved) console.log(`[POOL] recorded ${saved} pick(s) for ${sport}`);
+    return saved;
+  } catch (err) {
+    // Never let bookkeeping cost somebody their rankings.
+    console.error('[POOL] could not record picks:', err.message);
+    return 0;
+  }
+}
+
 app.post('/api/pool/:sport', async (req, res) => {
   const sport = String(req.params.sport || '').toLowerCase();
   const path = ESPN_SCOREBOARD_PATHS[sport];
@@ -3237,11 +3308,22 @@ app.post('/api/pool/:sport', async (req, res) => {
       if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label });
     }
 
+    const best = model.rankPoolPicks(candidates, count);
+
+    // Record them, then answer. Awaited rather than fired and forgotten so a
+    // database problem shows up in the log next to the request that caused it,
+    // but savePoolPicks swallows its own errors — bookkeeping must never cost
+    // somebody their rankings.
+    const gamesById = {};
+    for (const g of games) gamesById[g.id] = g;
+    const recorded = await savePoolPicks(sport, best, gamesById);
+
     res.json({
       sport: sport.toUpperCase(),
       count,
-      best: model.rankPoolPicks(candidates, count),
+      best,
       considered: candidates.length,
+      recorded,
       games,
     });
   } catch (err) {
@@ -3923,6 +4005,54 @@ async function getClvStats(sport) {
   };
 }
 
+/**
+ * The Pick 6 record, kept apart from the live recommendations.
+ *
+ * Two different bets against two different numbers: a pool entry settles
+ * against a line frozen on Wednesday, a recommendation against the number on
+ * offer now. Averaging them would describe neither.
+ *
+ * A push counts as a LOSS here, which is this pool's rule, so the percentage
+ * below is what actually happened to the money rather than what happened to the
+ * bets that resolved.
+ */
+async function getPoolStats(sport) {
+  if (!dbReady || !pool) return null;
+  const params = [];
+  let where = "WHERE COALESCE(source, 'recommendation') = 'pool'";
+  if (sport) { params.push(sport); where += ` AND sport = $${params.length}`; }
+  const { rows } = await pool.query(
+    `SELECT market, result, edge FROM picks ${where}`, params);
+  if (!rows.length) return { picks: 0 };
+
+  const graded = rows.filter(r => r.result);
+  const wins = graded.filter(r => r.result === 'win').length;
+  const pushes = graded.filter(r => r.result === 'push').length;
+  const settled = graded.length;
+  const bySpread = graded.filter(r => r.market === 'spread');
+  const spreadWins = bySpread.filter(r => r.result === 'win').length;
+  return {
+    picks: rows.length,
+    pending: rows.length - settled,
+    settled,
+    wins,
+    // Pushes are losses in this pool, so they sit in the denominator and not
+    // in a separate bucket that quietly improves the percentage.
+    losses: settled - wins,
+    pushes,
+    winRate: settled ? +(wins / settled * 100).toFixed(1) : null,
+    spread: bySpread.length
+      ? { n: bySpread.length, wins: spreadWins,
+          winRate: +(spreadWins / bySpread.length * 100).toFixed(1) }
+      : null,
+    totals: graded.length - bySpread.length
+      ? { n: graded.length - bySpread.length,
+          wins: wins - spreadWins,
+          winRate: +((wins - spreadWins) / (graded.length - bySpread.length) * 100).toFixed(1) }
+      : null,
+  };
+}
+
 app.get('/api/history', async (req, res) => {
   const sport = req.query.sport || null;
   const stats = await getHistoryStats(sport, req.query.limit);
@@ -3930,7 +4060,11 @@ app.get('/api/history', async (req, res) => {
   try { clv = await getClvStats(sport); } catch (e) {
     console.error('[CLV] stats failed:', e.message);
   }
-  res.json({ ...stats, clv });
+  let poolRecord = null;
+  try { poolRecord = await getPoolStats(sport); } catch (e) {
+    console.error('[POOL] stats failed:', e.message);
+  }
+  res.json({ ...stats, clv, poolRecord });
 });
 
 /**
