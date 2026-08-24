@@ -179,6 +179,23 @@
     .line-item { flex: 1; min-width: 70px; }
     .line-label { font-size: 10px; color: #8b949e; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
     .line-value { font-size: 15px; font-weight: 700; }
+    .verdict {
+      display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+      padding: 9px 11px; border-radius: 6px; margin-bottom: 10px;
+      background: #161b22; border: 1px solid #30363d; border-left: 3px solid #6e7681;
+    }
+    .verdict.strong { border-left-color: #3fb950; background: #0f2a1a; }
+    .verdict.lean   { border-left-color: #d29922; }
+    .verdict.pass   { border-left-color: #6e7681; opacity: 0.75; }
+    .verdict-label { font-weight: 800; font-size: 14px; }
+    .verdict.strong .verdict-label { color: #3fb950; }
+    .verdict.lean .verdict-label { color: #d29922; }
+    .verdict.none .verdict-label, .verdict.pass .verdict-label { color: #8b949e; }
+    .verdict-reason { font-size: 12px; color: #8b949e; }
+    .pool-flag {
+      font-size: 11px; color: #58a6ff; margin-top: 5px;
+      padding-top: 5px; border-top: 1px solid #21262d;
+    }
     .line-sub { font-size: 10px; color: #6e7681; margin-top: 2px; }
     .line-sub.better { color: #3fb950; }
     .line-value.favorite { color: #3fb950; }
@@ -904,6 +921,22 @@
               </div>
             </div>
             <div class="card-body">
+              ${(() => {
+                const r = g.recommendation;
+                if (!r) return '';
+                // The pool note sits with the verdict because the two are easy
+                // to confuse and mean opposite things: movement is an edge
+                // against a frozen line and nothing against a live one.
+                const pf = g.poolFlag
+                  ? `<div class="pool-flag">Pool 6: the line has moved ${g.poolFlag.points} pt${g.poolFlag.points === 1 ? '' : 's'} since it opened — ${
+                      g.poolFlag.level === 'strong' ? 'strong candidate if your pool number is still the old one' : 'worth checking your pool number'}.</div>`
+                  : '';
+                return `<div class="verdict ${r.level}">
+                  <span class="verdict-label">${r.label}</span>
+                  <span class="verdict-reason">${r.reason}</span>
+                  ${pf}
+                </div>`;
+              })()}
               ${linesHTML}
               ${movementHTML}
               <div class="prediction-row">

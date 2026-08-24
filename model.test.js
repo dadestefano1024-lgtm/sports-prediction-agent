@@ -1011,3 +1011,38 @@ test('rankPoolPicks orders by win probability and trims to count', () => {
   assert.equal(m.rankPoolPicks(cands, 6).length, 4, 'the unscored candidate is dropped');
   assert.deepEqual(m.rankPoolPicks(null, 6), []);
 });
+
+// ----------------------------------------------------------------------------
+test('betRecommendation grades the book advantage, not the model', () => {
+  const strong = m.betRecommendation({ bookValuePts: 1.5, bookName: 'DraftKings', side: 'home' });
+  assert.equal(strong.level, 'strong');
+  assert.match(strong.reason, /DraftKings is 1\.5 points better/);
+
+  const lean = m.betRecommendation({ bookValuePts: 0.5, bookName: 'DraftKings' });
+  assert.equal(lean.level, 'lean');
+
+  const none = m.betRecommendation({ bookValuePts: 0, bookName: 'DraftKings' });
+  assert.equal(none.level, 'none');
+  assert.equal(none.label, "Don't bet");
+  assert.match(none.reason, /at the market price/);
+});
+
+test('betRecommendation refuses live and lineless games', () => {
+  assert.equal(m.betRecommendation({ bookValuePts: 3, inProgress: true }).level, 'pass');
+  assert.equal(m.betRecommendation({ bookValuePts: 3, hasLine: false }).level, 'pass');
+});
+
+test('betRecommendation singularises one point', () => {
+  assert.match(m.betRecommendation({ bookValuePts: 1, bookName: 'DK' }).reason, /1 point better/);
+  assert.match(m.betRecommendation({ bookValuePts: 2, bookName: 'DK' }).reason, /2 points better/);
+});
+
+test('poolCandidate flags games whose line has drifted', () => {
+  assert.equal(m.poolCandidate(0.5, 0.5), null, 'small moves are not candidates');
+  assert.equal(m.poolCandidate(-1.5, 0).level, 'worth checking');
+  assert.equal(m.poolCandidate(-2.5, 0).level, 'strong');
+  assert.equal(m.poolCandidate(0, 3).level, 'strong', 'a total move counts too');
+  assert.equal(m.poolCandidate(-2.5, 0).points, 2.5);
+  assert.equal(m.poolCandidate(null, null), null);
+  assert.equal(m.poolCandidate(undefined, 4).level, 'strong');
+});

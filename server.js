@@ -2428,6 +2428,16 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       ...[mb.homeEdgePts, mb.awayEdgePts, mb.overEdgePts, mb.underEdgePts]
         .filter(v => Number.isFinite(v)), 0) : 0;
 
+    // Which side that advantage is actually on, so the verdict can name it.
+    const bestBookSide = (() => {
+      if (!mb || bookValue <= 0) return null;
+      if (mb.homeEdgePts === bookValue) return `${g.homeTeam} spread`;
+      if (mb.awayEdgePts === bookValue) return `${g.awayTeam} spread`;
+      if (mb.overEdgePts === bookValue) return 'over';
+      if (mb.underEdgePts === bookValue) return 'under';
+      return null;
+    })();
+
     return {
       homeTeam: g.homeTeam,
       awayTeam: g.awayTeam,
@@ -2471,6 +2481,25 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       myBook: odds.myBook || null,
       bookValuePts: bookValue,
       confidence: bookConfidence(bookValue),
+
+      // A single verdict per game, graded only on the book advantage — the one
+      // live input with a measured edge. Line movement is deliberately NOT an
+      // input here: at a current price, following it went 48.1% and fading it
+      // 51.9% across 269 games, both under break-even.
+      recommendation: model.betRecommendation({
+        bookValuePts: bookValue,
+        inProgress: !!g.inProgress,
+        hasLine: odds.spread !== null && odds.spread !== undefined,
+        bookName: (odds.myBook && odds.myBook.name) || MY_BOOK,
+        side: bestBookSide,
+      }),
+
+      // Movement is worth money against a line that has NOT moved with the
+      // market, which is the pool case. Flagged separately so the two never get
+      // confused with one another.
+      poolFlag: g.lineMovement
+        ? model.poolCandidate(g.lineMovement.spreadMovement, g.lineMovement.totalMovement)
+        : null,
 
       keyFactors: commentary[g.homeTeam + '|' + g.awayTeam] || [],
 

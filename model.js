@@ -1137,6 +1137,72 @@ function rankPoolPicks(candidates, count = 6) {
     .slice(0, count);
 }
 
+// ----------------------------------------------------------------------------
+// Bet recommendation
+// ----------------------------------------------------------------------------
+
+/**
+ * What to do about a game, based only on things that have been measured.
+ *
+ * The tempting input here is line movement, and it does not work at a live
+ * price. Over 269 games of 2025, backing the side the line moved toward at the
+ * CURRENT number went 90-97, or 48.1 percent; fading it went 51.9. Both sit
+ * under the 52.4 needed to break even, and the two buckets that look good point
+ * in opposite directions — following wins between two and three points while
+ * fading wins between half and one — on about twenty games each. A real effect
+ * would be directionally consistent. That is noise.
+ *
+ * Movement IS worth money against a line that has not moved with the market,
+ * which is the pick-em pool case and is handled by poolEdge. The distinction is
+ * the whole point: the same fact is an edge against a stale number and nothing
+ * at all against a live one.
+ *
+ * So the only live input with a measured advantage is the book on offer having
+ * a better NUMBER than the rest of the market. That is a fact about prices
+ * rather than a forecast, and it is what this grades.
+ */
+function betRecommendation({ bookValuePts = 0, inProgress = false, hasLine = true,
+                             bookName = 'your book', side = null } = {}) {
+  if (inProgress) {
+    return { level: 'pass', label: 'In progress',
+             reason: 'the book is pricing the rest of the game, not the whole one' };
+  }
+  if (!hasLine) {
+    return { level: 'pass', label: 'No line',
+             reason: 'no market price available for this game yet' };
+  }
+  const pts = Number(bookValuePts) || 0;
+  if (pts >= 1) {
+    return { level: 'strong', label: 'Strong bet',
+             reason: `${bookName} is ${pts} point${pts === 1 ? '' : 's'} better than the market` +
+                     (side ? ` on the ${side}` : '') };
+  }
+  if (pts >= 0.5) {
+    return { level: 'lean', label: 'Slight edge',
+             reason: `${bookName} is ${pts} of a point better than the market` +
+                     (side ? ` on the ${side}` : '') };
+  }
+  return { level: 'none', label: "Don't bet",
+           reason: `${bookName} is at the market price, so there is no edge here` };
+}
+
+/**
+ * Whether a game is worth checking against a frozen pool line.
+ *
+ * Not a recommendation about betting it live — it is a prompt to go and look at
+ * whether the pool number has kept up. Two points is where the measured
+ * stale-line record was strongest (46-27), so that is the threshold, with a
+ * softer flag from one point.
+ */
+function poolCandidate(spreadMovement, totalMovement) {
+  const biggest = Math.max(
+    Number.isFinite(spreadMovement) ? Math.abs(spreadMovement) : 0,
+    Number.isFinite(totalMovement) ? Math.abs(totalMovement) : 0);
+  if (biggest >= 2) return { level: 'strong', points: +biggest.toFixed(2) };
+  if (biggest >= 1) return { level: 'worth checking', points: +biggest.toFixed(2) };
+  return null;
+}
+
 module.exports = {
   SPORTS,
   sportConfig,
@@ -1166,6 +1232,8 @@ module.exports = {
   priceGame,
   bestOffer,
   poolEdge,
+  betRecommendation,
+  poolCandidate,
   rankPoolPicks,
   SPREAD_LIMITS,
   plausibleSpread,
