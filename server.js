@@ -3004,6 +3004,14 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
         bookPick: recommendedBet ? recommendedBet.pick : null,
         predictedMargin: projection ? projection.predictedMargin : null,
         marketSpread: spreadUsable ? rawSpread : null,
+        bookSpread: (odds.myBook && Number.isFinite(Number(odds.myBook.spread)))
+          ? Number(odds.myBook.spread) : null,
+        // Needed so a price edge on a TOTAL can notice the projection pointing
+        // the other way and say so.
+        predictedTotal: projection && Number.isFinite(projection.predictedTotal)
+          ? projection.predictedTotal : null,
+        bookTotal: (odds.myBook && Number.isFinite(Number(odds.myBook.total)))
+          ? Number(odds.myBook.total) : toNum(odds.total),
         situationFlags: g.situationFlags || [],
         inProgress: !!g.inProgress,
         homeTeam: g.homeTeam,

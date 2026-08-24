@@ -1308,9 +1308,16 @@ test('bestBet never leans off a run line or a puck line', () => {
 });
 
 test('bestBet counts in the units of the sport', () => {
+  // The wording changed to say plainly that this is a price fact rather than a
+  // forecast, because "Best bet: Over 48.5" above a predicted score of 46 was
+  // being read as the app contradicting itself.
   assert.match(m.bestBet({ sport:'mlb', bookValuePts:1, bookPick:'Cubs -1.5' }).reason, /1 run better/);
-  assert.match(m.bestBet({ sport:'nhl', bookValuePts:0.5, bookPick:'Kings -1' }).reason, /of a goal better/);
+  assert.match(m.bestBet({ sport:'nhl', bookValuePts:0.5, bookPick:'Kings -1' }).reason, /half a goal better/);
   assert.match(m.bestBet({ sport:'nfl', bookValuePts:2, bookPick:'Chiefs -3' }).reason, /2 points better/);
+  for (const sport of ['nfl', 'mlb']) {
+    assert.match(m.bestBet({ sport, bookValuePts: 1, bookPick: 'X -3' }).reason,
+      /not a forecast/, `${sport} should say it is a price fact`);
+  }
   assert.match(m.bestBet({ sport:'nba', predictedMargin: 4, marketSpread: 0,
                            homeTeam:'H', awayTeam:'A' }).reason, /4\.0 points off/);
 });
@@ -1860,4 +1867,31 @@ test('a 2.5 run line prices off the counted table, not the 1.5 conditional', () 
   // And plausibleSpread must not throw the game away for not being 1.5.
   assert.equal(m.plausibleSpread('mlb', 2.5), true);
   assert.equal(m.plausibleSpread('nhl', 2.5), true);
+});
+
+test('a price edge says when the projection points the other way', () => {
+  // "Best bet: Over 48.5" above a predicted score of 20-26 reads as the app
+  // arguing with itself. Neither half is wrong — one is a fact about the price
+  // on offer, the other a description of recent scoring measured at 49.6% on
+  // exactly this question — but a reader who spots the tension unaided will
+  // trust neither, so the card says it.
+  const against = m.bestBet({ sport: 'nfl', bookValuePts: 1, bookPick: 'Over 48.5',
+                              bookSide: 'over', predictedTotal: 45.4, bookTotal: 48.5 });
+  assert.equal(against.level, 'edge', 'the price edge still stands');
+  assert.match(against.caveat, /points the other way/);
+  assert.match(against.caveat, /not a reason to pass/);
+
+  // Agreement carries no caveat — the note is for the contradiction only.
+  const with_ = m.bestBet({ sport: 'nfl', bookValuePts: 1, bookPick: 'Under 45.5',
+                            bookSide: 'under', predictedTotal: 40.5, bookTotal: 45.5 });
+  assert.equal(with_.caveat, undefined);
+
+  // Same for spreads, using the market number rather than the total.
+  const spread = m.bestBet({ sport: 'nfl', bookValuePts: 1.5, bookPick: 'Texans +1.5',
+                             bookSide: 'home', predictedMargin: -6, marketSpread: 0 });
+  assert.match(spread.caveat, /loses to the closing line/);
+
+  // And with no projection at all there is nothing to disagree with.
+  assert.equal(m.bestBet({ sport: 'nfl', bookValuePts: 1, bookPick: 'Over 48.5',
+                           bookSide: 'over' }).caveat, undefined);
 });

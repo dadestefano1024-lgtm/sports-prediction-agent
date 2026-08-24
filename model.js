@@ -2132,6 +2132,7 @@ function situationFlags({
 function bestBet({
   sport, bookValuePts = 0, bookSide = null, bookPick = null,
   predictedMargin = null, marketSpread = null, bookSpread = null,
+  predictedTotal = null, bookTotal = null,
   situationFlags = [], inProgress = false,
   homeTeam = 'Home', awayTeam = 'Away',
   runLine = null,
@@ -2151,13 +2152,52 @@ function bestBet({
   // --------------------------------------------------------------------
   // 1. A better NUMBER than the market. A fact about what is on offer.
   // --------------------------------------------------------------------
+  //
+  // This is a statement about PRICE and it is worded as one, because it was
+  // being read as a forecast. A card saying "Best bet: Over 48.5" above a
+  // predicted score of 20-26 looks like the app arguing with itself, and the
+  // question it raises — which half is wrong? — has an answer worth stating
+  // rather than leaving the reader to guess.
+  //
+  // Neither half is wrong. They answer different questions. The number being a
+  // point better here than at eight other books is a fact about what is on
+  // offer, true whoever wins. The projection is a description of recent
+  // scoring, and it has been measured against exactly this question — projected
+  // total against market total — at 49.6% across 6,672 games, which is nothing.
+  //
+  // So the price edge stands and the projection does not override it. But where
+  // they point opposite ways the card says so, because a reader who notices the
+  // contradiction unaided will trust neither.
+  const projectionObjects = (() => {
+    if (!bookPick) return null;
+    const isTotal = /^(Over|Under)/i.test(bookPick);
+    if (isTotal) {
+      if (!Number.isFinite(predictedTotal) || !Number.isFinite(bookTotal)) return null;
+      const projSaysOver = predictedTotal > bookTotal;
+      const pickIsOver = /^Over/i.test(bookPick);
+      if (projSaysOver === pickIsOver) return null;
+      return `the projection has this at ${predictedTotal.toFixed(0)}, which points the other way — ` +
+             `it is recent scoring only and loses to the market on totals, so it is not a reason to pass`;
+    }
+    if (!Number.isFinite(predictedMargin) || !Number.isFinite(marketSpread)) return null;
+    const projLeansHome = predictedMargin > -marketSpread;
+    if (bookSide !== 'home' && bookSide !== 'away') return null;
+    if (projLeansHome === (bookSide === 'home')) return null;
+    return 'the projection leans the other way — it loses to the closing line, ' +
+           'so it is not a reason to pass on a better number';
+  })();
+
   if (bookValuePts >= 1 && bookPick) {
     return { level: 'edge', label: 'Best bet', pick: bookPick, side: bookSide,
-             reason: `the number is ${bookValuePts} ${unit}${bookValuePts === 1 ? '' : 's'} better than the market` };
+             reason: `that number is ${bookValuePts} ${unit}${bookValuePts === 1 ? '' : 's'} better here ` +
+                     'than the rest of the market — a fact about the price, not a forecast',
+             ...(projectionObjects ? { caveat: projectionObjects } : {}) };
   }
   if (bookValuePts >= 0.5 && bookPick) {
     return { level: 'slight', label: 'Slight edge', pick: bookPick, side: bookSide,
-             reason: `the number is ${bookValuePts} of a ${unit} better than the market` };
+             reason: `that number is half a ${unit} better here than the rest of the market — ` +
+                     'a fact about the price, not a forecast',
+             ...(projectionObjects ? { caveat: projectionObjects } : {}) };
   }
 
   // --------------------------------------------------------------------
