@@ -179,6 +179,8 @@
     .line-item { flex: 1; min-width: 70px; }
     .line-label { font-size: 10px; color: #8b949e; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
     .line-value { font-size: 15px; font-weight: 700; }
+    .line-sub { font-size: 10px; color: #6e7681; margin-top: 2px; }
+    .line-sub.better { color: #3fb950; }
     .line-value.favorite { color: #3fb950; }
 
     /* ============================================================ */
@@ -266,72 +268,8 @@
     }
     .pred-label { font-size: 11px; color: #8b949e; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
     .pred-score { font-size: 18px; font-weight: 800; color: #58a6ff; }
-    .edges-row {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 12px;
-    }
-    .edge-chip {
-      flex: 1;
-      border-radius: 6px;
-      padding: 8px 10px;
-      text-align: center;
-    }
-    .edge-chip.positive { background: #0f2a1a; border: 1px solid #2ea04355; }
-    .edge-chip.negative { background: #1a0f0f; border: 1px solid #6e101055; }
-    .edge-chip.neutral { background: #1c2128; border: 1px solid #30363d; }
-    .edge-label { font-size: 10px; color: #8b949e; margin-bottom: 2px; text-transform: uppercase; }
-    .edge-val { font-size: 14px; font-weight: 800; }
-    .edge-chip.positive .edge-val { color: #3fb950; }
-    .edge-chip.negative .edge-val { color: #f85149; }
-    .edge-chip.neutral .edge-val { color: #8b949e; }
-    .kelly-row {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 12px;
-    }
-    .kelly-chip {
-      flex: 1;
-      background: #1c2128;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-      padding: 8px 10px;
-      text-align: center;
-    }
-    .kelly-label { font-size: 10px; color: #8b949e; margin-bottom: 2px; text-transform: uppercase; }
-    .kelly-val { font-size: 14px; font-weight: 800; color: #d2a679; }
 
-    .picks-row {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 12px;
-    }
-    .pick-chip {
-      flex: 1;
-      background: #0f2a1a;
-      border: 1px solid #2ea04355;
-      border-radius: 6px;
-      padding: 10px;
-      text-align: center;
-    }
-    .pick-chip.weak {
-      background: #1c2128;
-      border-color: #30363d;
-    }
-    .pick-label { font-size: 10px; color: #8b949e; margin-bottom: 4px; text-transform: uppercase; }
-    .pick-value { font-size: 14px; font-weight: 800; color: #3fb950; }
-    .pick-chip.weak .pick-value { color: #8b949e; }
 
-    .recommendation {
-      background: linear-gradient(90deg, #0f2a1a 0%, #1a3d2a 100%);
-      border: 1px solid #2ea043;
-      border-radius: 6px;
-      padding: 12px 14px;
-      margin-bottom: 12px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
     .rec-label { font-size: 10px; color: #8b949e; text-transform: uppercase; margin-bottom: 2px; }
     .rec-value { font-size: 16px; font-weight: 800; color: #3fb950; }
     .rec-edge { font-size: 14px; font-weight: 700; color: #3fb950; background: #2ea04333; padding: 4px 10px; border-radius: 4px; }
@@ -354,16 +292,6 @@
       border-top: 1px solid #21262d;
     }
     .factor-item:before { content: '→ '; color: #58a6ff; }
-    .value-badge {
-      display: inline-block;
-      background: #2ea04322;
-      color: #3fb950;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 2px 8px;
-      border-radius: 10px;
-      margin-left: 8px;
-    }
     .no-games {
       text-align: center;
       padding: 48px;
@@ -692,10 +620,12 @@
       return 'neutral';
     }
 
-    function isValueBet(game) {
-      const spreadEdge = safeNum(game.spreadEdge);
-      const totalEdge = safeNum(game.totalEdge);
-      return Math.abs(spreadEdge || 0) >= 3 || Math.abs(totalEdge || 0) >= 3;
+    // A card is worth flagging when the book being bet at is offering a better
+    // NUMBER than the rest of the market. That is a fact about prices. The old
+    // version flagged a model edge of 3% or more, which after measurement is
+    // noise dressed as a recommendation.
+    function hasBookValue(game) {
+      return Number(game.bookValuePts || 0) > 0;
     }
 
     // Format a single number for the movement table — handles null, plus signs, etc.
@@ -844,8 +774,7 @@
       }
 
       const html = games.map(g => {
-        const valueBet = isValueBet(g);
-        const valueBadge = valueBet ? '<span class="value-badge">VALUE BET</span>' : '';
+        const valueBet = hasBookValue(g);
 
         let weatherBadge = '';
         if (g.weather) {
@@ -858,75 +787,65 @@
         // NEW: Full-detail line movement section (replaces old movementHTML)
         const movementHTML = renderLineMovement(g);
 
+        // The number shown first is the one at the book being bet at, because
+        // that is the number actually available. Consensus sits underneath as
+        // the reference for whether it is a good one. When they differ, the
+        // side that benefits is named — a spread of -2.5 against a consensus of
+        // -3.5 is a point in the home backer's favour and a point against the
+        // away backer, so "better" on its own would be meaningless.
+        const mb = g.myBook || null;
+        const shortName = (full) => (full || '').split(' ').pop();
+
+        function lineCell(label, bookVal, marketVal, beneficiary, favClass) {
+          const shown = bookVal ?? marketVal ?? 'N/A';
+          let sub = '';
+          if (bookVal !== null && bookVal !== undefined &&
+              marketVal !== null && marketVal !== undefined) {
+            sub = bookVal === marketVal
+              ? '<div class="line-sub">at market</div>'
+              : `<div class="line-sub better">mkt ${marketVal} &middot; ${beneficiary}</div>`;
+          }
+          return `<div class="line-item"><div class="line-label">${label}</div>` +
+            `<div class="line-value ${favClass || ''}">${shown}</div>${sub}</div>`;
+        }
+
+        // Whichever side the book's number favours, and by how much.
+        const spreadBeneficiary = (() => {
+          if (!mb || mb.spread === null || g.spread === null) return '';
+          const home = mb.homeEdgePts, away = mb.awayEdgePts;
+          if (home > 0) return `+${home} ${shortName(g.homeTeam)}`;
+          if (away > 0) return `+${away} ${shortName(g.awayTeam)}`;
+          return '';
+        })();
+        const totalBeneficiary = (() => {
+          if (!mb || mb.total === null || g.total === null) return '';
+          if (mb.overEdgePts > 0) return `+${mb.overEdgePts} over`;
+          if (mb.underEdgePts > 0) return `+${mb.underEdgePts} under`;
+          return '';
+        })();
+
+        const bookLabel = mb ? mb.name : 'Market';
         let linesHTML = `
           <div class="lines-row">
-            <div class="line-item"><div class="line-label">Spread</div><div class="line-value">${g.spread ?? 'N/A'}</div></div>
-            <div class="line-item"><div class="line-label">Total</div><div class="line-value">${g.total ?? 'N/A'}</div></div>
+            ${lineCell(`Spread &middot; ${bookLabel}`, mb ? mb.spread : g.spread, g.spread, spreadBeneficiary, '')}
+            ${lineCell(`Total &middot; ${bookLabel}`, mb ? mb.total : g.total, g.total, totalBeneficiary, '')}
             <div class="line-item"><div class="line-label">Home ML</div><div class="line-value ${homeIsFavorite ? 'favorite' : ''}">${g.homeML ?? 'N/A'}</div></div>
             <div class="line-item"><div class="line-label">Away ML</div><div class="line-value ${!homeIsFavorite ? 'favorite' : ''}">${g.awayML ?? 'N/A'}</div></div>
           </div>`;
 
-        const spreadEdgeNum = safeNum(g.spreadEdge);
-        const totalEdgeNum = safeNum(g.totalEdge);
-
-        let edgesHTML = `
-          <div class="edges-row">
-            <div class="edge-chip ${edgeClass(g.spreadEdge)}">
-              <div class="edge-label">Spread Edge</div>
-              <div class="edge-val">${formatEdge(g.spreadEdge)}</div>
-            </div>
-            <div class="edge-chip ${edgeClass(g.totalEdge)}">
-              <div class="edge-label">Total Edge</div>
-              <div class="edge-val">${formatEdge(g.totalEdge)}</div>
-            </div>
-          </div>
-          <div class="kelly-row">
-            <div class="kelly-chip"><div class="kelly-label">Half Kelly Spread</div><div class="kelly-val">${formatKelly(g.kellySpread)}</div></div>
-            <div class="kelly-chip"><div class="kelly-label">Half Kelly Total</div><div class="kelly-val">${formatKelly(g.kellyTotal)}</div></div>
-          </div>`;
-
-        const spreadPickStrong = Math.abs(spreadEdgeNum || 0) >= 2;
-        const totalPickStrong = Math.abs(totalEdgeNum || 0) >= 2;
-
-        const picksHTML = `
-          <div class="picks-row">
-            <div class="pick-chip ${spreadPickStrong ? '' : 'weak'}">
-              <div class="pick-label">Spread Pick</div>
-              <div class="pick-value">${g.spreadPick || 'No edge'}</div>
-            </div>
-            <div class="pick-chip ${totalPickStrong ? '' : 'weak'}">
-              <div class="pick-label">Total Pick</div>
-              <div class="pick-value">${g.totalPick || 'No edge'}</div>
-            </div>
-          </div>`;
-
-        let recommendationHTML = '';
-        if (valueBet) {
-          const bestSpreadEdge = Math.abs(spreadEdgeNum || 0);
-          const bestTotalEdge = Math.abs(totalEdgeNum || 0);
-          let bestPick = '';
-          let bestEdge = 0;
-
-          if (bestSpreadEdge >= bestTotalEdge && bestSpreadEdge >= 3) {
-            bestPick = g.spreadPick;
-            bestEdge = spreadEdgeNum;
-          } else if (bestTotalEdge >= 3) {
-            bestPick = g.totalPick;
-            bestEdge = totalEdgeNum;
-          }
-
-          if (bestPick && bestEdge !== null && bestEdge !== undefined && !isNaN(bestEdge)) {
-            recommendationHTML = `
-              <div class="recommendation">
-                <div>
-                  <div class="rec-label">Recommendation</div>
-                  <div class="rec-value">🎯 ${bestPick}</div>
-                </div>
-                <div class="rec-edge">+${Math.abs(bestEdge).toFixed(1)}% edge</div>
-              </div>`;
-          }
-        }
-
+        // No edge chips, no Kelly sizing, no pick chips.
+        //
+        // Those numbers were real arithmetic, but the input behind them has
+        // been tested three ways — opponent-adjusted points, yards per play and
+        // EPA — and all three come out indistinguishable from simply taking the
+        // market price. Sizing a bet off that, or labelling it a "value bet",
+        // asserts an advantage that does not survive measurement.
+        //
+        // What remains on this tab is information that is true: the number at
+        // the book being used, how it compares with the rest of the market, how
+        // far the line has moved, injuries, quarterback and weather. The one
+        // place that still recommends anything is the Pick 6 tab, where the
+        // edge comes from a stale line rather than a forecast.
         const factors = (g.keyFactors || []).map(f => `<div class="factor-item">${f}</div>`).join('');
 
         // INJURY REPORT DISPLAY
@@ -970,7 +889,7 @@
           <div class="game-card ${valueBet ? 'value-bet' : ''}">
             <div class="card-header">
               <div>
-                <div class="teams">${g.awayTeam} @ ${g.homeTeam}${valueBadge}</div>
+                <div class="teams">${g.awayTeam} @ ${g.homeTeam}</div>
                 <div class="game-time">${
                   g.inProgress ? '<span style="color:#f0883e">● In progress</span> &middot; ' : ''
                 }${fmtKickoff(g)}</div>
@@ -991,9 +910,6 @@
                 <div class="pred-label">Predicted Score</div>
                 <div class="pred-score">${g.awayTeam?.split(' ').pop()} ${g.predictedScore?.away ?? '?'} — ${g.predictedScore?.home ?? '?'} ${g.homeTeam?.split(' ').pop()}</div>
               </div>
-              ${edgesHTML}
-              ${picksHTML}
-              ${recommendationHTML}
               ${factors ? `<div class="factors"><div class="factors-label">Key Factors</div>${factors}</div>` : ''}
               ${injuriesHTML}
             </div>
