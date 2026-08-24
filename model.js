@@ -2424,13 +2424,13 @@ function bestBet({
       rows.push({ label: 'checked', text: 'no injury, rest or travel flag on either side' });
     }
 
-    // Deliberately NOT repeated here when it disagrees. The same sentence was
-    // printing twice on the same card — once as the caveat above, which is
-    // visible without expanding anything, and again inside the working. The
-    // caveat is the right home for it: a verdict that contradicts its own
-    // projection has to say so before it is clicked, not after.
-    if (!projectionObjects
-        && (isTotal ? Number.isFinite(predictedTotal) : Number.isFinite(predictedMargin))) {
+    // The working is now the ONLY explanation on the card — the one-line reason
+    // and the caveat are no longer rendered beside a verdict that carries its
+    // working, because between them and the game blurb the box was saying the
+    // same thing three times. So the contradiction belongs in here again.
+    if (projectionObjects) {
+      rows.push({ label: 'points the other way', text: projectionObjects });
+    } else if (isTotal ? Number.isFinite(predictedTotal) : Number.isFinite(predictedMargin)) {
       rows.push({ label: 'checked', text: 'the projection agrees, for what little that is worth — ' +
         'it loses to the market, so it is corroboration and not a reason' });
     }

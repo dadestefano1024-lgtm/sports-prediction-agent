@@ -1972,14 +1972,15 @@ test('the working warns that a push is a loss in the pool', () => {
   assert.match(refund.text, /Pick 6 does not/);
 });
 
-test('the working never repeats the caveat printed above it', () => {
-  // The same sentence was rendering twice on the same card.
+test('the working carries the contradiction, since nothing else prints it', () => {
+  // The card no longer renders the reason or the caveat beside a verdict that
+  // has working, so the working has to hold the contradiction or it is lost.
   const r = m.bestBet({ sport: 'nfl', bookValuePts: 1, bookSide: 'over', bookPick: 'Over 47.5',
     marketTotal: 48.5, bookTotal: 47.5, predictedTotal: 44, situationFlags: [],
     homeTeam: 'Saints', awayTeam: 'Lions' });
-  assert.ok(r.caveat, 'a contradicted total should carry a caveat');
-  assert.equal(r.basis.filter(b => b.text === r.caveat).length, 0,
-    'the caveat is shown above the working and must not repeat inside it');
+  assert.ok(r.caveat, 'the field stays on the object for anything reading the API');
+  assert.ok(r.basis.some(b => b.label === 'points the other way'),
+    'the working must say the projection disagrees');
 });
 
 test('a half point that only buys pushes is called worthless in the pool', () => {
