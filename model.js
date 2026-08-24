@@ -2274,6 +2274,32 @@ function lineValueProb({ sport, market = 'spread', side, marketNumber, bookNumbe
            bookProb: book.p, marketProb: mkt.p, push: book.push };
 }
 
+/**
+ * Which side a book's numbers favour against the market, in words.
+ *
+ * Extracted and tested because it is a sign convention and sign conventions
+ * invert silently. Handed 48.5 against a market 49.5, the commentary model
+ * wrote "a slight discount for anyone playing the under" and put it directly
+ * under a verdict reading Best bet Over 48.5. A lower total favours the OVER.
+ *
+ * Takes the already-computed edge points rather than the raw numbers, so there
+ * is exactly one place in the codebase that decides what a better number means.
+ */
+function favouredSide({ homeEdgePts, awayEdgePts, overEdgePts, underEdgePts,
+                        homeTeam = 'the home side', awayTeam = 'the away side' } = {}) {
+  const ranked = [
+    [homeEdgePts, `${homeTeam} on the spread`],
+    [awayEdgePts, `${awayTeam} on the spread`],
+    [overEdgePts, 'the OVER'],
+    [underEdgePts, 'the UNDER'],
+  ].filter(([v]) => Number.isFinite(v) && v > 0)
+   .sort((a, b) => b[0] - a[0]);
+  if (!ranked.length) return { side: null, pts: 0, text: 'this book is level with the market — no side is favoured' };
+  const [pts, label] = ranked[0];
+  return { side: label, pts,
+           text: `this book's numbers favour ${label} by ${pts} pt${pts === 1 ? '' : 's'}` };
+}
+
 function bestBet({
   sport, bookValuePts = 0, bookSide = null, bookPick = null,
   predictedMargin = null, marketSpread = null, bookSpread = null,
@@ -2647,6 +2673,7 @@ module.exports = {
   totalPmf,
   coverOutcomes,
   lineValueProb,
+  favouredSide,
   NFL_TOTAL_PMF,
   totalResidualSurvival,
   totalResidualProb,

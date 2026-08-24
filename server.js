@@ -2690,10 +2690,19 @@ function buildCommentaryPrompt(sport, gamesWithStats, note) {
         totalOpen: g.lineMovement.openTotal,
         totalNow: g.lineMovement.currentTotal,
       } : null,
+      // Which side a price difference favours is COMPUTED and handed over,
+      // never left to be worked out. Given 48.5 against a market 49.5 the
+      // model wrote "a slight discount worth noting for anyone playing the
+      // under" directly underneath a verdict reading Best bet Over 48.5. A
+      // lower total is a discount for the over; the under is worse at 48.5
+      // than at 49.5. It is a sign convention, it is easy to invert, and the
+      // answer already exists a few lines away.
       bookVsMarket: odds.myBook ? {
         book: odds.myBook.name,
         spread: odds.myBook.spread,
         total: odds.myBook.total,
+        favours: model.favouredSide({ ...odds.myBook,
+                                homeTeam: g.homeTeam, awayTeam: g.awayTeam }).text,
       } : null,
       // Explicitly unknown rather than an empty list, so a failed fetch cannot
       // be read as a clean bill of health and written up as one.
@@ -2728,6 +2737,12 @@ For each game write:
 Do NOT predict scores, margins, probabilities, edges or bet sizes. Those are
 computed from the market and the data, and anything you invent is discarded on
 arrival. Do not tell the reader which side to bet.
+
+If you mention that this book's number differs from the market, the side it
+favours is given to you in bookVsMarket.favours. Use that wording or say
+nothing. Do NOT work it out from the numbers — a lower total favours the over
+and a higher one favours the under, and getting that backwards puts a sentence
+on the card contradicting the verdict printed directly above it.
 
 Where situationFlags are present, they are the most interesting thing about the
 game — they mark places where what is known and what the line shows disagree.

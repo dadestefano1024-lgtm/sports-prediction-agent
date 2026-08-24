@@ -2087,3 +2087,40 @@ test('totals sum to one across every parity combination', () => {
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// Which side a better number favours — a sign convention that inverted once
+// ---------------------------------------------------------------------------
+test('a lower total favours the over, a higher one the under', () => {
+  // Handed 48.5 against a market 49.5, the commentary model wrote "a slight
+  // discount for anyone playing the under" under a verdict reading Over 48.5.
+  const lower = m.favouredSide({ overEdgePts: 1, underEdgePts: -1 });
+  assert.match(lower.text, /the OVER/);
+  assert.doesNotMatch(lower.text, /UNDER/);
+
+  const higher = m.favouredSide({ overEdgePts: -1, underEdgePts: 1 });
+  assert.match(higher.text, /the UNDER/);
+  assert.doesNotMatch(higher.text, /OVER/);
+});
+
+test('the favoured side names the actual team on a spread', () => {
+  const r = m.favouredSide({ homeEdgePts: 1.5, awayEdgePts: -1.5,
+    homeTeam: 'Chiefs', awayTeam: 'Ravens' });
+  assert.match(r.text, /Chiefs on the spread/);
+  assert.equal(r.pts, 1.5);
+});
+
+test('the biggest edge wins when a book is better on more than one market', () => {
+  const r = m.favouredSide({ homeEdgePts: 0.5, overEdgePts: 2,
+    homeTeam: 'Chiefs', awayTeam: 'Ravens' });
+  assert.match(r.text, /the OVER/);
+  assert.equal(r.pts, 2);
+});
+
+test('a book level with the market favours nobody', () => {
+  const r = m.favouredSide({ homeEdgePts: 0, awayEdgePts: 0, overEdgePts: 0, underEdgePts: 0 });
+  assert.equal(r.side, null);
+  assert.match(r.text, /level with the market/);
+  assert.equal(m.favouredSide({}).side, null, 'missing fields must not throw');
+  assert.equal(m.favouredSide().side, null, 'no argument at all must not throw');
+});
