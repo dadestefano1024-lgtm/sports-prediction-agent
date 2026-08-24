@@ -213,6 +213,188 @@ function overProbability({ predictedTotal, line, sigma }) {
   return marginDistribution(predictedTotal, sigma).probAbove(line);
 }
 
+
+// ----------------------------------------------------------------------------
+// Cross-market pricing
+// ----------------------------------------------------------------------------
+
+/**
+ * Inverse normal CDF, by bisection on normalCdf.
+ *
+ * Bisection rather than one of the rational approximations because normalCdf is
+ * already here and already tested, so this inherits its correctness instead of
+ * introducing a second approximation with its own error to characterise. It
+ * also inherits its accuracy: A&S 7.1.26 is good to about 1.5e-7, so this is
+ * too, which is several orders of magnitude finer than any betting price.
+ */
+function normalInv(p) {
+  if (!Number.isFinite(p) || p <= 0 || p >= 1) {
+    throw new Error(`normalInv needs a probability strictly between 0 and 1, got ${p}`);
+  }
+  let lo = -12, hi = 12;
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    if (normalCdf(mid) < p) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/**
+ * What margin the MONEYLINE thinks the game will be won by.
+ *
+ * Baseball and hockey cannot end level, so the probability the home team wins
+ * is exactly the probability the margin is above zero. That single fact makes
+ * the moneyline invertible: given a spread of outcomes sigma wide, the mean
+ * that produces the observed win probability is sigma * Phi-inverse(p). No
+ * continuity correction, because the boundary at zero is where the symmetry
+ * actually sits — a pick-em moneyline returns a mean of exactly zero, which is
+ * the check that the correction would break.
+ *
+ * This exists because the run line carries no information in these sports. It
+ * is 1.5 whoever is playing. The moneyline is the market that actually moves,
+ * and it is also the deepest one, so it is the better thing to read.
+ */
+function marketMarginFromMoneyline({ homeML, awayML, sigma }) {
+  if (!Number.isFinite(sigma) || sigma <= 0) throw new Error('sigma must be positive');
+  const { probA: pHome, hold } = deVigTwoWay(homeML, awayML);
+  if (!Number.isFinite(pHome) || pHome <= 0 || pHome >= 1) {
+    throw new Error(`moneyline did not de-vig to a usable probability: ${pHome}`);
+  }
+  return { predictedMargin: sigma * normalInv(pHome), homeWinProb: pHome, hold };
+}
+
+/**
+ * Price both sides of a spread from a margin and a spread of outcomes.
+ *
+ * Returned prices are FAIR — no vig — so they are what the bet is worth, not
+ * what anyone would offer. Comparing an offered price against these is the
+ * whole point, and the offered price is expected to be worse; the question is
+ * by how much, and whether one side is worse by less than the other.
+ */
+function fairSpreadPrice({ predictedMargin, spread, sigma }) {
+  const homeProb = coverProbability({ predictedMargin, spread, sigma });
+  const awayProb = 1 - homeProb;
+  return {
+    homeProb,
+    awayProb,
+    homeFair: decimalToAmerican(1 / homeProb),
+    awayFair: decimalToAmerican(1 / awayProb),
+  };
+}
+
+/**
+ * Does the run line agree with the moneyline about the same game?
+ *
+ * Two markets on one scoreboard describe one distribution of results. Read the
+ * moneyline for where that distribution sits, and the run line has only one
+ * consistent price. When the offered price is better than that, the two markets
+ * disagree with each other and the cheaper one is worth taking — and this needs
+ * no forecast whatsoever, only that both prices refer to the same game. That is
+ * the one kind of edge available to somebody holding a single account.
+ *
+ * `edgePts` compares the fair probability against the RAW offered price, vig
+ * included, because the vig is paid. A positive number is what is left after
+ * paying it. `disagreementPts` compares the two markets after de-vigging both,
+ * which says whether they differ at all, separately from whether the difference
+ * survives the cost of betting.
+ *
+ * Everything depends on sigma being right, and a wrong sigma tips EVERY game
+ * the same way — see calibrateSigmaFromMarkets, and check the direction of the
+ * results before believing any of them.
+ */
+function crossMarketEdge({
+  homeML, awayML, spread, spreadHomePrice, spreadAwayPrice, sigma,
+} = {}) {
+  if (!Number.isFinite(spread)) return null;
+  if (!Number.isFinite(spreadHomePrice) || !Number.isFinite(spreadAwayPrice)) return null;
+
+  let anchor;
+  try {
+    anchor = marketMarginFromMoneyline({ homeML, awayML, sigma });
+  } catch (e) {
+    return null;
+  }
+
+  const fair = fairSpreadPrice({ predictedMargin: anchor.predictedMargin, spread, sigma });
+
+  const rawHome = americanToImpliedProb(spreadHomePrice);
+  const rawAway = americanToImpliedProb(spreadAwayPrice);
+  const devigged = removeVig([rawHome, rawAway]);
+
+  return {
+    predictedMargin: anchor.predictedMargin,
+    homeWinProb: anchor.homeWinProb,
+    fairHomeProb: fair.homeProb,
+    fairHomePrice: fair.homeFair,
+    fairAwayPrice: fair.awayFair,
+    // Percentage points left after the vig, per side.
+    homeEdgePts: +((fair.homeProb - rawHome) * 100).toFixed(2),
+    awayEdgePts: +((fair.awayProb - rawAway) * 100).toFixed(2),
+    // How far apart the two markets are once both are stripped of vig. Signed
+    // toward home: positive means the run line is cheaper on the home side than
+    // the moneyline says it should be.
+    disagreementPts: +((fair.homeProb - devigged[0]) * 100).toFixed(2),
+    spreadHold: +((rawHome + rawAway - 1) * 100).toFixed(2),
+  };
+}
+
+/**
+ * Find the sigma at which the two markets agree, across a slate.
+ *
+ * A single game gives two equations and two unknowns, so it can always be
+ * solved exactly and never disagrees with itself — which would make every game
+ * look fairly priced. Fitting ONE sigma across many games removes that freedom:
+ * the sigma that reconciles the slate as a whole is the market's own view of
+ * how spread out results are, and the games that still disagree afterwards are
+ * the ones worth looking at.
+ *
+ * Returns the fitted sigma along with the residual spread, because a fit whose
+ * residuals are all one sign is a fit that has gone wrong rather than a slate
+ * full of edges.
+ */
+function calibrateSigmaFromMarkets(games, { lo = 0.5, hi = 12, steps = 400 } = {}) {
+  const usable = (games || []).filter(g =>
+    Number.isFinite(g.spread) && Number.isFinite(g.spreadHomePrice) &&
+    Number.isFinite(g.spreadAwayPrice) && Number.isFinite(g.homeML) && Number.isFinite(g.awayML));
+  if (usable.length < 3) return null;
+
+  const medianOf = (xs) => {
+    const a = [...xs].sort((x, y) => x - y);
+    const m = a.length >> 1;
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  };
+
+  let best = null;
+  for (let i = 0; i <= steps; i++) {
+    const sigma = lo + (hi - lo) * (i / steps);
+    const resid = [];
+    for (const g of usable) {
+      const r = crossMarketEdge({ ...g, sigma });
+      if (r) resid.push(r.disagreementPts);
+    }
+    if (resid.length < 3) continue;
+    // Median absolute disagreement, so one badly priced game cannot drag the
+    // fit toward itself.
+    const score = medianOf(resid.map(Math.abs));
+    if (!best || score < best.score) {
+      best = { sigma, score, residuals: resid };
+    }
+  }
+  if (!best) return null;
+
+  const signed = best.residuals;
+  const positive = signed.filter(x => x > 0).length;
+  return {
+    sigma: +best.sigma.toFixed(3),
+    medianAbsDisagreementPts: +best.score.toFixed(3),
+    games: signed.length,
+    // If these are lopsided the fit is describing a bias, not a market.
+    leaningHome: positive,
+    leaningAway: signed.length - positive,
+    maxDisagreementPts: +Math.max(...signed.map(Math.abs)).toFixed(2),
+  };
+}
+
 // ----------------------------------------------------------------------------
 // The market anchor
 // ----------------------------------------------------------------------------
@@ -1431,6 +1613,11 @@ module.exports = {
   marginDistribution,
   coverProbability,
   overProbability,
+  normalInv,
+  marketMarginFromMoneyline,
+  fairSpreadPrice,
+  crossMarketEdge,
+  calibrateSigmaFromMarkets,
   blendWithMarket,
   edge,
   expectedValue,

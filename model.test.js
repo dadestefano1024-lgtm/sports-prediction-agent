@@ -1290,3 +1290,145 @@ test('bestBet refuses live games and missing data', () => {
   assert.equal(m.bestBet({ sport:'nfl' }).level, 'coinflip');
   assert.equal(m.bestBet({ sport:'nfl', predictedMargin: 5, marketSpread: null }).level, 'coinflip');
 });
+
+// ----------------------------------------------------------------------------
+// Cross-market pricing
+// ----------------------------------------------------------------------------
+
+test('normalInv matches the standard normal quantiles', () => {
+  // Textbook values, not captured output. If normalCdf ever regresses these
+  // fail rather than silently agreeing with the new wrong answer.
+  const cases = [[0.5, 0], [0.75, 0.674490], [0.9, 1.281552],
+                 [0.95, 1.644854], [0.975, 1.959964], [0.99, 2.326348],
+                 [0.25, -0.674490], [0.05, -1.644854]];
+  for (const [p, want] of cases) {
+    assert.ok(Math.abs(m.normalInv(p) - want) < 1e-4, `normalInv(${p}) = ${m.normalInv(p)}, want ${want}`);
+  }
+});
+
+test('normalInv round-trips through normalCdf', () => {
+  for (const p of [0.01, 0.2, 0.37, 0.5, 0.63, 0.8, 0.99]) {
+    assert.ok(Math.abs(m.normalCdf(m.normalInv(p)) - p) < 1e-6, `round trip failed at ${p}`);
+  }
+});
+
+test('normalInv refuses anything that is not a probability', () => {
+  for (const bad of [0, 1, -0.1, 1.1, NaN, null, undefined, 'half']) {
+    assert.throws(() => m.normalInv(bad), /probability/);
+  }
+});
+
+test('a pick-em moneyline implies a margin of exactly zero', () => {
+  // The check that the continuity correction is right to leave out. Baseball
+  // cannot end level, so the boundary sits at zero and two equal prices must
+  // give a mean of zero rather than half a run.
+  const r = m.marketMarginFromMoneyline({ homeML: -110, awayML: -110, sigma: 4.4 });
+  assert.ok(Math.abs(r.predictedMargin) < 1e-9, `got ${r.predictedMargin}`);
+  assert.ok(Math.abs(r.homeWinProb - 0.5) < 1e-9);
+  // -110 both ways is a 4.76% hold.
+  assert.ok(Math.abs(r.hold - 0.047619) < 1e-5, `hold ${r.hold}`);
+});
+
+test('moneyline-implied margin moves the right way and scales with sigma', () => {
+  const fav = m.marketMarginFromMoneyline({ homeML: -200, awayML: 170, sigma: 4.4 });
+  const dog = m.marketMarginFromMoneyline({ homeML: 170, awayML: -200, sigma: 4.4 });
+  assert.ok(fav.predictedMargin > 0, 'a favourite must project to win');
+  assert.ok(dog.predictedMargin < 0, 'an underdog must project to lose');
+  assert.ok(Math.abs(fav.predictedMargin + dog.predictedMargin) < 1e-9, 'mirror prices must mirror');
+
+  // A -160 home side in baseball. Hand-checkable: de-vigged that is 0.5963,
+  // normalInv(0.5963) is 0.2437, times 4.4 is 1.072 runs.
+  const mlb = m.marketMarginFromMoneyline({ homeML: -160, awayML: 140, sigma: 4.4 });
+  assert.ok(Math.abs(mlb.predictedMargin - 1.072) < 0.01, `got ${mlb.predictedMargin}`);
+
+  // Same prices, wider sport, bigger margin - the probability is unchanged and
+  // only the scale differs.
+  const wide = m.marketMarginFromMoneyline({ homeML: -160, awayML: 140, sigma: 13.5 });
+  assert.ok(Math.abs(wide.homeWinProb - mlb.homeWinProb) < 1e-12);
+  assert.ok(wide.predictedMargin > mlb.predictedMargin * 2.9);
+});
+
+test('fairSpreadPrice is a fair price - the two sides sum to one', () => {
+  const f = m.fairSpreadPrice({ predictedMargin: 1.1, spread: -1.5, sigma: 4.4 });
+  assert.ok(Math.abs(f.homeProb + f.awayProb - 1) < 1e-12);
+  // Laying 1.5 while only projected to win by 1.1 is against you.
+  assert.ok(f.homeProb < 0.5, `home cover prob ${f.homeProb}`);
+  // Fair prices carry no vig, so the favourite side is a plus number here.
+  assert.ok(f.homeFair > 0, `home fair ${f.homeFair}`);
+  assert.ok(f.awayFair < 0, `away fair ${f.awayFair}`);
+});
+
+test('crossMarketEdge finds nothing when the two markets agree', () => {
+  // Build a run line priced exactly off the moneyline, then add a normal hold
+  // to both sides. The de-vigged disagreement must be ~0, and neither side can
+  // show an edge once the vig is paid.
+  const sigma = 4.4;
+  const anchor = m.marketMarginFromMoneyline({ homeML: -160, awayML: 140, sigma });
+  const fair = m.fairSpreadPrice({ predictedMargin: anchor.predictedMargin, spread: -1.5, sigma });
+  // Shade both sides by the same factor to put a hold on.
+  const shade = (p) => m.decimalToAmerican(1 / (p * 1.024));
+  const r = m.crossMarketEdge({
+    homeML: -160, awayML: 140, spread: -1.5,
+    spreadHomePrice: shade(fair.homeProb), spreadAwayPrice: shade(fair.awayProb), sigma,
+  });
+  assert.ok(Math.abs(r.disagreementPts) < 0.5, `disagreement ${r.disagreementPts}`);
+  assert.ok(r.homeEdgePts < 0, `home edge ${r.homeEdgePts} should be negative after vig`);
+  assert.ok(r.awayEdgePts < 0, `away edge ${r.awayEdgePts} should be negative after vig`);
+});
+
+test('crossMarketEdge finds the cheap side when they disagree', () => {
+  const sigma = 4.4;
+  const anchor = m.marketMarginFromMoneyline({ homeML: -160, awayML: 140, sigma });
+  const fair = m.fairSpreadPrice({ predictedMargin: anchor.predictedMargin, spread: -1.5, sigma });
+  // Leave the away side alone and give the home side a much better price than
+  // the moneyline says it is worth.
+  const generous = m.decimalToAmerican(1 / (fair.homeProb * 0.85));
+  const r = m.crossMarketEdge({
+    homeML: -160, awayML: 140, spread: -1.5,
+    spreadHomePrice: generous, spreadAwayPrice: m.decimalToAmerican(1 / (fair.awayProb * 1.02)), sigma,
+  });
+  assert.ok(r.homeEdgePts > 5, `home edge ${r.homeEdgePts}`);
+  assert.ok(r.disagreementPts > 0, 'positive disagreement means the home side is the cheap one');
+  assert.ok(r.awayEdgePts < r.homeEdgePts);
+});
+
+test('crossMarketEdge returns null rather than guessing', () => {
+  const ok = { homeML: -160, awayML: 140, spread: -1.5, spreadHomePrice: 120, spreadAwayPrice: -145, sigma: 4.4 };
+  assert.ok(m.crossMarketEdge(ok));
+  assert.equal(m.crossMarketEdge({ ...ok, spread: null }), null);
+  assert.equal(m.crossMarketEdge({ ...ok, spreadHomePrice: null }), null);
+  assert.equal(m.crossMarketEdge({ ...ok, homeML: null }), null);
+  assert.equal(m.crossMarketEdge({ ...ok, awayML: undefined }), null);
+  assert.equal(m.crossMarketEdge(), null);
+});
+
+test('calibrateSigmaFromMarkets recovers the sigma a slate was built with', () => {
+  // Generate a slate that is internally consistent at sigma 4.0, then check the
+  // fit finds it. This is the test that matters: if the fit cannot recover a
+  // sigma it was handed, it cannot be trusted to find one in real prices.
+  const TRUE_SIGMA = 4.0;
+  const games = [];
+  for (const homeML of [-220, -170, -140, -115, 105, 130, 165, 210]) {
+    const awayML = homeML < 0 ? Math.round(-homeML * 0.88) : -Math.round(homeML * 1.14);
+    const anchor = m.marketMarginFromMoneyline({ homeML, awayML, sigma: TRUE_SIGMA });
+    const fair = m.fairSpreadPrice({ predictedMargin: anchor.predictedMargin, spread: -1.5, sigma: TRUE_SIGMA });
+    games.push({
+      homeML, awayML, spread: -1.5,
+      spreadHomePrice: m.decimalToAmerican(1 / (fair.homeProb * 1.024)),
+      spreadAwayPrice: m.decimalToAmerican(1 / (fair.awayProb * 1.024)),
+    });
+  }
+  const fit = m.calibrateSigmaFromMarkets(games);
+  assert.ok(fit, 'fit returned nothing');
+  assert.ok(Math.abs(fit.sigma - TRUE_SIGMA) < 0.2, `recovered ${fit.sigma}, wanted ${TRUE_SIGMA}`);
+  assert.ok(fit.medianAbsDisagreementPts < 0.3, `residual ${fit.medianAbsDisagreementPts}`);
+  assert.equal(fit.games, games.length);
+});
+
+test('calibrateSigmaFromMarkets needs a slate, not a game', () => {
+  assert.equal(m.calibrateSigmaFromMarkets([]), null);
+  assert.equal(m.calibrateSigmaFromMarkets(), null);
+  assert.equal(m.calibrateSigmaFromMarkets([
+    { homeML: -160, awayML: 140, spread: -1.5, spreadHomePrice: 120, spreadAwayPrice: -145 },
+  ]), null);
+});

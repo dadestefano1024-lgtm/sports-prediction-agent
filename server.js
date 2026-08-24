@@ -2155,11 +2155,17 @@ function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
   const myName = MY_BOOK.toLowerCase();
   const mySpread = spreadQuotes.find(q => (q.book || '').toLowerCase() === myName) || null;
   const myTotal = totalQuotes.find(q => (q.book || '').toLowerCase() === myName) || null;
+  // The moneyline from the SAME book. Pricing one market against another only
+  // means something when both come from the same shop — a fair price derived
+  // from book A's moneyline says nothing about book B's run line.
+  const myML = mlQuotes.find(q => (q.book || '').toLowerCase() === myName) || null;
 
   // Points better than consensus, per side. Positive means the book is offering
   // a better number than the market for someone backing that side.
-  const myBook = (mySpread || myTotal) ? {
+  const myBook = (mySpread || myTotal || myML) ? {
     name: MY_BOOK,
+    homeML: myML ? myML.homePrice : null,
+    awayML: myML ? myML.awayPrice : null,
     spread: mySpread ? mySpread.point : null,
     spreadHomePrice: mySpread ? mySpread.homePrice : null,
     spreadAwayPrice: mySpread ? mySpread.awayPrice : null,
@@ -3579,7 +3585,11 @@ app.get('/api/debug/sportsdata', async (req, res) => {
 app.get('/api/debug/shop/:sport', async (req, res) => {
   try {
     const oddsData = await fetchOdds(req.params.sport);
-    const out = (oddsData || []).slice(0, 4).map(g => ({
+    // Was four games, which is fine for eyeballing a payload and useless for
+    // fitting anything to it. The cap is now high enough to cover a full slate
+    // in any of these sports.
+    const limit = Math.min(Number(req.query.limit) || 60, 100);
+    const out = (oddsData || []).slice(0, limit).map(g => ({
       home: g.home_team,
       away: g.away_team,
       commence: g.commence_time,
@@ -3589,6 +3599,9 @@ app.get('/api/debug/shop/:sport', async (req, res) => {
           .map(o => `${o.name} ${o.point} @ ${o.price}`),
         totals: (b.markets?.find(m => m.key === 'totals')?.outcomes || [])
           .map(o => `${o.name} ${o.point} @ ${o.price}`),
+        // Needed to price one market against the other at the same book.
+        moneyline: (b.markets?.find(m => m.key === 'h2h')?.outcomes || [])
+          .map(o => `${o.name} @ ${o.price}`),
       })),
       resolved: matchOddsToGame(oddsData, g.home_team, g.away_team),
     }));
