@@ -2928,17 +2928,32 @@ app.get('/api/pool/:sport', async (req, res) => {
       cachedGet(espnScoreboardUrl(path, 7), { timeout: 10000 }),
       fetchOdds(sport).catch(() => []),
     ]);
-    const scheduled = ((sb.data && sb.data.events) || []).filter(e =>
+    const pre = (payload) => ((payload && payload.events) || []).filter(e =>
       e.competitions?.[0]?.status?.type?.state === 'pre');
+    const regularOnly = (list) => list.filter(e => e.season && e.season.type === 2);
 
-    // Regular season only. The pool is a weekly regular-season pick-em, and the
-    // seven-day window in late August is full of preseason games — the tab was
-    // offering Steelers at Bills on 27 August, a game nobody's pool will set a
-    // line for. Filtered per event, because seasontype as a query parameter
-    // does not filter a date range. Falls back to whatever is scheduled if no
-    // regular-season game is in range, rather than showing an empty tab.
-    const regular = scheduled.filter(e => e.season && e.season.type === 2);
-    const events = regular.length ? regular : scheduled;
+    // The pool is a weekly REGULAR-SEASON pick-em, so preseason is not a
+    // fallback here — it is the wrong answer. In late August the seven-day
+    // window contains nothing but preseason, and the tab was offering Steelers
+    // at Bills on 27 August for a pool that will never set a line on it.
+    //
+    // So when the near window has no regular-season game, look further out for
+    // the first week that does, the way the prediction tabs do. Filtering has
+    // to happen per event because seasontype as a query parameter does not
+    // filter a date range.
+    let events = regularOnly(pre(sb.data));
+    if (!events.length) {
+      const far = await cachedGet(espnScoreboardUrl(path, 45), { timeout: 12000 });
+      const upcoming = regularOnly(pre(far.data))
+        .sort((a, b) => new Date(a.date) - new Date(b.date));
+      if (upcoming.length) {
+        // One week of it, not six. Five days from the first game covers a
+        // football week end to end.
+        const cutoff = new Date(upcoming[0].date).getTime() + 5 * 24 * 60 * 60 * 1000;
+        events = upcoming.filter(e => new Date(e.date).getTime() <= cutoff);
+        console.log(`[POOL] ${sport}: no regular-season game this week, showing ${events.length} upcoming`);
+      }
+    }
 
     const games = events.map(event => {
       const comp = event.competitions[0];
@@ -3017,12 +3032,21 @@ app.post('/api/pool/:sport', async (req, res) => {
       cachedGet(espnScoreboardUrl(path, 7), { timeout: 10000 }),
       fetchOdds(sport).catch(() => []),
     ]);
-    const scheduledPost = ((sb.data && sb.data.events) || []).filter(e =>
+    // Same window logic as the GET, so the two halves of the tab cannot
+    // disagree about which games are on the card. Scoring a line for a game the
+    // table never offered would be worse than showing nothing.
+    const preP = (payload) => ((payload && payload.events) || []).filter(e =>
       e.competitions?.[0]?.status?.type?.state === 'pre');
-    // Same regular-season filter as the GET, so the two halves of the tab
-    // cannot disagree about which games are on the card.
-    const regularPost = scheduledPost.filter(e => e.season && e.season.type === 2);
-    const events = regularPost.length ? regularPost : scheduledPost;
+    const regularP = (list) => list.filter(e => e.season && e.season.type === 2);
+    let events = regularP(preP(sb.data));
+    if (!events.length) {
+      const far = await cachedGet(espnScoreboardUrl(path, 45), { timeout: 12000 });
+      const upcoming = regularP(preP(far.data)).sort((a, b) => new Date(a.date) - new Date(b.date));
+      if (upcoming.length) {
+        const cutoff = new Date(upcoming[0].date).getTime() + 5 * 24 * 60 * 60 * 1000;
+        events = upcoming.filter(e => new Date(e.date).getTime() <= cutoff);
+      }
+    }
 
     const candidates = [];
     const games = [];
