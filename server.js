@@ -3012,6 +3012,9 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
           ? projection.predictedTotal : null,
         bookTotal: (odds.myBook && Number.isFinite(Number(odds.myBook.total)))
           ? Number(odds.myBook.total) : toNum(odds.total),
+        // The consensus number, so the verdict can price the gap between what
+        // this book offers and what everyone else does.
+        marketTotal: toNum(odds.total),
         situationFlags: g.situationFlags || [],
         inProgress: !!g.inProgress,
         homeTeam: g.homeTeam,

@@ -234,6 +234,20 @@
     .verdict-pick { font-weight: 800; font-size: 15px; color: #c9d1d9; }
     .verdict-caveat { font-size: 11px; color: #8b949e; font-style: italic; margin-top: 4px; }
     .verdict-reason { font-size: 12px; color: #8b949e; }
+    .why { margin-top: 8px; border-top: 1px solid #21262d; padding-top: 6px; }
+    .why > summary { cursor: pointer; font-size: 11px; color: #58a6ff;
+                     list-style: none; user-select: none; }
+    .why > summary::-webkit-details-marker { display: none; }
+    .why > summary::before { content: '\25B8'; display: inline-block;
+                             width: 12px; transition: transform 0.12s; }
+    .why[open] > summary::before { transform: rotate(90deg); }
+    .why-row { display: flex; gap: 8px; margin-top: 5px; font-size: 11px;
+               line-height: 1.45; }
+    .why-label { flex: 0 0 96px; color: #6e7681; text-transform: uppercase;
+                 letter-spacing: 0.4px; font-size: 10px; padding-top: 1px; }
+    .why-text { color: #a8b1ba; }
+    .why-row.why-note .why-text { color: #d29922; }
+    .why-row.why-end .why-text { color: #8b949e; font-style: italic; }
     .assessment {
       font-size: 13px; color: #c9d1d9; line-height: 1.5;
       padding: 10px 12px; margin-bottom: 10px;
@@ -1074,6 +1088,7 @@
                   ${r.pick ? `<span class="verdict-pick">${r.pick}</span>` : ''}
                   <span class="verdict-reason">${r.reason}</span>
                   ${r.caveat ? `<div class="verdict-caveat">${r.caveat}</div>` : ''}
+                  ${basisHTML(r)}
                   ${flags}
                   ${pf}
                 </div>`;
@@ -1167,6 +1182,24 @@
       const away = document.getElementById('pa-' + id);
       if (away) away.dataset.touched = '1';
       persistPoolLines();
+    }
+
+    // The reasoning behind a verdict, folded away until asked for.
+    //
+    // Collapsed by default on purpose. The one-line verdict is what gets read
+    // on a Sunday morning and burying it under six rows of working would make
+    // the card worse, not better. But "this number is a point better than the
+    // market" is an assertion until the working is available, and it was not
+    // available anywhere — so it sits one click away rather than nowhere.
+    function basisHTML(r) {
+      if (!r || !r.basis || !r.basis.length) return '';
+      const rows = r.basis.map(b => {
+        const cls = b.label === 'the bottom line' ? ' why-end'
+                  : (b.label === 'but note' || b.label === 'points the other way') ? ' why-note' : '';
+        return `<div class="why-row${cls}"><span class="why-label">${b.label}</span>` +
+               `<span class="why-text">${b.text}</span></div>`;
+      }).join('');
+      return `<details class="why"><summary>why this is the best bet</summary>${rows}</details>`;
     }
 
     function setNflWeek(w) {

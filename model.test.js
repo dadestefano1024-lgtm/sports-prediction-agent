@@ -1895,3 +1895,84 @@ test('a price edge says when the projection points the other way', () => {
   assert.equal(m.bestBet({ sport: 'nfl', bookValuePts: 1, bookPick: 'Over 48.5',
                            bookSide: 'over' }).caveat, undefined);
 });
+
+// ---------------------------------------------------------------------------
+// What a better number is actually worth
+// ---------------------------------------------------------------------------
+test('a half point across the 3 is worth what games say it is worth', () => {
+  // 1,112 games lined at exactly 3 finished on 3 9.2% of the time. The model
+  // has to reproduce that, because the verdict now prints the figure.
+  const o = m.coverOutcomes({ predictedMargin: 3, spread: -3, sigma: 10.82, sport: 'nfl' });
+  assert.ok(Math.abs(o.push - 0.092) < 0.006,
+    `lined at 3, lands on 3: model ${(o.push * 100).toFixed(1)}%, counted 9.2%`);
+});
+
+test('a half point across the 7 matches the counted rate too', () => {
+  const o = m.coverOutcomes({ predictedMargin: 7, spread: -7, sigma: 10.82, sport: 'nfl' });
+  assert.ok(Math.abs(o.push - 0.064) < 0.006,
+    `lined at 7, lands on 7: model ${(o.push * 100).toFixed(1)}%, counted 6.4%`);
+});
+
+test('the same point is worth far more across a key number than away from one', () => {
+  // The whole reason for showing the figure: "a point better" is not one thing.
+  const key = m.lineValueProb({ sport: 'nfl', side: 'home', marketNumber: -3.5, bookNumber: -2.5 });
+  const away = m.lineValueProb({ sport: 'nfl', side: 'away', marketNumber: -11, bookNumber: -12 });
+  assert.ok(key.gain > 0.08, `crossing the 3 should buy 8+ points, got ${(key.gain * 100).toFixed(1)}`);
+  assert.ok(away.gain < 0.05, `away from a key number should buy under 5, got ${(away.gain * 100).toFixed(1)}`);
+  assert.ok(key.gain > away.gain * 2, 'the key number must be worth clearly more');
+});
+
+test('line value is priced at the market view, not the app projection', () => {
+  // A projection that disagrees violently must not change what the number buys,
+  // because the price edge does not depend on the forecast being any good.
+  const a = m.lineValueProb({ sport: 'nfl', side: 'home', marketNumber: -3.5, bookNumber: -2.5 });
+  const b = m.lineValueProb({ sport: 'nfl', side: 'home', marketNumber: -3.5, bookNumber: -2.5 });
+  assert.equal(a.gain, b.gain);
+  assert.ok(a.gain > 0, 'the backed side must gain from the better number');
+});
+
+test('lineValueProb returns null rather than guessing when a number is missing', () => {
+  assert.equal(m.lineValueProb({ sport: 'nfl', side: 'home', marketNumber: -3.5, bookNumber: null }), null);
+  assert.equal(m.lineValueProb({ sport: 'nfl', side: 'nonsense', marketNumber: -3.5, bookNumber: -2.5 }), null);
+});
+
+test('a price verdict carries its working', () => {
+  const r = m.bestBet({ sport: 'nfl', bookValuePts: 1, bookSide: 'home', bookPick: 'Chiefs -2.5',
+    marketSpread: -3.5, bookSpread: -2.5, predictedMargin: 5, situationFlags: [],
+    homeTeam: 'Chiefs', awayTeam: 'Ravens' });
+  assert.equal(r.level, 'edge');
+  assert.ok(Array.isArray(r.basis) && r.basis.length >= 3, 'the verdict should show its working');
+  const labels = r.basis.map(b => b.label);
+  assert.ok(labels.includes('the number'), 'it must say what is on offer');
+  assert.ok(labels.includes('what it buys'), 'it must price the difference');
+  assert.ok(labels.includes('the bottom line'), 'it must say this is a price, not a forecast');
+  const buys = r.basis.find(b => b.label === 'what it buys').text;
+  assert.match(buys, /9\.\d points of win probability/, `expected the 3-crossing value, got: ${buys}`);
+});
+
+test('the working reports a check that found nothing, rather than staying quiet', () => {
+  const r = m.bestBet({ sport: 'nfl', bookValuePts: 1, bookSide: 'home', bookPick: 'Chiefs -2.5',
+    marketSpread: -3.5, bookSpread: -2.5, predictedMargin: 5, situationFlags: [],
+    homeTeam: 'Chiefs', awayTeam: 'Ravens' });
+  assert.ok(r.basis.some(b => /no injury, rest or travel flag/.test(b.text)),
+    'an empty check is evidence and should be stated');
+});
+
+test('the working warns that a push is a loss in the pool', () => {
+  const r = m.bestBet({ sport: 'nfl', bookValuePts: 1, bookSide: 'home', bookPick: 'Bills -3',
+    marketSpread: -4, bookSpread: -3, predictedMargin: 4, situationFlags: [],
+    homeTeam: 'Bills', awayTeam: 'Jets' });
+  const push = r.basis.find(b => b.label === 'lands exactly there');
+  assert.ok(push, 'a whole number on the 3 must flag its push rate');
+  assert.match(push.text, /loss in the Pick 6/);
+});
+
+test('the working never repeats the caveat printed above it', () => {
+  // The same sentence was rendering twice on the same card.
+  const r = m.bestBet({ sport: 'nfl', bookValuePts: 1, bookSide: 'over', bookPick: 'Over 47.5',
+    marketTotal: 48.5, bookTotal: 47.5, predictedTotal: 44, situationFlags: [],
+    homeTeam: 'Saints', awayTeam: 'Lions' });
+  assert.ok(r.caveat, 'a contradicted total should carry a caveat');
+  assert.equal(r.basis.filter(b => b.text === r.caveat).length, 0,
+    'the caveat is shown above the working and must not repeat inside it');
+});

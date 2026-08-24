@@ -1187,15 +1187,33 @@ function plausibleSpread(sport, value) {
  *
  * Anything not listed weighs 1, i.e. the smooth curve is left alone.
  */
+// Fitted, not chosen. The values at 3, 4, 6 and 7 were hand-set round numbers
+// and the verdict now PRINTS what a half point across them is worth, which
+// turned a rough table into a wrong published figure: it priced the half point
+// across the 3 at 7.0 points when 1,112 games lined at exactly 3 landed on 3
+// 9.2% of the time.
+//
+// Each of those four is solved against its CONDITIONAL rate — how often a game
+// lined at k finishes on k — rather than against the pooled distribution. The
+// pooled fit was tried and rejected: dividing every margin by a smooth curve
+// with all lines mixed together wanted a weight of 2.32 at a margin of 24, on a
+// handful of games. Numbers with fewer than 300 games behind them are left at
+// their hand-set values, 10 and 14 among them.
+//
+//   key   games   counted   was    now
+//     3    1112      9.2%   7.0%   9.3%
+//     7     469      6.4%   6.3%   6.3%
+//     6     338      3.8%   4.1%   3.8%
+//     4     324      2.5%   3.7%   2.5%
 const NFL_KEY_NUMBER_WEIGHTS = {
   0: 0.45,   // ties are rare and only possible after overtime
   1: 0.90,
   2: 0.90,
-  3: 2.05,   // by far the most common margin: one field goal
-  4: 1.10,
+  3: 2.834,  // by far the most common margin: one field goal
+  4: 0.709,
   5: 0.85,
-  6: 1.20,
-  7: 1.60,   // touchdown and extra point
+  6: 1.122,
+  7: 1.897,  // touchdown and extra point
   8: 0.90,
   9: 0.85,
   10: 1.25,  // touchdown plus field goal
@@ -2129,10 +2147,51 @@ function situationFlags({
  * situation flag points the same way, or when it disagrees with the market by
  * more than a field goal, which is at least unusual enough to notice.
  */
+/**
+ * What a difference between two numbers is actually worth, in win probability.
+ *
+ * The verdict has been able to say "this number is a point better" for a while
+ * and that is the least interesting true thing about it. A point is worth about
+ * three and a half points of win probability at a spread of 3 and barely two at
+ * a spread of 12, and the reader cannot be expected to carry that table around.
+ *
+ * Priced at the MARKET's view of the game rather than this app's, deliberately.
+ * The market number is the best estimate of the margin available here — the
+ * projection has been measured losing to it on both spreads and totals — so the
+ * question "what does moving from -3.5 to -2.5 buy" is answered by evaluating
+ * both numbers against a game expected to land where the market says. Pricing
+ * it with our own projection would let a forecast that loses to the market
+ * inflate or deflate a price fact that stands without it.
+ *
+ * Uses the counted margin distribution, so the 3 and the 7 cost what they
+ * actually cost rather than what a bell curve imagines.
+ */
+function lineValueProb({ sport, market = 'spread', side, marketNumber, bookNumber } = {}) {
+  if (!Number.isFinite(marketNumber) || !Number.isFinite(bookNumber)) return null;
+  const cfg = sportConfig(sport);
+  if (market === 'total') {
+    if (side !== 'over' && side !== 'under') return null;
+    const at = (line) => {
+      const o = totalOutcomes({ predictedTotal: marketNumber, line, sigma: cfg.totalSigma });
+      return { p: side === 'over' ? o.over : o.under, push: o.push };
+    };
+    const book = at(bookNumber), mkt = at(marketNumber);
+    return { gain: book.p - mkt.p, bookProb: book.p, marketProb: mkt.p, push: book.push };
+  }
+  if (side !== 'home' && side !== 'away') return null;
+  const at = (spread) => {
+    const o = coverOutcomes({ predictedMargin: -marketNumber, spread,
+                              sigma: cfg.sigma, sport });
+    return { p: side === 'home' ? o.win : o.loss, push: o.push };
+  };
+  const book = at(bookNumber), mkt = at(marketNumber);
+  return { gain: book.p - mkt.p, bookProb: book.p, marketProb: mkt.p, push: book.push };
+}
+
 function bestBet({
   sport, bookValuePts = 0, bookSide = null, bookPick = null,
   predictedMargin = null, marketSpread = null, bookSpread = null,
-  predictedTotal = null, bookTotal = null,
+  predictedTotal = null, bookTotal = null, marketTotal = null,
   situationFlags = [], inProgress = false,
   homeTeam = 'Home', awayTeam = 'Away',
   runLine = null,
@@ -2187,17 +2246,102 @@ function bestBet({
            'so it is not a reason to pass on a better number';
   })();
 
+  // The working, not just the answer.
+  //
+  // "This number is a point better than the market" is true and it is the least
+  // useful true thing available. It does not say what a point is worth, whether
+  // it crosses a number games actually land on, or what else was looked at and
+  // found nothing. All of that is measured already and was simply not being
+  // shown, which left a verdict that reads like an assertion.
+  //
+  // Every line below is either a number off the board or a figure from a
+  // counted table, and where something was checked and came back empty it says
+  // so — a check that found nothing is evidence, and hiding it makes the case
+  // look thinner than it is.
+  const basis = (() => {
+    if (!bookPick) return null;
+    const rows = [];
+    const isTotal = /^(Over|Under)/i.test(bookPick);
+    const pct = (x) => `${(x * 100).toFixed(1)}%`;
+
+    const val = isTotal
+      ? lineValueProb({ sport, market: 'total', side: /^Over/i.test(bookPick) ? 'over' : 'under',
+                        marketNumber: marketTotal, bookNumber: bookTotal })
+      : lineValueProb({ sport, market: 'spread', side: bookSide,
+                        marketNumber: marketSpread, bookNumber: bookSpread });
+
+    // 1. What is on offer, against what everyone else is offering.
+    if (isTotal && Number.isFinite(bookTotal) && Number.isFinite(marketTotal)) {
+      rows.push({ label: 'the number', text:
+        `your book has ${bookTotal}, the rest of the market is at ${marketTotal}` });
+    } else if (!isTotal && Number.isFinite(bookSpread) && Number.isFinite(marketSpread)) {
+      const sgn = (n) => `${n > 0 ? '+' : ''}${n}`;
+      const mine = bookSide === 'away' ? -bookSpread : bookSpread;
+      const theirs = bookSide === 'away' ? -marketSpread : marketSpread;
+      rows.push({ label: 'the number', text:
+        `your book has ${sgn(mine)}, the rest of the market is at ${sgn(theirs)}` });
+    }
+
+    // 2. What that difference actually buys. The point of the whole exercise:
+    //    a point is worth about three and a half at a spread of 3 and barely
+    //    two at 12, and nobody carries that table in their head.
+    if (val && val.gain > 0) {
+      rows.push({ label: 'what it buys', text:
+        `${(val.gain * 100).toFixed(1)} points of win probability — ${pct(val.marketProb)} at the ` +
+        `market number, ${pct(val.bookProb)} at yours` +
+        (DISCRETE_MARGIN_SPORTS.has(String(sport).toLowerCase()) && !isTotal
+          ? ', priced on counted game margins rather than a bell curve' : '') });
+    }
+
+    // 3. Whether it lands on a number games actually finish on. Worth saying in
+    //    both directions, because a push is a refund at the book and a LOSS in
+    //    the pool, and the same half point means opposite things across the two.
+    if (val && val.push >= 0.03) {
+      rows.push({ label: 'lands exactly there', text:
+        `${pct(val.push)} of games finish on that number — a refund at your book, ` +
+        'but a loss in the Pick 6' });
+    }
+
+    // 4. What was checked and came back with nothing to add.
+    if (situationFlags && situationFlags.length) {
+      for (const f of situationFlags) {
+        rows.push({ label: 'but note', text: f.note });
+      }
+    } else {
+      rows.push({ label: 'checked', text: 'no injury, rest or travel flag on either side' });
+    }
+
+    // Deliberately NOT repeated here when it disagrees. The same sentence was
+    // printing twice on the same card — once as the caveat above, which is
+    // visible without expanding anything, and again inside the working. The
+    // caveat is the right home for it: a verdict that contradicts its own
+    // projection has to say so before it is clicked, not after.
+    if (!projectionObjects
+        && (isTotal ? Number.isFinite(predictedTotal) : Number.isFinite(predictedMargin))) {
+      rows.push({ label: 'checked', text: 'the projection agrees, for what little that is worth — ' +
+        'it loses to the market, so it is corroboration and not a reason' });
+    }
+
+    rows.push({ label: 'the bottom line', text:
+      'this is an edge on the PRICE. It does not say who wins — it says you are ' +
+      'getting a number the rest of the market is not offering' });
+
+    return rows;
+  })();
+
   if (bookValuePts >= 1 && bookPick) {
     return { level: 'edge', label: 'Best bet', pick: bookPick, side: bookSide,
              reason: `that number is ${bookValuePts} ${unit}${bookValuePts === 1 ? '' : 's'} better here ` +
                      'than the rest of the market — a fact about the price, not a forecast',
-             ...(projectionObjects ? { caveat: projectionObjects } : {}) };
+             ...(projectionObjects ? { caveat: projectionObjects } : {}),
+             ...(basis ? { basis } : {}) };
   }
   if (bookValuePts >= 0.5 && bookPick) {
     return { level: 'slight', label: 'Slight edge', pick: bookPick, side: bookSide,
              reason: `that number is half a ${unit} better here than the rest of the market — ` +
                      'a fact about the price, not a forecast',
-             ...(projectionObjects ? { caveat: projectionObjects } : {}) };
+             ...(projectionObjects ? { caveat: projectionObjects } : {}),
+             ...(basis ? { basis } : {}) };
   }
 
   // --------------------------------------------------------------------
@@ -2389,6 +2533,7 @@ module.exports = {
   marginPmf,
   totalPmf,
   coverOutcomes,
+  lineValueProb,
   totalOutcomes,
   opponentAdjustedRatings,
   projectFromRatings,
