@@ -1664,16 +1664,56 @@ function classifyInjuryStatus(status) {
 
 const injuryRank = { out: 0, doubtful: 1, questionable: 2 };
 
+// ESPN answers this endpoint with a 403 when the request looks automated, and
+// a bare "Mozilla/5.0" is about as automated as a User-Agent gets. Its
+// scoreboard on the SAME host does not care, which is why this only showed up
+// on one endpoint and only in production — a laptop and a datacenter get
+// treated differently, so it worked locally and returned 403 twenty times a
+// slate on Render.
+//
+// A complete, ordinary browser header set costs nothing and is what a browser
+// would actually send.
+const BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+                '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Referer': 'https://www.espn.com/',
+  'Origin': 'https://www.espn.com',
+  'Sec-Fetch-Dest': 'empty',
+  'Sec-Fetch-Mode': 'cors',
+  'Sec-Fetch-Site': 'same-site',
+};
+
+// One attempt per league per window, successful or not.
+//
+// cachedGet only remembers successes, so a failing endpoint was re-requested
+// once per team: the 403 above appeared twenty times for a ten-game card, all
+// of them the same doomed call. Remembering the failure too turns that back
+// into one attempt, which matters more when something is broken than when it
+// is working.
+const injuryCache = {};
+const INJURY_CACHE_TTL_MS = 10 * 60 * 1000;
+
 /** Every team's injuries for a league, keyed by normalised team name. */
 async function fetchLeagueInjuries(sport) {
   const path = INJURY_PATHS[sport];
   if (!path) return new Map();
   const key = (name) => String(name || '').toLowerCase().replace(/[^a-z]/g, '');
 
+  const cached = injuryCache[sport];
+  if (cached && (Date.now() - cached.timestamp) < INJURY_CACHE_TTL_MS) {
+    return cached.map;
+  }
+  const remember = (map, error) => {
+    injuryCache[sport] = { timestamp: Date.now(), map, error: error || null };
+    return map;
+  };
+
   try {
     const res = await cachedGet(
       `https://site.api.espn.com/apis/site/v2/sports/${path}/injuries`,
-      { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+      { timeout: 12000, headers: BROWSER_HEADERS });
     const teams = (res.data && res.data.injuries) || [];
     const out = new Map();
 
@@ -1704,10 +1744,12 @@ async function fetchLeagueInjuries(sport) {
     }
     console.log(`[INJURIES] ${sport}: ${teams.length} teams, ` +
       `${[...out.values()].reduce((n, e) => n + e.length, 0)} entries`);
-    return out;
+    return remember(out);
   } catch (err) {
-    console.error(`[INJURIES] ${sport} fetch failed:`, err.message);
-    return new Map();
+    const status = err.response ? err.response.status : null;
+    console.error(`[INJURIES] ${sport} fetch failed:`, status || '', err.message,
+      '— not retrying for 10 minutes');
+    return remember(new Map(), `${status || 'error'}: ${err.message}`);
   }
 }
 
@@ -1728,7 +1770,10 @@ async function fetchInjuries(teamFullName, sport) {
   for (const [name, entries] of league) {
     if (name.endsWith(want) || want.endsWith(name)) return entries;
   }
-  console.log(`[INJURIES] no team matching "${teamFullName}" in ${sport}`);
+  // Only worth saying when the league fetch actually worked; if it failed, the
+  // failure has already been logged once and thirty "no team matching" lines
+  // after it are noise.
+  if (league.size) console.log(`[INJURIES] no team matching "${teamFullName}" in ${sport}`);
   return [];
 }
 
@@ -3654,6 +3699,33 @@ app.get('/api/debug/sportsdata', async (req, res) => {
 
 // Dump the raw per-book quotes behind a matched game, so a surprising spread
 // or total can be traced to the feed instead of guessed at.
+// Whether the injury feed is actually answering, and what it said if not.
+// ESPN treats a datacenter differently from a laptop, so "works on my machine"
+// is not evidence about this one.
+app.get('/api/debug/injuries/:sport', async (req, res) => {
+  try {
+    const sport = req.params.sport;
+    const map = await fetchLeagueInjuries(sport);
+    const cached = injuryCache[sport] || {};
+    const teams = [...map.entries()].map(([name, list]) => ({
+      team: name,
+      total: list.length,
+      out: list.filter(i => i.level === 'out' && !i.longTerm).length,
+      longTerm: list.filter(i => i.longTerm).length,
+    }));
+    res.json({
+      sport,
+      ok: map.size > 0,
+      error: cached.error || null,
+      teams: map.size,
+      entries: teams.reduce((n, t) => n + t.total, 0),
+      sample: teams.slice(0, 4),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/debug/shop/:sport', async (req, res) => {
   try {
     const oddsData = await fetchOdds(req.params.sport);
