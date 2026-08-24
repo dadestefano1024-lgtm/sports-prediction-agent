@@ -1607,30 +1607,89 @@ function bestOffer({ quotes, probFor, trust = 0.25, kellyFraction = 0.25 }) {
  * inventing a second way to compute a probability.
  *
  * Both spreads are HOME spreads, matching the convention used everywhere else.
+ *
+ * `poolAwaySpread` is the AWAY side's own number, and it exists because a pool
+ * does not have to post a two-sided line at all. On a tight matchup this one
+ * posts -2 against -2: both teams lay two points, there is no plus money, and
+ * whichever side is picked has to win by three.
+ *
+ * That is not a spread, and pricing it as one is wrong in a way that flatters
+ * it. A normal line has the two sides as complements, so somebody always wins
+ * and the probabilities add to one. Here they do not: if the game lands inside
+ * two points either way, BOTH picks lose. That dead zone is the pool's edge
+ * over its players, and it is not small — around one NFL game in nine finishes
+ * inside two points.
+ *
+ * So the two sides are priced independently and their probabilities are left
+ * unconditional. A -2/-2 game returns something like 44% and 44% with 12%
+ * belonging to neither, rather than the 50/50 the old arithmetic produced by
+ * assuming away.
+ *
+ * When the away number is the mirror of the home one, or is not supplied, this
+ * reduces exactly to the two-sided case.
  */
-function poolEdge({ sport, poolSpread, marketSpread, poolTotal, marketTotal,
+function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
+                    poolTotal, marketTotal,
                     homeTeam = 'Home', awayTeam = 'Away' }) {
   const cfg = sportConfig(sport);
   const out = { spread: null, total: null };
   const sign = (n) => `${n > 0 ? '+' : ''}${n}`;
 
   if (Number.isFinite(poolSpread) && Number.isFinite(marketSpread)) {
+    // Absent an away number, the pool is two-sided and it mirrors the home one.
+    const awayLine = Number.isFinite(poolAwaySpread) ? poolAwaySpread : -poolSpread;
+
     // The market expects the home side to win by -marketSpread.
-    const o = coverOutcomes({
-      predictedMargin: -marketSpread, spread: poolSpread, sigma: cfg.sigma, sport,
+    const expected = -marketSpread;
+
+    // Home covers its own number when margin + poolSpread > 0.
+    const h = coverOutcomes({
+      predictedMargin: expected, spread: poolSpread, sigma: cfg.sigma, sport,
     });
-    const resolved = o.win + o.loss;
-    const homeProb = resolved > 0 ? o.win / resolved : 0.5;
-    const backHome = homeProb >= 0.5;
+    // Away covers ITS number when margin < awayLine, which is the losing side
+    // of a home line set at -awayLine.
+    const a = coverOutcomes({
+      predictedMargin: expected, spread: -awayLine, sigma: cfg.sigma, sport,
+    });
+
+    const homeProb = h.win;
+    const awayProb = a.loss;
+    // Whatever belongs to neither side: pushes on a two-sided line, or the gap
+    // between the two numbers when the pool lays points both ways.
+    const dead = Math.max(0, 1 - homeProb - awayProb);
+    const twoSided = Math.abs(awayLine + poolSpread) < 1e-9;
+
+    const backHome = homeProb >= awayProb;
     out.spread = {
       side: backHome ? 'home' : 'away',
-      pick: backHome ? `${homeTeam} ${sign(poolSpread)}` : `${awayTeam} ${sign(-poolSpread)}`,
-      poolLine: backHome ? poolSpread : -poolSpread,
+      pick: backHome ? `${homeTeam} ${sign(poolSpread)}` : `${awayTeam} ${sign(awayLine)}`,
+      poolLine: backHome ? poolSpread : awayLine,
       marketLine: backHome ? marketSpread : -marketSpread,
-      // How many points of stale value the pool line is giving away.
-      gap: +Math.abs(poolSpread - marketSpread).toFixed(2),
-      winProb: +(backHome ? homeProb : 1 - homeProb).toFixed(4),
-      pushProb: +o.push.toFixed(4),
+      // How many points of stale value the pool number gives away against the
+      // market. Measured on the side actually being picked.
+      gap: +Math.abs((backHome ? poolSpread : awayLine) - (backHome ? marketSpread : -marketSpread)).toFixed(2),
+      // Unconditional: the chance this pick wins, full stop. The old code
+      // reported win/(win+loss), which quietly assumes a push refunds the
+      // stake. Plenty of pools score a push as a loss, and the both-lay format
+      // has no push at all — it just has a range where nobody wins — so the
+      // unconditional number is the one that is true regardless of the rules.
+      winProb: +(backHome ? homeProb : awayProb).toFixed(4),
+      // The same figure for a pool that voids pushes, so both rule sets are
+      // covered without either being assumed. Identical on a half-point line.
+      winProbIfPushVoid: +(() => {
+        const w = backHome ? homeProb : awayProb;
+        const l = backHome ? awayProb : homeProb;
+        return w + l > 0 ? w / (w + l) : 0.5;
+      })().toFixed(4),
+      otherSideProb: +(backHome ? awayProb : homeProb).toFixed(4),
+      // On a two-sided line this is the push. When the pool lays points both
+      // ways it is the range where neither pick wins, which is much bigger and
+      // is the thing worth seeing.
+      pushProb: +(twoSided ? h.push : dead).toFixed(4),
+      deadProb: +dead.toFixed(4),
+      bothLay: !twoSided,
+      homeLine: poolSpread,
+      awayLine,
     };
   }
 

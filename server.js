@@ -1606,92 +1606,130 @@ async function fetchNHLGoalieMap() {
 }
 
 // ============================================================================
-// INJURY SCRAPER (ESPN)
+// INJURIES (ESPN JSON)
 // ============================================================================
-// FIX: Original used team nicknames like "Celtics" but ESPN's injury page
-// groups players under full names like "Boston Celtics". The nickname-only
-// regex would sometimes match the wrong element or miss the team entirely.
-// Now we accept and search for the FULL team name passed in from the scoreboard.
+// This used to fetch ESPN's public injuries PAGE and pattern-match the HTML:
+// find the team name somewhere in the markup, take everything up to the next
+// "ResponsiveTable", and read <tr> rows out of it. It returned nothing at all
+// for baseball — every MLB game came back with an empty report on both sides —
+// and it was one layout change away from doing the same to the other three.
+//
+// ESPN publishes the same data as JSON, one request per league covering every
+// team, which is both correct and cheaper than a scrape per team: a ten-game
+// card went from twenty page fetches to one.
+//
+//   site.api.espn.com/apis/site/v2/sports/<path>/injuries
+//
+// The payload also explains why the report felt cluttered. Baseball lists 290
+// entries league-wide, twelve to fourteen per team, and most are 60-day IL —
+// players who have been out for months and are in every price already. Those
+// are kept but marked long-term and sorted last, so what is actually news sits
+// at the top.
 
-async function fetchInjuries(teamFullName, sport) {
+const INJURY_PATHS = {
+  nfl: 'football/nfl',
+  nba: 'basketball/nba',
+  nhl: 'hockey/nhl',
+  mlb: 'baseball/mlb',
+};
+
+/**
+ * What a status string actually means for tonight.
+ *
+ * Every league words these differently — football says Out and Questionable,
+ * baseball says 10-Day-IL and 60-Day-IL, basketball says Day-To-Day — so the
+ * old `/out|injured reserve/` test matched nothing in baseball or basketball
+ * and quietly reported no injuries anywhere in those sports.
+ *
+ * Returns null for Active, which football includes in the same feed and which
+ * is not an injury at all. NFL alone lists 478 of them.
+ */
+function classifyInjuryStatus(status) {
+  const s = String(status || '').trim().toLowerCase();
+  if (!s || s === 'active') return null;
+  // Long-term: months out, fully priced in, not news.
+  if (/60-day/.test(s)) return { level: 'out', longTerm: true };
+  if (/injured reserve|\bir\b/.test(s)) return { level: 'out', longTerm: true };
+  // Out for this game.
+  if (/-?\d+\s*-?day\s*-?il|\bil\b/.test(s)) return { level: 'out', longTerm: false };
+  // `suspen` not `suspend`: the feeds spell it "Suspension", which has no d.
+  if (/^out\b|suspen/.test(s)) return { level: 'out', longTerm: false };
+  if (/doubtful/.test(s)) return { level: 'doubtful', longTerm: false };
+  if (/questionable|probable|day-to-day|day to day/.test(s)) return { level: 'questionable', longTerm: false };
+  // Anything unrecognised is surfaced rather than dropped, but not counted as
+  // definitely out — guessing "out" from an unknown word is how a flag fires on
+  // nothing.
+  return { level: 'questionable', longTerm: false };
+}
+
+const injuryRank = { out: 0, doubtful: 1, questionable: 2 };
+
+/** Every team's injuries for a league, keyed by normalised team name. */
+async function fetchLeagueInjuries(sport) {
+  const path = INJURY_PATHS[sport];
+  if (!path) return new Map();
+  const key = (name) => String(name || '').toLowerCase().replace(/[^a-z]/g, '');
+
   try {
-    const sportUrls = {
-      'nba': 'https://www.espn.com/nba/injuries',
-      'nhl': 'https://www.espn.com/nhl/injuries',
-      'mlb': 'https://www.espn.com/mlb/injuries',
-      'nfl': 'https://www.espn.com/nfl/injuries'
-    };
-    const url = sportUrls[sport];
-    if (!url) return [];
+    const res = await cachedGet(
+      `https://site.api.espn.com/apis/site/v2/sports/${path}/injuries`,
+      { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const teams = (res.data && res.data.injuries) || [];
+    const out = new Map();
 
-    const response = await cachedGet(url, {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-    const html = response.data;
-
-    const injuries = [];
-
-    // Escape special regex chars in team name (handles "76ers", "Trail Blazers", etc.)
-    const escapedName = teamFullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-    // ESPN wraps team names in various tags; look for the team name as a "header" element
-    // Match patterns like: >Boston Celtics< or "Boston Celtics" inside JSON
-    const patterns = [
-      new RegExp(`>\\s*${escapedName}\\s*<`, 'i'),
-      new RegExp(`"${escapedName}"`, 'i'),
-      new RegExp(`>${escapedName}[^<]*<`, 'i')
-    ];
-
-    let teamMatchIdx = -1;
-    for (const pattern of patterns) {
-      const m = html.match(pattern);
-      if (m) {
-        teamMatchIdx = html.indexOf(m[0]);
-        break;
+    for (const team of teams) {
+      const entries = [];
+      for (const item of team.injuries || []) {
+        const cls = classifyInjuryStatus(item.status);
+        if (!cls) continue;
+        const athlete = item.athlete || {};
+        const name = athlete.displayName || athlete.shortName;
+        if (!name) continue;
+        entries.push({
+          player: name,
+          position: (athlete.position && athlete.position.abbreviation) || '',
+          status: item.status,
+          type: (item.type && item.type.description) || item.shortComment || 'Undisclosed',
+          level: cls.level,
+          longTerm: cls.longTerm,
+        });
       }
+      // News first: out before doubtful before questionable, and anything
+      // long-term last whatever its level.
+      entries.sort((a, b) =>
+        (a.longTerm ? 1 : 0) - (b.longTerm ? 1 : 0) ||
+        injuryRank[a.level] - injuryRank[b.level] ||
+        a.player.localeCompare(b.player));
+      out.set(key(team.displayName), entries);
     }
-
-    if (teamMatchIdx === -1) {
-      console.log(`[INJURIES] No section found for ${teamFullName} on ${sport}`);
-      return [];
-    }
-
-    // Find the team's injury table — look for the next ResponsiveTable or end-of-section marker
-    const nextTeamStart = html.indexOf('ResponsiveTable', teamMatchIdx + 500);
-    const teamSection = html.substring(teamMatchIdx, nextTeamStart > 0 ? nextTeamStart : teamMatchIdx + 5000);
-
-    const rowMatches = [...teamSection.matchAll(/<tr[^>]*>(.*?)<\/tr>/gs)];
-    rowMatches.forEach(match => {
-      const rowHtml = match[1];
-      if (rowHtml.includes('<th') || rowHtml.includes('NAME')) return;
-      const cells = [];
-      const cellMatches = [...rowHtml.matchAll(/<td[^>]*>(.*?)<\/td>/gs)];
-      cellMatches.forEach(cell => {
-        const text = cell[1].replace(/<[^>]*>/g, '').trim();
-        if (text) cells.push(text);
-      });
-      if (cells.length >= 3) {
-        const status = cells[2];
-        if (status && status.toLowerCase() !== 'active') {
-          injuries.push({
-            player: cells[0],
-            position: cells[1] || '',
-            status: status,
-            type: cells[3] || 'Undisclosed'
-          });
-        }
-      }
-    });
-
-    if (injuries.length > 0) {
-      console.log(`[INJURIES] Found ${injuries.length} for ${teamFullName}`);
-    }
-    return injuries;
-  } catch (error) {
-    console.error(`[INJURIES] Error fetching ${teamFullName}:`, error.message);
-    return [];
+    console.log(`[INJURIES] ${sport}: ${teams.length} teams, ` +
+      `${[...out.values()].reduce((n, e) => n + e.length, 0)} entries`);
+    return out;
+  } catch (err) {
+    console.error(`[INJURIES] ${sport} fetch failed:`, err.message);
+    return new Map();
   }
+}
+
+/**
+ * One team's injuries. Signature is unchanged from the scraper it replaces, so
+ * every caller keeps working; the league fetch behind it is deduplicated by
+ * cachedGet, which means a full card still costs one request.
+ */
+async function fetchInjuries(teamFullName, sport) {
+  const key = (name) => String(name || '').toLowerCase().replace(/[^a-z]/g, '');
+  const league = await fetchLeagueInjuries(sport);
+  const exact = league.get(key(teamFullName));
+  if (exact) return exact;
+
+  // Fall back to a suffix match, which covers the handful of places where the
+  // scoreboard and the injury feed disagree on a name.
+  const want = key(teamFullName);
+  for (const [name, entries] of league) {
+    if (name.endsWith(want) || want.endsWith(name)) return entries;
+  }
+  console.log(`[INJURIES] no team matching "${teamFullName}" in ${sport}`);
+  return [];
 }
 
 // ============================================================================
@@ -2323,9 +2361,14 @@ function attachSituationFlags(games) {
     // Which side, not just how many. A flag is only allowed to influence the
     // verdict when it knows whose team it is bad news for, so the counts go
     // through per side and the quarterback carries his own.
+    // Counted from the classified level rather than a regex over the status
+    // text. The old test was written for football words and matched nothing in
+    // baseball or basketball, so the flag could never fire there. Long-term
+    // absences are excluded: a player on the 60-day IL is not why a line has
+    // not moved this afternoon.
     const outBySide = ['home', 'away'].reduce((acc, side) => {
       acc[side] = (((g.injuries && g.injuries[side]) || [])
-        .filter(i => /out|injured reserve/i.test(i.status || '')).length);
+        .filter(i => i.level === 'out' && !i.longTerm).length);
       return acc;
     }, {});
 
@@ -2378,9 +2421,9 @@ function buildCommentaryPrompt(sport, gamesWithStats, note) {
         total: odds.myBook.total,
       } : null,
       injuriesOut: {
-        home: (g.injuries?.home || []).filter(i => /out|injured reserve/i.test(i.status || ''))
+        home: (g.injuries?.home || []).filter(i => i.level === 'out' && !i.longTerm)
           .slice(0, 6).map(i => `${i.player} (${i.position})`),
-        away: (g.injuries?.away || []).filter(i => /out|injured reserve/i.test(i.status || ''))
+        away: (g.injuries?.away || []).filter(i => i.level === 'out' && !i.longTerm)
           .slice(0, 6).map(i => `${i.player} (${i.position})`),
       },
       situationFlags: (g.situationFlags || []).map(f => f.note),
@@ -2828,10 +2871,15 @@ app.post('/api/pool/:sport', async (req, res) => {
       const usableSpread = marketSpread !== null && model.plausibleSpread(sport, marketSpread);
       const poolSpread = entry && Number.isFinite(Number(entry.spread)) ? Number(entry.spread) : null;
       const poolTotal = entry && Number.isFinite(Number(entry.total)) ? Number(entry.total) : null;
+      // The away side's own number, which only differs from the mirror when the
+      // pool lays points both ways on a tight game.
+      const poolAway = entry && Number.isFinite(Number(entry.awaySpread))
+        ? Number(entry.awaySpread) : null;
 
       const edge = model.poolEdge({
         sport,
         poolSpread: usableSpread ? poolSpread : null,
+        poolAwaySpread: usableSpread ? poolAway : null,
         marketSpread: usableSpread ? marketSpread : null,
         poolTotal, marketTotal,
         homeTeam: homeFull, awayTeam: awayFull,

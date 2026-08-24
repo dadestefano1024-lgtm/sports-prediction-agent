@@ -957,8 +957,56 @@ test('poolEdge backs the side the market moved toward', () => {
 
 test('poolEdge on an unmoved line is a coin flip', () => {
   const r = m.poolEdge({ sport: 'nfl', poolSpread: -3, marketSpread: -3 });
-  close(r.spread.winProb, 0.5, 0.02, 'no move means no edge');
+  // A pool that voids pushes: an unmoved line is exactly even.
+  close(r.spread.winProbIfPushVoid, 0.5, 0.02, 'no move means no edge');
+  // Unconditionally it is below even, because a whole-number line lands on the
+  // number often enough to matter — three is the most common NFL margin there
+  // is. A pool that scores a push as a loss makes this a losing pick, and the
+  // old arithmetic hid that by dividing it out.
+  close(r.spread.winProb, 0.47, 0.02, 'unconditional is lower than even');
+  assert.ok(r.spread.pushProb > 0.04, `push risk ${r.spread.pushProb} should be real on a 3`);
   close(r.spread.gap, 0, 1e-9);
+});
+
+test('poolEdge prices a line that lays points both ways', () => {
+  // The pool posts -2 against -2 on a tight game: no plus money, and whichever
+  // side is taken has to win by three.
+  const r = m.poolEdge({ sport: 'nfl', poolSpread: -2, poolAwaySpread: -2, marketSpread: 0,
+                         homeTeam: 'Chiefs', awayTeam: 'Raiders' }).spread;
+  assert.equal(r.bothLay, true);
+  // Neither side is anywhere near even, and the two do not sum to one.
+  assert.ok(r.winProb < 0.46, `win prob ${r.winProb}`);
+  assert.ok(Math.abs(r.winProb + r.otherSideProb - 1) > 0.08, 'the sides must not be complements');
+  // Roughly one game in seven lands inside two points either way.
+  assert.ok(r.deadProb > 0.1 && r.deadProb < 0.2, `dead zone ${r.deadProb}`);
+  close(r.winProb + r.otherSideProb + r.deadProb, 1, 1e-3, 'everything must add up');
+
+  // The market moving toward home makes the home side better and the away side
+  // worse, while the dead zone stays about the same size.
+  const moved = m.poolEdge({ sport: 'nfl', poolSpread: -2, poolAwaySpread: -2, marketSpread: -4,
+                             homeTeam: 'Chiefs', awayTeam: 'Raiders' }).spread;
+  assert.ok(moved.winProb > r.winProb, 'a favourable move must help');
+  assert.equal(moved.side, 'home');
+});
+
+test('poolEdge with a mirrored away line is the two-sided case', () => {
+  // Supplying the mirror explicitly must change nothing at all.
+  const implicit = m.poolEdge({ sport: 'nfl', poolSpread: -3, marketSpread: -6 }).spread;
+  const explicit = m.poolEdge({ sport: 'nfl', poolSpread: -3, poolAwaySpread: 3, marketSpread: -6 }).spread;
+  assert.equal(implicit.bothLay, false);
+  assert.equal(explicit.bothLay, false);
+  close(explicit.winProb, implicit.winProb, 1e-9);
+  assert.equal(explicit.pick, implicit.pick);
+});
+
+test('a both-lay line is worse than the two-sided line it replaces', () => {
+  // The point of showing this: the pool's tight-game format is not a coin flip
+  // dressed differently, it is a materially worse bet, and the app used to
+  // report it as the better one.
+  const bothLay = m.poolEdge({ sport: 'nfl', poolSpread: -2, poolAwaySpread: -2, marketSpread: 0 }).spread;
+  const twoSided = m.poolEdge({ sport: 'nfl', poolSpread: -2, marketSpread: 0 }).spread;
+  assert.ok(twoSided.winProb - bothLay.winProb > 0.07,
+    `two-sided ${twoSided.winProb} vs both-lay ${bothLay.winProb}`);
 });
 
 test('poolEdge values a key number above a raw point gap', () => {
