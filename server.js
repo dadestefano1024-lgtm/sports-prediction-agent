@@ -765,6 +765,62 @@ function nextSlate(events) {
   return day ? live.filter(e => espnDayKey(e.date) === day) : live;
 }
 
+/**
+ * The slate to show, including out of season.
+ *
+ * The one-day window is right while a sport is running: it keeps the work down
+ * and shows the games being bet tonight. Out of season it shows nothing at all,
+ * which is why the football tab was empty all August with Week 1 fully priced
+ * and sitting there.
+ *
+ * So when the near window is empty, look further out and show the next slate
+ * instead. That slate is a WEEK rather than a day, because the narrowing to one
+ * day exists to avoid showing games nobody is betting yet — and when the
+ * alternative is showing nothing, a whole week of a season opener is exactly
+ * what somebody wants to look at. Five days from the first game covers a
+ * football week end to end, Thursday night through Monday.
+ *
+ * In season this costs one extra request on the rare day a league is dark, and
+ * nothing at all otherwise.
+ */
+async function fetchSlate(sportPath, { lookaheadDays = 45, weekSpanDays = 5 } = {}) {
+  const near = await cachedGet(espnScoreboardUrl(sportPath), { timeout: 10000 });
+  const nearEvents = nextSlate((near.data || {}).events);
+  if (nearEvents.length) return { events: nearEvents, payload: near.data || {}, upcoming: false };
+
+  const far = await cachedGet(espnScoreboardUrl(sportPath, lookaheadDays), { timeout: 12000 });
+  const payload = far.data || {};
+  const scheduled = ((payload.events) || [])
+    .filter(e => e.competitions?.[0]?.status?.type?.state === 'pre')
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  if (!scheduled.length) return { events: [], payload, upcoming: false };
+
+  // Prefer games that count. ESPN's season types are 1 preseason, 2 regular,
+  // 3 post, and each event carries its own — which matters because passing
+  // seasontype=2 as a QUERY parameter does not filter a date range. Asking for
+  // the next 45 days of football with seasontype=2 still returns the preseason
+  // games sitting in front of Week 1, so the filter has to happen here.
+  //
+  // In late August that is the whole point: the next football on the board is a
+  // preseason game three days away, and the handler already refuses to project
+  // those on the grounds that starters play a quarter. Previewing them would be
+  // previewing the one slate the app has nothing to say about.
+  //
+  // If there is no regular-season game in range, show what there is rather than
+  // an empty tab.
+  const regular = scheduled.filter(e => e.season && e.season.type === 2);
+  const usable = regular.length ? regular : scheduled;
+
+  const first = new Date(usable[0].date).getTime();
+  const cutoff = first + weekSpanDays * 24 * 60 * 60 * 1000;
+  const events = usable.filter(e => new Date(e.date).getTime() <= cutoff);
+  const wk = events[0] && events[0].week && events[0].week.number;
+  console.log(`[SLATE] ${sportPath}: nothing today, showing ${events.length} upcoming games` +
+    `${wk ? ` (week ${wk})` : ''}${regular.length ? '' : ' — preseason, no regular games in range'}`);
+  return { events, payload, upcoming: true, week: wk || null,
+           preseasonOnly: !regular.length };
+}
+
 // ============================================================================
 // SHARED HTTP CACHE (ESPN)
 // ============================================================================
@@ -3051,9 +3107,9 @@ app.post('/api/predictions', async (req, res) => {
 
 async function handleNFLPredictions(res, oddsData) {
   try {
-    const scoreboardResponse = await cachedGet(espnScoreboardUrl('football/nfl'), { timeout: 10000 });
-    const payload = scoreboardResponse.data || {};
-    const events = nextSlate(payload.events);
+    const slate = await fetchSlate('football/nfl');
+    const payload = slate.payload;
+    const events = slate.events;
 
     if (events.length === 0) {
       return res.json({ sport: 'NFL', games: [], message: 'No NFL games scheduled' });
@@ -3246,8 +3302,8 @@ async function handleNBAPredictions(res, oddsData) {
   try {
     // cachedGet, and the same URL fetchEspnOpeningLines uses, so the slate and
     // its lines come from one request rather than two.
-    const scoreboardResponse = await cachedGet(espnScoreboardUrl('basketball/nba'), { timeout: 10000 });
-    const events = nextSlate(scoreboardResponse.data.events);
+    const slate = await fetchSlate('basketball/nba');
+    const events = slate.events;
 
     if (events.length === 0) {
       return res.json({ sport: 'NBA', games: [], message: 'No NBA games scheduled' });
@@ -3342,8 +3398,8 @@ async function handleNHLPredictions(res, oddsData) {
   try {
     // cachedGet, and the same URL fetchEspnOpeningLines uses, so the slate and
     // its lines come from one request rather than two.
-    const scoreboardResponse = await cachedGet(espnScoreboardUrl('hockey/nhl'), { timeout: 10000 });
-    const events = nextSlate(scoreboardResponse.data.events);
+    const slate = await fetchSlate('hockey/nhl');
+    const events = slate.events;
 
     if (events.length === 0) {
       return res.json({ sport: 'NHL', games: [], message: 'No NHL games scheduled' });
@@ -3434,8 +3490,8 @@ async function handleMLBPredictions(res, oddsData) {
   try {
     // cachedGet, and the same URL fetchEspnOpeningLines uses, so the slate and
     // its lines come from one request rather than two.
-    const scoreboardResponse = await cachedGet(espnScoreboardUrl('baseball/mlb'), { timeout: 10000 });
-    const events = nextSlate(scoreboardResponse.data.events);
+    const slate = await fetchSlate('baseball/mlb');
+    const events = slate.events;
 
     if (events.length === 0) {
       return res.json({ sport: 'MLB', games: [], message: 'No MLB games scheduled' });
