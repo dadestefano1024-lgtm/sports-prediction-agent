@@ -1046,3 +1046,45 @@ test('poolCandidate flags games whose line has drifted', () => {
   assert.equal(m.poolCandidate(null, null), null);
   assert.equal(m.poolCandidate(undefined, 4).level, 'strong');
 });
+
+// ----------------------------------------------------------------------------
+test('situationFlags: a quarterback out against a static line', () => {
+  const f = m.situationFlags({ qbOut: 'Patrick Mahomes', spreadMovement: 0.5 });
+  assert.equal(f.length, 1);
+  assert.equal(f[0].type, 'qb-static-line');
+  assert.match(f[0].note, /Patrick Mahomes is out/);
+  // If the line HAS moved, the market has reacted and there is nothing to say.
+  assert.equal(m.situationFlags({ qbOut: 'Patrick Mahomes', spreadMovement: 3 })
+    .filter(x => x.type === 'qb-static-line').length, 0);
+});
+
+test('situationFlags: wind against a static total', () => {
+  const f = m.situationFlags({ windy: true, windSpeed: 22, totalMovement: 0.5 });
+  assert.equal(f[0].type, 'wind-static-total');
+  assert.match(f[0].note, /22 mph wind/);
+  assert.equal(m.situationFlags({ windy: true, windSpeed: 22, totalMovement: 3 }).length, 0);
+});
+
+test('situationFlags: a move nothing here explains', () => {
+  const f = m.situationFlags({ spreadMovement: -2.5 });
+  assert.equal(f[0].type, 'unexplained-move');
+  assert.match(f[0].note, /something this app cannot see/);
+  // With a quarterback out, the move IS explained, so it should not fire.
+  assert.equal(m.situationFlags({ spreadMovement: -2.5, qbOut: 'Someone' })
+    .filter(x => x.type === 'unexplained-move').length, 0);
+});
+
+test('situationFlags: injuries against a static line', () => {
+  assert.equal(m.situationFlags({ injuriesOut: 4, spreadMovement: 0 })
+    .some(x => x.type === 'injuries-static-line'), true);
+  assert.equal(m.situationFlags({ injuriesOut: 2, spreadMovement: 0 })
+    .some(x => x.type === 'injuries-static-line'), false);
+});
+
+test('situationFlags says nothing when there is nothing to say', () => {
+  assert.deepEqual(m.situationFlags({ spreadMovement: 0.5, totalMovement: 0.5 }), []);
+  assert.deepEqual(m.situationFlags({}), []);
+  assert.deepEqual(m.situationFlags(), []);
+  // No movement data means no comparison can be made.
+  assert.deepEqual(m.situationFlags({ qbOut: 'Someone', spreadMovement: null }), []);
+});

@@ -1203,6 +1203,77 @@ function poolCandidate(spreadMovement, totalMovement) {
   return null;
 }
 
+// ----------------------------------------------------------------------------
+// Situation flags
+// ----------------------------------------------------------------------------
+
+/**
+ * Where what we know and what the line shows disagree.
+ *
+ * Three attempts to out-predict the closing line have failed here — points,
+ * yards per play and EPA all landed indistinguishable from the market. That
+ * result is about knowing BETTER, and it is settled. It says nothing about
+ * knowing SOONER, which is the one way public information beats a market: a
+ * quarterback ruled out an hour ago is public, and the line may not have
+ * finished moving.
+ *
+ * So this does not predict anything. It compares facts already gathered against
+ * how far the line has travelled, and reports where the two do not line up. A
+ * flag is a prompt to look, not a reason to bet, and the wording keeps it that
+ * way — including the most useful flag of all, which is a large move with no
+ * visible cause, meaning somebody knows something this app does not.
+ *
+ * IMPORTANT: none of this is backtested. Injury and weather timestamps are not
+ * in any history available here, so the timing claim cannot be measured the way
+ * the others were. These are stated as observations rather than edges precisely
+ * because they are unvalidated.
+ */
+function situationFlags({
+  spreadMovement = null, totalMovement = null,
+  qbOut = null, injuriesOut = 0, windy = false, windSpeed = null,
+} = {}) {
+  const flags = [];
+  const spreadMoved = Number.isFinite(spreadMovement) ? Math.abs(spreadMovement) : null;
+  const totalMoved = Number.isFinite(totalMovement) ? Math.abs(totalMovement) : null;
+
+  // A quarterback is worth several points. If one is out and the number has not
+  // moved, either it was priced before the line opened or it has not reacted.
+  if (qbOut && spreadMoved !== null && spreadMoved < 1.5) {
+    flags.push({
+      type: 'qb-static-line', severity: 'high',
+      note: `${qbOut} is out but the spread has moved only ${spreadMoved} pt. ` +
+            `Either that was priced before the line opened, or the market has not finished reacting.`,
+    });
+  }
+
+  // Wind is the largest weather effect on a total.
+  if (windy && totalMoved !== null && totalMoved < 1.5) {
+    flags.push({
+      type: 'wind-static-total', severity: 'medium',
+      note: `${windSpeed ? windSpeed + ' mph wind' : 'High wind'} forecast but the total has moved ` +
+            `only ${totalMoved} pt. Worth checking how recent the forecast is.`,
+    });
+  }
+
+  if (injuriesOut >= 3 && spreadMoved !== null && spreadMoved < 1) {
+    flags.push({
+      type: 'injuries-static-line', severity: 'medium',
+      note: `${injuriesOut} players ruled out but the spread has barely moved.`,
+    });
+  }
+
+  // The most useful one: the market moved and nothing here explains why.
+  if (spreadMoved !== null && spreadMoved >= 2 && !qbOut && injuriesOut < 3) {
+    flags.push({
+      type: 'unexplained-move', severity: 'high',
+      note: `The spread has moved ${spreadMoved} pts with no injury or quarterback reason ` +
+            `visible here. Somebody is acting on something this app cannot see.`,
+    });
+  }
+
+  return flags;
+}
+
 module.exports = {
   SPORTS,
   sportConfig,
@@ -1233,6 +1304,7 @@ module.exports = {
   bestOffer,
   poolEdge,
   betRecommendation,
+  situationFlags,
   poolCandidate,
   rankPoolPicks,
   SPREAD_LIMITS,

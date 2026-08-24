@@ -2274,7 +2274,12 @@ function toNum(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 function commentaryByMatchup(predictions) {
   const out = {};
   for (const g of (predictions && predictions.games) || []) {
-    if (g && g.homeTeam && g.awayTeam) out[g.homeTeam + '|' + g.awayTeam] = g.keyFactors || [];
+    if (g && g.homeTeam && g.awayTeam) {
+      out[g.homeTeam + '|' + g.awayTeam] = {
+        keyFactors: g.keyFactors || [],
+        assessment: typeof g.assessment === 'string' ? g.assessment : null,
+      };
+    }
   }
   return out;
 }
@@ -2291,6 +2296,118 @@ function commentaryByMatchup(predictions) {
  * Edges and Kelly stakes are emitted in percentage points, which is what the
  * frontend formatters render and what the >= 2 save threshold compares against.
  */
+/**
+ * The one prompt, for every sport.
+ *
+ * The three legacy prompts still asked for predictedScore, spreadEdge and
+ * kellySpread — numbers that have been computed by model.js and discarded on
+ * arrival for some time now. Tokens spent to be ignored.
+ *
+ * What is asked for instead is the thing a language model is actually good at
+ * and nothing else can do here: reading everything gathered about a game —
+ * form, injuries, quarterback, weather, travel, how the line has moved, where
+ * the book sits against the market — and saying what the situation is in a
+ * couple of sentences.
+ *
+ * It is told explicitly not to predict, because the alternative has been
+ * measured: three separate inputs all failed to beat the closing line, and an
+ * invented number wearing confident prose is exactly what this rewrite removed.
+ */
+/**
+ * Work out, for each game, where what we know and what the line shows disagree.
+ * Run before the prompt so both the model and the reader see the same flags.
+ */
+function attachSituationFlags(games) {
+  for (const g of games || []) {
+    const lm = g.lineMovement || {};
+    const qb = g.startingQB || {};
+    const outCount = ['home', 'away'].reduce((n, side) =>
+      n + (((g.injuries && g.injuries[side]) || [])
+        .filter(i => /out|injured reserve/i.test(i.status || '')).length), 0);
+    const qbOut =
+      (qb.home && qb.home.starterAvailable === false && qb.home.starter) ||
+      (qb.away && qb.away.starterAvailable === false && qb.away.starter) || null;
+
+    g.situationFlags = model.situationFlags({
+      spreadMovement: lm.spreadMovement,
+      totalMovement: lm.totalMovement,
+      qbOut,
+      injuriesOut: outCount,
+      windy: !!(g.weather && g.weather.windy),
+      windSpeed: g.weather ? g.weather.windSpeed : null,
+    });
+  }
+  return games;
+}
+
+function buildCommentaryPrompt(sport, gamesWithStats, note) {
+  const league = sport.toUpperCase();
+  const payload = gamesWithStats.map(g => {
+    const odds = g.odds || {};
+    const out = {
+      homeTeam: g.homeTeam,
+      awayTeam: g.awayTeam,
+      homeRecord: g.homeData && g.homeData.record,
+      awayRecord: g.awayData && g.awayData.record,
+      homeForm: g.homeForm,
+      awayForm: g.awayForm,
+      marketSpread: odds.spread ?? null,
+      marketTotal: odds.total ?? null,
+      lineMovement: g.lineMovement ? {
+        spreadOpen: g.lineMovement.openSpread,
+        spreadNow: g.lineMovement.currentSpread,
+        totalOpen: g.lineMovement.openTotal,
+        totalNow: g.lineMovement.currentTotal,
+      } : null,
+      bookVsMarket: odds.myBook ? {
+        book: odds.myBook.name,
+        spread: odds.myBook.spread,
+        total: odds.myBook.total,
+      } : null,
+      injuriesOut: {
+        home: (g.injuries?.home || []).filter(i => /out|injured reserve/i.test(i.status || ''))
+          .slice(0, 6).map(i => `${i.player} (${i.position})`),
+        away: (g.injuries?.away || []).filter(i => /out|injured reserve/i.test(i.status || ''))
+          .slice(0, 6).map(i => `${i.player} (${i.position})`),
+      },
+      situationFlags: (g.situationFlags || []).map(f => f.note),
+    };
+    if (g.startingQB) {
+      out.quarterbacks = {
+        home: g.startingQB.home && `${g.startingQB.home.starter} (${g.startingQB.home.status})`,
+        away: g.startingQB.away && `${g.startingQB.away.starter} (${g.startingQB.away.status})`,
+      };
+    }
+    if (g.weather) out.weather = g.weather;
+    if (g.travel) out.travel = g.travel;
+    if (g.dome !== undefined && g.dome !== null) out.dome = g.dome;
+    return out;
+  });
+
+  return `You are annotating ${league} matchups for someone deciding what to bet.
+
+For each game write:
+  "assessment" — two or three sentences describing the situation. What stands
+    out, what the line movement suggests, anything that looks inconsistent.
+    Plain English, no hedging filler.
+  "keyFactors" — two or three short bullet points.
+
+Do NOT predict scores, margins, probabilities, edges or bet sizes. Those are
+computed from the market and the data, and anything you invent is discarded on
+arrival. Do not tell the reader which side to bet.
+
+Where situationFlags are present, they are the most interesting thing about the
+game — they mark places where what is known and what the line shows disagree.
+Say what the disagreement might mean, including that it might simply mean the
+market knew earlier.
+${note ? `\n${note}\n` : ''}
+Games:
+${JSON.stringify(payload, null, 1)}
+
+Reply with JSON only:
+{"games":[{"homeTeam":"<exact name>","awayTeam":"<exact name>","assessment":"...","keyFactors":["...","..."]}]}`;
+}
+
 /**
  * Ask Claude for the qualitative notes. Never throws.
  *
@@ -2503,7 +2620,9 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
         ? model.poolCandidate(g.lineMovement.spreadMovement, g.lineMovement.totalMovement)
         : null,
 
-      keyFactors: commentary[g.homeTeam + '|' + g.awayTeam] || [],
+      keyFactors: (commentary[g.homeTeam + '|' + g.awayTeam] || {}).keyFactors || [],
+      assessment: (commentary[g.homeTeam + '|' + g.awayTeam] || {}).assessment || null,
+      situationFlags: g.situationFlags || [],
 
       // Exposed so a number can be taken apart rather than trusted. An edge you
       // cannot decompose is how the old ones went unquestioned for months.
@@ -2897,30 +3016,8 @@ async function handleNFLPredictions(res, oddsData) {
     // Claude writes notes only; every number comes from model.js. Kept short on
     // purpose — the long legacy prompts still ask the other three sports for
     // figures that are now discarded.
-    const prompt = `You are helping annotate NFL betting matchups. For each game below, write 2-3 short factual observations a bettor would care about: injuries, rest, travel, venue, form.
-
-Do NOT predict scores, edges, probabilities or bet sizes. Those are computed elsewhere and anything you invent will be discarded.
-
-${isPreseason ? 'NOTE: these are PRESEASON games. Starters play limited snaps and results are not predictive. Say so where relevant.\n' : ''}
-Games:
-${JSON.stringify(gamesWithStats.map(g => ({
-      homeTeam: g.homeTeam, awayTeam: g.awayTeam, gameTime: g.gameTime,
-      homeRecord: g.homeData?.record, awayRecord: g.awayData?.record,
-      homeForm: g.homeForm, awayForm: g.awayForm,
-      travel: g.travel, dome: g.dome, weather: g.weather,
-      startingQB: {
-        home: g.startingQB.home && { name: g.startingQB.home.starter, status: g.startingQB.home.status },
-        away: g.startingQB.away && { name: g.startingQB.away.starter, status: g.startingQB.away.status },
-      },
-      injuries: {
-        home: (g.injuries.home || []).slice(0, 6),
-        away: (g.injuries.away || []).slice(0, 6),
-      },
-    })), null, 1)}
-
-Reply with JSON only:
-{"games":[{"homeTeam":"<exact name>","awayTeam":"<exact name>","keyFactors":["...","..."]}]}`;
-
+    attachSituationFlags(gamesWithStats);
+    const prompt = buildCommentaryPrompt('nfl', gamesWithStats, isPreseason ? 'NOTE: these are PRESEASON games. Starters play limited snaps and results are not predictive. Say so where relevant.' : null);
     console.log('[NFL] Fetching commentary...');
     const commentary = await fetchCommentary('nfl', prompt);
     const formattedGames = buildGamesFromModel('nfl', gamesWithStats, commentary, skipReason);
@@ -3016,42 +3113,8 @@ async function handleNBAPredictions(res, oddsData) {
     const withMovement = gamesWithStats.filter(g => g.lineMovement).length;
     console.log(`[NBA] Matched odds to ${matched}/${gamesWithStats.length} games, opening lines for ${withMovement}/${gamesWithStats.length}`);
 
-    const prompt = `You are an expert NBA analyst. Analyze these games and respond ONLY with a valid JSON object.
-
-GAMES DATA:
-${JSON.stringify(gamesWithStats, null, 2)}
-
-For each game predict: spread pick (or "No edge" if edge < 2%), total pick, confidence (Low/Medium/High), and 3-5 key factors.
-
-CRITICAL: Use the EXACT odds from the "odds" field for spread/total/homeML/awayML. Do not invent odds.
-
-LINE MOVEMENT: Each game has a "lineMovement" field showing the OPENING line vs CURRENT line, and a "sharpSignals" field. Treat this as ONE factor among many — don't overweight it. When the line has moved significantly (1+ point on spread, 1+ point on total), mention which side the move suggests sharp money is on, and note it in keyFactors. Reverse line movement (line moving against where the public would bet) is a sharp signal but not definitive.
-
-Respond ONLY with this JSON shape:
-{
-  "games": [
-    {
-      "homeTeam": "<full name>",
-      "awayTeam": "<full name>",
-      "gameTime": "<time>",
-      "spread": "<from odds.spread or 'N/A'>",
-      "total": "<from odds.total or 'N/A'>",
-      "homeML": "<from odds.homeML or 'N/A'>",
-      "awayML": "<from odds.awayML or 'N/A'>",
-      "predictedScore": { "home": <int>, "away": <int> },
-      "spreadPick": "<pick or 'No edge'>",
-      "spreadEdge": <number>,
-      "totalPick": "<pick or 'No edge'>",
-      "totalEdge": <number>,
-      "kellySpread": <number>,
-      "kellyTotal": <number>,
-      "confidence": "Low|Medium|High",
-      "keyFactors": ["...", "..."]
-    }
-  ]
-}`;
-
-    // Numbers come from model.js; Claude only annotates, and may fail freely.
+    attachSituationFlags(gamesWithStats);
+    const prompt = buildCommentaryPrompt('nba', gamesWithStats, null);
     console.log('[NBA] Fetching commentary...');
     const commentary = await fetchCommentary('nba', prompt);
     const formattedGames = buildGamesFromModel('nba', gamesWithStats, commentary);
@@ -3142,42 +3205,8 @@ async function handleNHLPredictions(res, oddsData) {
     const withGoalies = gamesWithStats.filter(g => g.goalies?.home || g.goalies?.away).length;
     console.log(`[NHL] Matched odds to ${matched}/${gamesWithStats.length}, opening lines ${withMovement}/${gamesWithStats.length}, goalies ${withGoalies}/${gamesWithStats.length}`);
 
-    const prompt = `You are an expert NHL analyst. Analyze these games and respond ONLY with valid JSON.
-
-GAMES DATA:
-${JSON.stringify(gamesWithStats, null, 2)}
-
-CRITICAL: Use the EXACT odds from the "odds" field. Do not invent odds.
-
-GOALIE MATCHUPS: The "goalies" field contains projected starting goalies with status (CONFIRMED/PROJECTED), record, GAA (goals against average), and SV% (save percentage). GOALIE MATCHUP IS HUGE in NHL — second only to overall team strength. An elite goalie (GAA under 2.50, SV% over .920) vs. a backup (GAA over 3.00) is worth ~0.7 goals. CONFIRMED is more reliable than PROJECTED. Always reference goalies in keyFactors when data is available.
-
-LINE MOVEMENT: "lineMovement" shows OPENING vs CURRENT. Treat as ONE factor among many. Significant movement (1+ pt spread / 0.5+ goals on total) suggests sharp money.
-
-Respond ONLY with:
-{
-  "games": [
-    {
-      "homeTeam": "<full name>",
-      "awayTeam": "<full name>",
-      "gameTime": "<time>",
-      "puckLine": "<from odds.spread or 'N/A'>",
-      "total": "<from odds.total or 'N/A'>",
-      "homeML": "<from odds.homeML or 'N/A'>",
-      "awayML": "<from odds.awayML or 'N/A'>",
-      "predictedScore": { "home": <int>, "away": <int> },
-      "puckLinePick": "<pick or 'No edge'>",
-      "puckLineEdge": <number>,
-      "totalPick": "<pick or 'No edge'>",
-      "totalEdge": <number>,
-      "kellyPuckLine": <number>,
-      "kellyTotal": <number>,
-      "confidence": "Low|Medium|High",
-      "keyFactors": ["...", "..."]
-    }
-  ]
-}`;
-
-    // Numbers come from model.js; Claude only annotates, and may fail freely.
+    attachSituationFlags(gamesWithStats);
+    const prompt = buildCommentaryPrompt('nhl', gamesWithStats, null);
     console.log('[NHL] Fetching commentary...');
     const commentary = await fetchCommentary('nhl', prompt);
     const formattedGames = buildGamesFromModel('nhl', gamesWithStats, commentary);
@@ -3276,42 +3305,8 @@ async function handleMLBPredictions(res, oddsData) {
     const withPitchers = gamesWithStats.filter(g => g.pitchers?.home?.era && g.pitchers.home.era !== 'N/A').length;
     console.log(`[MLB] Matched odds to ${matched}/${gamesWithStats.length}, opening lines ${withMovement}/${gamesWithStats.length}, pitchers ${withPitchers}/${gamesWithStats.length}`);
 
-    const prompt = `You are an expert MLB analyst. Analyze these games and respond ONLY with valid JSON.
-
-GAMES DATA:
-${JSON.stringify(gamesWithStats, null, 2)}
-
-CRITICAL: Use the EXACT odds from the "odds" field. Do not invent odds.
-
-PITCHER MATCHUPS: The "pitchers" field contains the probable starting pitchers with ERA, WHIP, K/9. PITCHER MATCHUP IS THE #1 FACTOR IN MLB BETTING — weight it more than anything else. An ace (ERA under 3.00) vs. a weak starter (ERA over 4.50) is worth ~1.5 runs on the total and significant moneyline value. Two aces = strong UNDER lean. Two weak starters = OVER lean. Always reference pitchers in keyFactors.
-
-LINE MOVEMENT: "lineMovement" shows OPENING vs CURRENT. Treat as ONE factor among many. In MLB, runline rarely moves (almost always ±1.5), so focus on TOTAL movement and moneyline movement. Significant movement suggests sharp action.
-
-Respond ONLY with:
-{
-  "games": [
-    {
-      "homeTeam": "<full name>",
-      "awayTeam": "<full name>",
-      "gameTime": "<time>",
-      "runLine": "<from odds.spread or 'N/A'>",
-      "total": "<from odds.total or 'N/A'>",
-      "homeML": "<from odds.homeML or 'N/A'>",
-      "awayML": "<from odds.awayML or 'N/A'>",
-      "predictedScore": { "home": <int>, "away": <int> },
-      "runLinePick": "<pick or 'No edge'>",
-      "runLineEdge": <number>,
-      "totalPick": "<pick or 'No edge'>",
-      "totalEdge": <number>,
-      "kellyRunLine": <number>,
-      "kellyTotal": <number>,
-      "confidence": "Low|Medium|High",
-      "keyFactors": ["...", "..."]
-    }
-  ]
-}`;
-
-    // Numbers come from model.js; Claude only annotates, and may fail freely.
+    attachSituationFlags(gamesWithStats);
+    const prompt = buildCommentaryPrompt('mlb', gamesWithStats, null);
     console.log('[MLB] Fetching commentary...');
     const commentary = await fetchCommentary('mlb', prompt);
     const formattedGames = buildGamesFromModel('mlb', gamesWithStats, commentary);
