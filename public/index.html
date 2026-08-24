@@ -268,6 +268,9 @@
     /* Anything that has moved since it opened is the interesting part. */
     .ob-moved .ob-num { color: #58a6ff; }
     input.pool-bothlay { border-color: #d29922; }
+    /* Marked, not hidden: these are still enterable and still rankable, they
+       just kick off before picks go in. */
+    .pool-early { color: #d29922; }
     .clv-box { border: 1px solid #21262d; border-radius: 8px; background: #10151c;
                padding: 14px 16px; margin-bottom: 16px; }
     .clv-head { font-size: 11px; color: #6e7681; text-transform: uppercase;
@@ -1295,7 +1298,9 @@
         const mt = g.marketTotal === null ? '—' : g.marketTotal;
         return `
           <tr>
-            <td>${g.awayTeam} @ <strong>${g.homeTeam}</strong><div class="pool-market">${g.gameTime}</div></td>
+            <td>${g.awayTeam} @ <strong>${g.homeTeam}</strong><div class="pool-market">${g.gameTime}${
+              g.earlyWeek ? ` &middot; <span class="pool-early">${g.kickoffDay || 'early'} &mdash; played before you pick</span>` : ''
+            }</div></td>
             <td class="pool-market">${ms}</td>
             <td><input id="ps-${g.id}" type="number" step="0.5" placeholder="—"
                        value="${v.spread ?? ''}" oninput="mirrorAway('${g.id}')"></td>

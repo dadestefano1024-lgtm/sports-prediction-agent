@@ -2194,6 +2194,9 @@ function analyzeSharpAction(spreadMovement, totalMovement) {
 // THE ODDS API — REWRITTEN with caching, header logging, and proper error handling
 // ============================================================================
 
+// What the last Odds API call reported about the monthly allowance.
+let lastOddsQuota = { remaining: null, used: null, lastCost: null, at: null };
+
 /**
  * Fetch odds with cache, quota header logging, and detailed error reporting.
  *
@@ -2249,6 +2252,14 @@ async function fetchOdds(sport) {
     const used = response.headers['x-requests-used'];
     const lastCost = response.headers['x-requests-last'];
     console.log(`[ODDS] Quota — remaining: ${remaining}, used: ${used}, this call cost: ${lastCost}`);
+    // Kept so the health check can report it without spending a request of its
+    // own just to read a header.
+    lastOddsQuota = {
+      remaining: remaining === undefined ? null : Number(remaining),
+      used: used === undefined ? null : Number(used),
+      lastCost: lastCost === undefined ? null : Number(lastCost),
+      at: new Date().toISOString(),
+    };
 
     if (response.status >= 400) {
       console.error(`[ODDS] HTTP ${response.status} for ${sport}:`, JSON.stringify(response.data));
@@ -3045,6 +3056,34 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
 // a stale number — no model opinion is used at all, and none should be.
 
 /** Upcoming games for a whole week, with the current market spread and total. */
+/**
+ * Which day a game kicks off on, in the timezone the schedule is written in.
+ *
+ * Not UTC. An 8:20pm Eastern Wednesday kickoff is 00:20 UTC on Thursday, and an
+ * 8:35pm Eastern Thursday kickoff is Friday — so a UTC weekday gets NFL early
+ * games wrong in both directions at once. Checked against a real Week 1: it
+ * would have called the Wednesday opener a Thursday game and the Thursday game
+ * a Friday one.
+ */
+function easternWeekday(iso) {
+  try {
+    return new Date(iso).toLocaleString('en-US',
+      { timeZone: 'America/New_York', weekday: 'short' });
+  } catch (e) { return null; }
+}
+
+/**
+ * Is this game played before the Sunday slate?
+ *
+ * Picks go in on Sunday morning, so anything earlier in the week has already
+ * been played by then. That covers the Thursday game the pool's own rules
+ * exclude, and also the Wednesday openers the schedule has started using.
+ */
+function kicksOffBeforeSunday(iso) {
+  const day = easternWeekday(iso);
+  return day === 'Wed' || day === 'Thu' || day === 'Fri' || day === 'Sat';
+}
+
 app.get('/api/pool/:sport', async (req, res) => {
   const sport = String(req.params.sport || '').toLowerCase();
   const path = ESPN_SCOREBOARD_PATHS[sport];
@@ -3122,6 +3161,11 @@ app.get('/api/pool/:sport', async (req, res) => {
         gameTime: new Date(event.date).toLocaleString(),
         startTime: event.date,
         inProgress: comp?.status?.type?.state === 'in',
+        // Kicks off before Sunday, so it is gone by the time picks go in.
+        // Marked, never removed — "typically" is not "always", and a game you
+        // cannot see is a game you cannot decide about.
+        earlyWeek: kicksOffBeforeSunday(event.date),
+        kickoffDay: easternWeekday(event.date),
         marketSpread: (marketSpread !== null && model.plausibleSpread(sport, marketSpread))
           ? marketSpread : null,
         marketTotal,
@@ -3304,8 +3348,10 @@ app.post('/api/pool/:sport', async (req, res) => {
       games.push({ id: event.id, matchup: label, gameTime: new Date(event.date).toLocaleString(),
                    marketSpread, marketTotal, marketFrom,
                    spread: edge.spread, total: edge.total });
-      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label });
-      if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label });
+      const early = kicksOffBeforeSunday(event.date);
+      const day = easternWeekday(event.date);
+      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day });
+      if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day });
     }
 
     const best = model.rankPoolPicks(candidates, count);
@@ -3930,14 +3976,120 @@ app.get('/api/debug/odds/:sport', async (req, res) => {
 });
 
 // Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
+/**
+ * Does each source this app depends on actually answer?
+ *
+ * The old version reported which API KEYS were set, which is a different
+ * question and answers "yes" right up until the moment something breaks. This
+ * app's failures have almost all been silent rather than loud: ESPN 403'd the
+ * injuries feed and every team read as healthy; the opening-lines fetch asked
+ * for a window containing no football and every card came back with no price
+ * history; a blank input became a real pool line of zero; the Anthropic key was
+ * rejected and the written notes simply stopped appearing. Not one of those
+ * threw an error a reader would see, and several ran for hours.
+ *
+ * So this PROBES rather than introspects, and reports what each source did.
+ * A key being present is reported as configuration, separately, because having
+ * a key and the key working are not the same thing — the invalid Anthropic key
+ * was set the whole time it was failing.
+ */
+app.get('/api/health', async (req, res) => {
+  const started = Date.now();
+  const sport = String(req.query.sport || 'nfl').toLowerCase();
+  const checks = {};
+
+  const probe = async (name, fn) => {
+    const t0 = Date.now();
+    try {
+      const detail = await fn();
+      checks[name] = { ok: true, ms: Date.now() - t0, ...detail };
+    } catch (err) {
+      const status = err.response ? err.response.status : null;
+      checks[name] = { ok: false, ms: Date.now() - t0,
+                       error: `${status ? status + ' ' : ''}${err.message}` };
+    }
+  };
+
+  // 1. The scoreboard. Everything else hangs off knowing which games exist.
+  await probe('espnScoreboard', async () => {
+    const path = ESPN_SCOREBOARD_PATHS[sport];
+    if (!path) throw new Error(`unsupported sport ${sport}`);
+    const slate = await fetchSlate(path);
+    return { games: slate.events.length, lookingAhead: !!slate.upcoming };
+  });
+
+  // 2. Opening lines and prices — the odds board and the whole pool signal.
+  await probe('espnOpeningLines', async () => {
+    const lines = await fetchEspnOpeningLines(sport);
+    const rows = Object.values(lines || {});
+    const withBoard = rows.filter(r => r && r.board).length;
+    const withPrices = rows.filter(r => r && r.board && r.board.current &&
+      r.board.current.homeSpreadPrice !== null).length;
+    if (!rows.length) throw new Error('no games returned');
+    return { games: rows.length, withBoard, withPrices };
+  });
+
+  // 3. Injuries. This is the one that failed silently for a whole deploy.
+  await probe('espnInjuries', async () => {
+    const league = await fetchLeagueInjuries(sport);
+    const cached = injuryCache[sport] || {};
+    if (cached.error) throw new Error(cached.error);
+    const entries = [...league.values()].reduce((n, l) => n + l.length, 0);
+    if (!league.size) throw new Error('no teams returned');
+    return { teams: league.size, entries };
+  });
+
+  // 4. The paid odds feed, with what is left of the month.
+  await probe('oddsApi', async () => {
+    if (!process.env.ODDS_API_KEY) throw new Error('no key configured');
+    const games = await fetchOdds(sport);
+    return { games: (games || []).length,
+             quotaRemaining: lastOddsQuota.remaining ?? null,
+             quotaUsed: lastOddsQuota.used ?? null };
+  });
+
+  // 5. Claude, which writes the notes. Probed with the smallest call that
+  //    proves the key works rather than by checking the key exists.
+  await probe('anthropic', async () => {
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('no key configured');
+    const r = await axios.post('https://api.anthropic.com/v1/messages', {
+      model: 'claude-sonnet-4-5', max_tokens: 4,
+      messages: [{ role: 'user', content: 'ok' }],
+    }, {
+      timeout: 10000,
+      headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY,
+                 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    });
+    return { model: (r.data && r.data.model) || null };
+  });
+
+  // 6. The database, and whether anything is stuck ungraded.
+  await probe('database', async () => {
+    if (!dbReady || !pool) throw new Error('not configured');
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE result IS NULL)::int AS pending,
+              COUNT(*) FILTER (WHERE closing_line IS NOT NULL)::int AS withClosing
+         FROM picks`);
+    return rows[0];
+  });
+
+  const failing = Object.entries(checks).filter(([, c]) => !c.ok).map(([k]) => k);
+  res.status(failing.length ? 503 : 200).json({
+    status: failing.length ? 'degraded' : 'ok',
+    sport,
+    failing,
+    checks,
+    // Present is not the same as working — see the Anthropic key, which was set
+    // throughout the period it was being rejected.
+    configured: {
+      oddsApiKey: !!process.env.ODDS_API_KEY,
+      anthropicKey: !!process.env.ANTHROPIC_API_KEY,
+      database: dbReady,
+      book: MY_BOOK,
+    },
+    tookMs: Date.now() - started,
     timestamp: new Date().toISOString(),
-    hasOddsKey: !!process.env.ODDS_API_KEY,
-    hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
-    hasDatabase: dbReady,
-    cachedSports: Object.keys(oddsCache)
   });
 });
 
