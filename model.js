@@ -1723,9 +1723,34 @@ function betRecommendation({ bookValuePts = 0, inProgress = false, hasLine = tru
  * Whether a game is worth checking against a frozen pool line.
  *
  * Not a recommendation about betting it live — it is a prompt to go and look at
- * whether the pool number has kept up. Two points is where the measured
- * stale-line record was strongest (46-27), so that is the threshold, with a
- * softer flag from one point.
+ * whether the pool number has kept up.
+ *
+ * This is the one rule in the file that has survived a real holdout test. It
+ * was found on 2025, where a two-point move went 46-27. That is exactly the
+ * shape of a result that evaporates: one season, and a threshold picked after
+ * seeing the numbers. So it was re-run on 2024, which had never been looked at,
+ * with the rule and the threshold unchanged:
+ *
+ *              2025 (found)      2024 (holdout)     both
+ *   move >= 1     57.1%             53.5%           55.4% on 325 bets
+ *   move >= 1.5   62.7%             56.5%           —
+ *   move >= 2     63.0%             56.7%           60.0% on 140 bets
+ *   move >= 3     59.6%             63.3%           61.0% on 77 bets
+ *
+ * Break-even is 52.4%. Every threshold clears it in a season it was never
+ * fitted to. 2024 on its own is only about one standard deviation, so it is
+ * corroboration rather than proof — but it replicates at every threshold, in
+ * the same direction, which is what a real effect looks like and what a fluke
+ * usually does not.
+ *
+ * The control matters as much: backing the home side at the opening number
+ * regardless of which way the market moved went 267-264, 50.3%. So the edge is
+ * in the DIRECTION of the move, not in opening lines being soft.
+ *
+ * The one-point threshold is kept and no longer called soft. It wins on 325
+ * bets across both seasons, and it fires on roughly 60% of games where two
+ * points fires on 26% — which matters when six picks are needed and a slate
+ * only offers four numbers that moved two points.
  */
 function poolCandidate(spreadMovement, totalMovement) {
   const biggest = Math.max(
