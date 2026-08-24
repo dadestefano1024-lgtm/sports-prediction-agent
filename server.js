@@ -1880,12 +1880,17 @@ async function fetchEspnOpeningLines(sport) {
       let currentSpread = sbOdds ? parseAmericanValue(sbOdds.spread) : null;
       let currentTotal = sbOdds ? parseAmericanValue(sbOdds.overUnder) : null;
       let openSpread = null, openTotal = null, homeML = null, awayML = null;
+      let board = null;
 
       try {
         const core = await cachedGet(
           `https://sports.core.api.espn.com/v2/sports/${corePath}/events/${event.id}/competitions/${event.id}/odds`,
           { timeout: 8000 });
-        const item = ((core.data && core.data.items) || [])[0];
+        const items = (core.data && core.data.items) || [];
+        // Skip the in-play feeds. They sit in the same list and carry a live
+        // number: one of them had a 14.5 on a game the rest of the book had at
+        // 2.5, and taking items[0] blindly is how that gets believed.
+        const item = items.find(x => !/live/i.test((x.provider && x.provider.name) || '')) || items[0];
         if (item) {
           const hto = item.homeTeamOdds || {};
           const ato = item.awayTeamOdds || {};
@@ -1903,6 +1908,34 @@ async function fetchEspnOpeningLines(sport) {
 
           homeML = parseAmericanValue(hto.moneyLine !== undefined ? hto.moneyLine : pick(hto, 'current', 'moneyLine'));
           awayML = parseAmericanValue(ato.moneyLine !== undefined ? ato.moneyLine : pick(ato, 'current', 'moneyLine'));
+
+          // The board, in the shape a sportsbook shows it: what the number
+          // opened at and what it is now, each with the price beside it.
+          //
+          // ESPN has carried all of this the whole time and the app read only
+          // the point values out of it, so the prices — the part that tells you
+          // what a bet actually costs — were fetched and thrown away.
+          const phase = (w) => ({
+            homeSpread: parseAmericanValue(pick(hto, w, 'pointSpread')),
+            homeSpreadPrice: parseAmericanValue(pick(hto, w, 'spread')),
+            awaySpread: parseAmericanValue(pick(ato, w, 'pointSpread')),
+            awaySpreadPrice: parseAmericanValue(pick(ato, w, 'spread')),
+            homeML: parseAmericanValue(pick(hto, w, 'moneyLine')),
+            awayML: parseAmericanValue(pick(ato, w, 'moneyLine')),
+            total: parseAmericanValue(item[w] && item[w].total && item[w].total.american),
+            overPrice: parseAmericanValue(item[w] && item[w].over && item[w].over.american),
+            underPrice: parseAmericanValue(item[w] && item[w].under && item[w].under.american),
+          });
+          const any = (o) => Object.values(o).some(v => v !== null);
+          const open = phase('open');
+          const now = phase('current');
+          if (any(open) || any(now)) {
+            board = {
+              book: (item.provider && item.provider.name) || null,
+              open: any(open) ? open : null,
+              current: any(now) ? now : null,
+            };
+          }
         }
       } catch (e) {
         // Per-event failure costs the opening line for that game only; the
@@ -1912,7 +1945,7 @@ async function fetchEspnOpeningLines(sport) {
       if (currentSpread === null && currentTotal === null) return;
 
       result[event.id] = {
-        openSpread, currentSpread, openTotal, currentTotal, homeML, awayML,
+        openSpread, currentSpread, openTotal, currentTotal, homeML, awayML, board,
         // Movement is only meaningful when both ends are known. Null rather
         // than 0, so "no data" cannot be mistaken for "the line did not move" —
         // which is exactly how the old parser manufactured sharp signals.

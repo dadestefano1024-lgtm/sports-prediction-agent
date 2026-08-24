@@ -1668,24 +1668,23 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
       // How many points of stale value the pool number gives away against the
       // market. Measured on the side actually being picked.
       gap: +Math.abs((backHome ? poolSpread : awayLine) - (backHome ? marketSpread : -marketSpread)).toFixed(2),
-      // Unconditional: the chance this pick wins, full stop. The old code
-      // reported win/(win+loss), which quietly assumes a push refunds the
-      // stake. Plenty of pools score a push as a loss, and the both-lay format
-      // has no push at all — it just has a range where nobody wins — so the
-      // unconditional number is the one that is true regardless of the rules.
+      // Unconditional: the chance this pick wins, full stop.
+      //
+      // In THIS pool a push is a loss — confirmed by the person who plays in
+      // it. The old code reported win/(win+loss), which silently refunds a
+      // push, and that is not a rounding difference: a pool line sitting on a
+      // whole number is 50% under one rule and 47% under the other, and three
+      // is the most common margin in football. Every number here now assumes a
+      // push loses, which is also what the both-lay format does anyway.
       winProb: +(backHome ? homeProb : awayProb).toFixed(4),
-      // The same figure for a pool that voids pushes, so both rule sets are
-      // covered without either being assumed. Identical on a half-point line.
-      winProbIfPushVoid: +(() => {
-        const w = backHome ? homeProb : awayProb;
-        const l = backHome ? awayProb : homeProb;
-        return w + l > 0 ? w / (w + l) : 0.5;
-      })().toFixed(4),
       otherSideProb: +(backHome ? awayProb : homeProb).toFixed(4),
-      // On a two-sided line this is the push. When the pool lays points both
-      // ways it is the range where neither pick wins, which is much bigger and
-      // is the thing worth seeing.
+      // On a two-sided line this is the push, which in this pool is simply a
+      // loss. When the pool lays points both ways it is the whole range where
+      // neither pick wins, which is far bigger and is the thing worth seeing.
       pushProb: +(twoSided ? h.push : dead).toFixed(4),
+      // Whole numbers are worth avoiding when a push cannot be refunded, and
+      // in football the whole numbers that matter are 3 and 7.
+      pushRisk: +(twoSided ? h.push : dead).toFixed(4) >= 0.04,
       deadProb: +dead.toFixed(4),
       bothLay: !twoSided,
       homeLine: poolSpread,

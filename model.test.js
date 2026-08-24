@@ -957,14 +957,17 @@ test('poolEdge backs the side the market moved toward', () => {
 
 test('poolEdge on an unmoved line is a coin flip', () => {
   const r = m.poolEdge({ sport: 'nfl', poolSpread: -3, marketSpread: -3 });
-  // A pool that voids pushes: an unmoved line is exactly even.
-  close(r.spread.winProbIfPushVoid, 0.5, 0.02, 'no move means no edge');
-  // Unconditionally it is below even, because a whole-number line lands on the
-  // number often enough to matter — three is the most common NFL margin there
-  // is. A pool that scores a push as a loss makes this a losing pick, and the
-  // old arithmetic hid that by dividing it out.
-  close(r.spread.winProb, 0.47, 0.02, 'unconditional is lower than even');
+  // A push is a LOSS in this pool, so an unmoved line on a whole number is a
+  // losing pick rather than an even one — the push lands on three, which is the
+  // most common margin in football. The old arithmetic divided that away and
+  // reported an even bet.
+  close(r.spread.winProb, 0.47, 0.02, 'a push counts against you');
   assert.ok(r.spread.pushProb > 0.04, `push risk ${r.spread.pushProb} should be real on a 3`);
+  assert.equal(r.spread.pushRisk, true, 'a 3 must be flagged as push risk');
+  // A half-point line cannot push, so it is not flagged.
+  const half = m.poolEdge({ sport: 'nfl', poolSpread: -3.5, marketSpread: -3.5 }).spread;
+  assert.equal(half.pushRisk, false);
+  assert.ok(half.winProb > r.spread.winProb, 'a half point is worth more than the push risk');
   close(r.spread.gap, 0, 1e-9);
 });
 
