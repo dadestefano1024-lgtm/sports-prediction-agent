@@ -1336,16 +1336,41 @@ function coverOutcomes({ predictedMargin, spread, sigma, sport }) {
  * Half-point lines cannot push and fall out of the arithmetic at zero without
  * needing a special case.
  */
-/** P(total residual > offset), read off the counted table. */
-function totalResidualSurvival(offset) {
-  const { from, step, survival } = NFL_TOTAL_RESIDUALS;
-  const idx = (offset - from) / step;
-  if (idx < 0) return 1;
-  if (idx > survival.length - 1) return 0;
-  const lo = Math.floor(idx);
-  if (lo === idx) return survival[lo];
-  const frac = idx - lo;
-  return survival[lo] * (1 - frac) + survival[lo + 1] * frac;
+/**
+ * P(final total minus the expectation == x), counted.
+ *
+ * The table is measured around whole-number lines, so it is defined on the
+ * integers. An expectation of 48.5 puts every achievable total half a point off
+ * that grid, so a half-integer reads as the average of its two neighbours.
+ * Summed over all achievable totals this still comes to one.
+ */
+function totalResidualProb(x) {
+  const { lo, hi, p } = NFL_TOTAL_PMF;
+  const at = (k) => (k < lo || k > hi) ? 0 : p[k - lo];
+  if (Number.isInteger(x)) return at(x);
+  if (Math.abs(x * 2 - Math.round(x * 2)) > 1e-9) return 0;
+  return (at(Math.floor(x)) + at(Math.ceil(x))) / 2;
+}
+
+/**
+ * P(final total minus the expectation > offset).
+ *
+ * Which values the residual can take is decided by the EXPECTATION, not by the
+ * offset. With an expectation of 45 the residual is always an integer, whatever
+ * line is being priced against it; with an expectation of 48.5 it is always a
+ * half. Reading the grid off the offset instead priced Under 45.5 against a
+ * market 45 at 4.3% when the only games it gains are the ones totalling exactly
+ * 45 — 2.8%.
+ */
+function totalResidualSurvival(offset, expectation = 0) {
+  const { lo, hi } = NFL_TOTAL_PMF;
+  const half = !Number.isInteger(expectation);
+  let acc = 0;
+  for (let k = lo; k <= hi; k++) {
+    const r = half ? k + 0.5 : k;
+    if (r > offset) acc += totalResidualProb(r);
+  }
+  return acc;
 }
 
 function totalOutcomes({ predictedTotal, line, sigma, sport } = {}) {
@@ -1356,11 +1381,10 @@ function totalOutcomes({ predictedTotal, line, sigma, sport } = {}) {
   // nothing else has been measured and a curve is honest about being a guess.
   if (String(sport || '').toLowerCase() === 'nfl') {
     const offset = line - predictedTotal;
-    const over = totalResidualSurvival(offset);
-    // A whole number can land on itself. 3,549 games closed on one and 2.8% of
-    // them finished exactly there, which the normal at 10.5 called 3.8%.
-    const push = Number.isInteger(offset)
-      ? (NFL_TOTAL_RESIDUALS.exact[offset] || 0) : 0;
+    const over = totalResidualSurvival(offset, predictedTotal);
+    // A push needs the LINE to be a whole number, not the offset. Checking the
+    // offset reported a 2.8% push on 48.5, which no final score can ever hit.
+    const push = Number.isInteger(line) ? totalResidualProb(offset) : 0;
     return { over, push, under: Math.max(0, 1 - over - push) };
   }
 
@@ -1676,32 +1700,32 @@ function bestOffer({ quotes, probFor, trust = 0.25, kellyFraction = 0.25 }) {
 //
 // A normal cannot describe this: fitting the tails wants a sigma near 12.6 and
 // fitting the middle wants one near 14.7, because the total residual is flatter
-// in the centre than any normal with the same spread. The app was pricing at
-// 10.5, which put 3.8% on every single point of total — and it showed, because
-// every total verdict on the card printed the identical 3.8% whether the number
-// was 38.5 or 49.5. Measured, a point of total buys 2.76%.
+// in the centre than any normal with the same spread. The app priced at 10.5,
+// which put 3.8% on every point of total regardless of where the number sat.
+// Measured, a point buys 2.79%.
 //
-const NFL_TOTAL_RESIDUALS = {
-  games: 6967,
-  from: -30, step: 0.5,
-  survival: [
-    0.99397, 0.99368, 0.99282, 0.99182, 0.99067, 0.9888, 0.98794, 0.98737, 0.98579, 0.98378,
-    0.9812, 0.97904, 0.97646, 0.9733, 0.97072, 0.96785, 0.96426, 0.96067, 0.9568, 0.95206,
-    0.94818, 0.94244, 0.93842, 0.93297, 0.92752, 0.92177, 0.91503, 0.90656, 0.89996, 0.8935,
-    0.88618, 0.8767, 0.86493, 0.85517, 0.84656, 0.83494, 0.82331, 0.81369, 0.80365, 0.79274,
-    0.78097, 0.76604, 0.75226, 0.74264, 0.727, 0.7115, 0.69686, 0.68423, 0.66772, 0.65609,
-    0.64059, 0.62696, 0.61059, 0.59567, 0.57873, 0.56437, 0.54873, 0.53323, 0.51543, 0.50208,
-    0.48787, 0.47309, 0.45802, 0.4428, 0.42874, 0.41567, 0.40046, 0.38582, 0.37089, 0.35869,
-    0.34592, 0.334, 0.32123, 0.30659, 0.29453, 0.28291, 0.27228, 0.26181, 0.25004, 0.23927,
-    0.2308, 0.22061, 0.21056, 0.20066, 0.19018, 0.17985, 0.16994, 0.16061, 0.15229, 0.14483,
-    0.13779, 0.13162, 0.12286, 0.11727, 0.11095, 0.10564, 0.09933, 0.0943, 0.08913, 0.08468,
-    0.07909, 0.07421, 0.07019, 0.06717, 0.06301, 0.05957, 0.05655, 0.05225, 0.04923, 0.04722,
-    0.04392, 0.04005, 0.03746, 0.03488, 0.03215, 0.03014, 0.02785, 0.02426, 0.0234, 0.02225,
-    0.02124,
+// One integer PMF rather than a survival curve, because whole-number and
+// half-point lines do not share a grid — a residual off a 45 is an integer, one
+// off a 45.5 is never zero. A first version pooled them and priced Under 45.5
+// against a market 45 at 4.3%, when the only games that bet gains are the ones
+// totalling exactly 45. Built from the 3,549 whole-number closes, where the
+// residual is a clean integer, and every over, push and under is a sum over it.
+//
+// The slight under lean at offset zero (47.5 over, 49.7 under, 2.8 push) is
+// left as measured rather than centred. It is about a point, it shows up in the
+// full 6,967 games too, and forcing it to 50/50 would be imposing an assumption
+// on top of a measurement.
+const NFL_TOTAL_PMF = {
+  games: 3549, lo: -34, hi: 34,
+  p: [
+    0.00141, 0.00085, 0.00085, 0.00113, 0.00141, 0.00169, 0.00225, 0.00169, 0.0031, 0.00507,
+    0.00507, 0.00507, 0.00704, 0.00761, 0.00761, 0.00789, 0.01071, 0.01324, 0.01296, 0.01437,
+    0.02311, 0.01691, 0.02282, 0.01972, 0.02311, 0.02705, 0.03071, 0.02874, 0.0324, 0.03043,
+    0.03212, 0.03325, 0.03071, 0.03494, 0.0279, 0.02959, 0.02761, 0.02987, 0.0293, 0.02508,
+    0.02508, 0.02367, 0.02085, 0.02311, 0.01662, 0.01972, 0.02057, 0.01944, 0.01634, 0.01381,
+    0.01719, 0.0124, 0.0124, 0.01014, 0.01099, 0.00789, 0.00817, 0.00592, 0.00592, 0.00648,
+    0.00507, 0.00535, 0.00451, 0.00169, 0.00197, 0.00197, 0.00254, 0.00056, 0.01324,
   ],
-  // 3549 games closed on a whole number; how often the
-  // final total lands exactly k points off it.
-  exact: {"0":0.0279,"1":0.02959,"2":0.02761,"3":0.02987,"4":0.0293,"5":0.02508,"6":0.02508,"7":0.02367,"8":0.02085,"9":0.02311,"10":0.01662,"11":0.01972,"12":0.02057,"-12":0.02282,"-11":0.01972,"-10":0.02311,"-9":0.02705,"-8":0.03071,"-7":0.02874,"-6":0.0324,"-5":0.03043,"-4":0.03212,"-3":0.03325,"-2":0.03071,"-1":0.03494},
 };
 
 const NFL_RESIDUALS = {
@@ -2623,8 +2647,9 @@ module.exports = {
   totalPmf,
   coverOutcomes,
   lineValueProb,
-  NFL_TOTAL_RESIDUALS,
+  NFL_TOTAL_PMF,
   totalResidualSurvival,
+  totalResidualProb,
   totalOutcomes,
   opponentAdjustedRatings,
   projectFromRatings,

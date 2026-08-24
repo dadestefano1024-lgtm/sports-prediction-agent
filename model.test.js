@@ -2049,3 +2049,40 @@ test('sports without a measured total table keep the curve', () => {
   assert.ok(nba.over > 0 && nba.under > 0, 'the normal path still works');
   assert.ok(Math.abs(nba.over + nba.push + nba.under - 1) < 1e-6);
 });
+
+test('a half-point total can never push, whatever the expectation', () => {
+  // Checking the OFFSET rather than the line reported a 2.8% push on 48.5.
+  for (const [p, l] of [[48.5, 48.5], [45, 45.5], [48.5, 47.5], [45, 47.5]]) {
+    const o = m.totalOutcomes({ predictedTotal: p, line: l, sport: 'nfl' });
+    assert.equal(o.push, 0, `${l} is a half point and cannot land on itself`);
+  }
+});
+
+test('a whole-number total pushes whatever the expectation parity', () => {
+  for (const [p, l] of [[45, 45], [48.5, 48], [45, 46]]) {
+    const o = m.totalOutcomes({ predictedTotal: p, line: l, sport: 'nfl' });
+    assert.ok(o.push > 0.02 && o.push < 0.05,
+      `${l} should push a few percent, got ${(o.push * 100).toFixed(2)}%`);
+  }
+});
+
+test('the residual grid comes from the expectation, not the offset', () => {
+  // Under 45 -> Under 45.5 gains exactly the games totalling 45, and nothing
+  // else. Taking the grid from the offset priced this at 4.3%.
+  const at45 = m.totalOutcomes({ predictedTotal: 45, line: 45, sport: 'nfl' });
+  const at455 = m.totalOutcomes({ predictedTotal: 45, line: 45.5, sport: 'nfl' });
+  const buys = at455.under - at45.under;
+  assert.ok(Math.abs(buys - at45.push) < 1e-9,
+    `the half point must buy exactly the push it absorbs: ${(buys * 100).toFixed(2)}% vs ${(at45.push * 100).toFixed(2)}%`);
+});
+
+test('totals sum to one across every parity combination', () => {
+  for (const p of [44, 44.5, 45, 48.5]) {
+    for (const l of [43, 43.5, 44, 44.5, 45, 45.5, 48, 48.5]) {
+      const o = m.totalOutcomes({ predictedTotal: p, line: l, sport: 'nfl' });
+      assert.ok(Math.abs(o.over + o.push + o.under - 1) < 1e-6,
+        `exp ${p} line ${l} sums to ${(o.over + o.push + o.under).toFixed(6)}`);
+      assert.ok(o.over >= 0 && o.push >= 0 && o.under >= 0, `exp ${p} line ${l} went negative`);
+    }
+  }
+});
