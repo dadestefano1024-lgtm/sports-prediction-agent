@@ -2928,8 +2928,17 @@ app.get('/api/pool/:sport', async (req, res) => {
       cachedGet(espnScoreboardUrl(path, 7), { timeout: 10000 }),
       fetchOdds(sport).catch(() => []),
     ]);
-    const events = ((sb.data && sb.data.events) || []).filter(e =>
+    const scheduled = ((sb.data && sb.data.events) || []).filter(e =>
       e.competitions?.[0]?.status?.type?.state === 'pre');
+
+    // Regular season only. The pool is a weekly regular-season pick-em, and the
+    // seven-day window in late August is full of preseason games — the tab was
+    // offering Steelers at Bills on 27 August, a game nobody's pool will set a
+    // line for. Filtered per event, because seasontype as a query parameter
+    // does not filter a date range. Falls back to whatever is scheduled if no
+    // regular-season game is in range, rather than showing an empty tab.
+    const regular = scheduled.filter(e => e.season && e.season.type === 2);
+    const events = regular.length ? regular : scheduled;
 
     const games = events.map(event => {
       const comp = event.competitions[0];
@@ -2940,13 +2949,30 @@ app.get('/api/pool/:sport', async (req, res) => {
       const odds = matchOddsToGame(oddsData, homeFull, awayFull);
       const espnOdds = (comp.odds || [])[0] || null;
 
-      // The Odds API first, ESPN's own number as a fallback.
-      const marketSpread = odds && Number.isFinite(Number(odds.spread))
-        ? Number(odds.spread)
-        : (espnOdds && Number.isFinite(Number(espnOdds.spread)) ? Number(espnOdds.spread) : null);
-      const marketTotal = odds && Number.isFinite(Number(odds.total))
-        ? Number(odds.total)
-        : (espnOdds && Number.isFinite(Number(espnOdds.overUnder)) ? Number(espnOdds.overUnder) : null);
+      // The book actually being bet at, then consensus, then ESPN.
+      //
+      // A frozen pool line is worth scoring against the number on the screen of
+      // the account placing the bet, not against a consensus of nine books
+      // eight of which have none. They usually agree — DraftKings is a
+      // market-maker — and where they differ, the card already shows the
+      // DraftKings number, so consensus would be comparing against something
+      // the reader never saw.
+      const mb = odds && odds.myBook;
+      const pickNum = (...vals) => {
+        for (const v of vals) {
+          if (v === null || v === undefined || v === '') continue;
+          const n = Number(v);
+          if (Number.isFinite(n)) return n;
+        }
+        return null;
+      };
+      const marketSpread = pickNum(mb && mb.spread, odds && odds.spread,
+                                   espnOdds && espnOdds.spread);
+      const marketTotal = pickNum(mb && mb.total, odds && odds.total,
+                                  espnOdds && espnOdds.overUnder);
+      const marketFrom = (mb && Number.isFinite(Number(mb.spread))) ? (mb.name || MY_BOOK)
+        : (odds && Number.isFinite(Number(odds.spread))) ? 'market consensus'
+          : espnOdds ? 'ESPN' : null;
 
       return {
         id: event.id,
@@ -2958,6 +2984,7 @@ app.get('/api/pool/:sport', async (req, res) => {
         marketSpread: (marketSpread !== null && model.plausibleSpread(sport, marketSpread))
           ? marketSpread : null,
         marketTotal,
+        marketFrom,
         bookmaker: odds ? odds.bookmaker : null,
       };
     });
@@ -2990,8 +3017,12 @@ app.post('/api/pool/:sport', async (req, res) => {
       cachedGet(espnScoreboardUrl(path, 7), { timeout: 10000 }),
       fetchOdds(sport).catch(() => []),
     ]);
-    const events = ((sb.data && sb.data.events) || []).filter(e =>
+    const scheduledPost = ((sb.data && sb.data.events) || []).filter(e =>
       e.competitions?.[0]?.status?.type?.state === 'pre');
+    // Same regular-season filter as the GET, so the two halves of the tab
+    // cannot disagree about which games are on the card.
+    const regularPost = scheduledPost.filter(e => e.season && e.season.type === 2);
+    const events = regularPost.length ? regularPost : scheduledPost;
 
     const candidates = [];
     const games = [];

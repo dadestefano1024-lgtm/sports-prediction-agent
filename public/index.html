@@ -1289,7 +1289,7 @@
 
       document.getElementById('content').innerHTML = `
         <div class="pool-note">
-          Enter your pool&rsquo;s lines beside the current market number. Each team&rsquo;s
+          Enter your pool&rsquo;s lines beside the current number at your book. Each team&rsquo;s
           number goes in its own box, as the pool posts it &mdash; so a normal line is
           <strong>-3</strong> and <strong>+3</strong>, and the away box fills itself in until you
           change it. Your entries are saved in this browser, so you only type them once a week.
@@ -1319,7 +1319,12 @@
         <div id="pool-results"></div>
         <table class="pool-table">
           <thead><tr>
-            <th>Game</th><th>Market spread</th><th>Home line</th><th>Away line</th>
+            <th>Game</th><th>${(() => {
+              // Name the source. "Market" was ambiguous and the answer has
+              // changed: it is the book being bet at, not a consensus.
+              const froms = [...new Set(poolGames.map(g => g.marketFrom).filter(Boolean))];
+              return froms.length === 1 ? froms[0] : 'Market';
+            })()} spread</th><th>Home line</th><th>Away line</th>
             <th>Market total</th><th>Your total</th>
           </tr></thead>
           <tbody>${rows}</tbody>
