@@ -2015,6 +2015,12 @@ async function fetchOdds(sport) {
  *   4. Loose name matching handles "Lakers" vs "Los Angeles Lakers" mismatches
  *      between ESPN and The Odds API.
  */
+
+
+// The book the user actually bets at. Everything about line shopping changes
+// depending on whether you hold one account or nine; this is the one.
+const MY_BOOK = process.env.MY_BOOK || 'DraftKings';
+
 function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
   if (!oddsData || oddsData.length === 0) return null;
 
@@ -2147,7 +2153,41 @@ function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
     return +(((top - worst) / worst) * 100).toFixed(2);
   };
 
+  // The book actually being bet at. Comparing every book is only useful to
+  // someone holding accounts at every book; comparing YOUR book against the
+  // consensus is useful to someone holding one, which is the normal case. It is
+  // the same stale-number logic the pool tab uses, pointed at a single book: if
+  // DraftKings is posting -2.5 while eight others sit at -3.5, that point is
+  // available without opening a second account.
+  const myName = MY_BOOK.toLowerCase();
+  const mySpread = spreadQuotes.find(q => (q.book || '').toLowerCase() === myName) || null;
+  const myTotal = totalQuotes.find(q => (q.book || '').toLowerCase() === myName) || null;
+
+  // Points better than consensus, per side. Positive means the book is offering
+  // a better number than the market for someone backing that side.
+  const myBook = (mySpread || myTotal) ? {
+    name: MY_BOOK,
+    spread: mySpread ? mySpread.point : null,
+    spreadHomePrice: mySpread ? mySpread.homePrice : null,
+    spreadAwayPrice: mySpread ? mySpread.awayPrice : null,
+    total: myTotal ? myTotal.point : null,
+    overPrice: myTotal ? myTotal.overPrice : null,
+    underPrice: myTotal ? myTotal.underPrice : null,
+    // A home backer wants the biggest number; an away backer the smallest.
+    homeEdgePts: (mySpread && spreadPoint !== null)
+      ? +(mySpread.point - spreadPoint).toFixed(2) : null,
+    awayEdgePts: (mySpread && spreadPoint !== null)
+      ? +(spreadPoint - mySpread.point).toFixed(2) : null,
+    // An over backer wants the lowest total; an under backer the highest.
+    overEdgePts: (myTotal && totalPoint !== null)
+      ? +(totalPoint - myTotal.point).toFixed(2) : null,
+    underEdgePts: (myTotal && totalPoint !== null)
+      ? +(myTotal.point - totalPoint).toFixed(2) : null,
+  } : null;
+
   return {
+    myBook,
+
     // Every book's actual offer, so a caller can price each one on its own
     // number rather than forcing them all onto the consensus. Books disagree on
     // the POINT, not just the price — a full point apart is common — and a
@@ -2283,6 +2323,22 @@ async function fetchCommentary(sport, prompt) {
   }
 }
 
+/**
+ * Confidence in the only thing on this tab worth being confident about.
+ *
+ * The old badge graded the model's edge, which after measurement is noise, and
+ * at the shipped trust setting it read Low on everything regardless. This grades
+ * how much better a number the book being bet at is offering than the rest of
+ * the market — which is a fact about prices rather than a prediction, and is
+ * the one advantage available to someone with a single account.
+ */
+function bookConfidence(points) {
+  if (!Number.isFinite(points) || points <= 0) return 'Low';
+  if (points >= 1) return 'High';
+  if (points >= 0.5) return 'Medium';
+  return 'Low';
+}
+
 function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
   const fields = FORM_FIELDS[sport] || FORM_FIELDS.nba;
   const scoredKey = fields[0];
@@ -2366,10 +2422,22 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
     }
     const best = priced.spread || priced.total;
 
+    // Best number advantage this book offers on any side of this game.
+    const mb = odds.myBook;
+    const bookValue = mb ? Math.max(
+      ...[mb.homeEdgePts, mb.awayEdgePts, mb.overEdgePts, mb.underEdgePts]
+        .filter(v => Number.isFinite(v)), 0) : 0;
+
     return {
       homeTeam: g.homeTeam,
       awayTeam: g.awayTeam,
       gameTime: g.gameTime,
+      // Raw ISO as well as the display string. The server runs in UTC, so
+      // formatting there put every evening game on the wrong date for anyone
+      // west of Greenwich — a 6pm kickoff rendered as tomorrow. The browser
+      // knows the reader's timezone; the server does not.
+      startTime: g.startTime || null,
+      inProgress: !!g.inProgress,
       spread: odds.spread ?? null,
       total: odds.total ?? null,
       homeML: odds.homeML ?? null,
@@ -2397,11 +2465,12 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       totalLine: priced.total ? priced.total.point : null,
       totalEdge: priced.total ? +(priced.total.edge * 100).toFixed(2) : 0,
       kellyTotal: priced.total ? +(priced.total.stake * 100).toFixed(2) : 0,
-      // Win probability is the honest headline. For a bet priced at the market
-      // this sits near 50% by construction, and seeing that is the point —
-      // there is no such thing as a high-confidence spread bet at a fair price.
-      winProbability: best ? +(best.blendedProb * 100).toFixed(1) : null,
-      confidence: best ? best.confidence : 'Low',
+      // What the book being bet at is offering versus the rest of the market.
+      // This is the only edge on the live tabs that survived measurement, so it
+      // is what the badge now reflects.
+      myBook: odds.myBook || null,
+      bookValuePts: bookValue,
+      confidence: bookConfidence(bookValue),
 
       keyFactors: commentary[g.homeTeam + '|' + g.awayTeam] || [],
 
@@ -2472,6 +2541,7 @@ app.get('/api/pool/:sport', async (req, res) => {
         awayTeam: awayFull,
         gameTime: new Date(event.date).toLocaleString(),
         startTime: event.date,
+        inProgress: comp?.status?.type?.state === 'in',
         marketSpread: (marketSpread !== null && model.plausibleSpread(sport, marketSpread))
           ? marketSpread : null,
         marketTotal,
@@ -2755,6 +2825,7 @@ async function handleNFLPredictions(res, oddsData) {
         // parseable instant, and reading it from ESPN means it still works
         // when The Odds API has no quote for the game.
         startTime: event.date,
+        inProgress: comp?.status?.type?.state === 'in',
         homeData: homeStats,
         awayData: awayStats,
         homeForm,
@@ -2892,6 +2963,7 @@ async function handleNBAPredictions(res, oddsData) {
         // parseable instant, and reading it from ESPN means it still works
         // when The Odds API has no quote for the game.
         startTime: event.date,
+        inProgress: comp?.status?.type?.state === 'in',
         homeData: homeStats,
         awayData: awayStats,
         homeForm: homeForm,
@@ -3017,6 +3089,7 @@ async function handleNHLPredictions(res, oddsData) {
         // parseable instant, and reading it from ESPN means it still works
         // when The Odds API has no quote for the game.
         startTime: event.date,
+        inProgress: comp?.status?.type?.state === 'in',
         homeData: homeStats,
         awayData: awayStats,
         homeForm: homeForm,
@@ -3149,6 +3222,7 @@ async function handleMLBPredictions(res, oddsData) {
         // parseable instant, and reading it from ESPN means it still works
         // when The Odds API has no quote for the game.
         startTime: event.date,
+        inProgress: comp?.status?.type?.state === 'in',
         venue: venueName,
         ballparkFactor: getBallparkFactor(venueName),
         homeData: homeStats,

@@ -707,6 +707,21 @@
     }
 
     // Format a movement value with color and arrow
+    // The server runs in UTC, so anything it formats is on the wrong date for
+    // most readers — a 6pm kickoff came back as tomorrow. Format from the raw
+    // ISO instead; the browser knows the timezone and the server never can.
+    function fmtKickoff(game) {
+      const iso = game.startTime;
+      if (!iso) return game.gameTime || '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return game.gameTime || '';
+      const today = new Date();
+      const sameDay = d.toDateString() === today.toDateString();
+      const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      return sameDay ? `Today ${time}`
+        : `${d.toLocaleDateString([], { weekday: 'short', month: 'numeric', day: 'numeric' })} ${time}`;
+    }
+
     function fmtMovement(val) {
       // Unknown and unmoved are different facts. Showing "no move" for a
       // missing opening line is how a broken feed reads as a real measurement.
@@ -956,14 +971,17 @@
             <div class="card-header">
               <div>
                 <div class="teams">${g.awayTeam} @ ${g.homeTeam}${valueBadge}</div>
-                <div class="game-time">${g.gameTime || ''}</div>
+                <div class="game-time">${
+                  g.inProgress ? '<span style="color:#f0883e">● In progress</span> &middot; ' : ''
+                }${fmtKickoff(g)}</div>
               </div>
               <div class="header-badges">
                 ${weatherBadge}
                 <span class="confidence ${g.confidence}">${
-                  g.winProbability === null || g.winProbability === undefined
-                    ? 'no pick'
-                    : g.winProbability + '% win'}</span>
+                  g.inProgress ? 'live'
+                    : (g.bookValuePts > 0
+                        ? `+${g.bookValuePts} pt${g.bookValuePts === 1 ? '' : 's'} at ${(g.myBook && g.myBook.name) || 'your book'}`
+                        : 'market price')}</span>
               </div>
             </div>
             <div class="card-body">
