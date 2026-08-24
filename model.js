@@ -482,6 +482,11 @@ function runLineEdge({
 } = {}) {
   if (!Number.isFinite(spread)) return null;
   if (!Number.isFinite(spreadHomePrice) || !Number.isFinite(spreadAwayPrice)) return null;
+  // A price of 0 is finite and clears the guard above, but no book posts one —
+  // it is what parseAmericanValue returns for "EVEN" and "PK". americanToDecimal
+  // throws on it, and that call sits OUTSIDE the try below, so one unparsed
+  // price failed the whole slate instead of dropping one game.
+  if (spreadHomePrice === 0 || spreadAwayPrice === 0) return null;
 
   let pHome;
   try {

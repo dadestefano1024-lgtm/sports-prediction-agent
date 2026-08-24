@@ -839,6 +839,28 @@ const httpCache = {};
 const inFlightRequests = {};
 const HTTP_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
+// Drop what has expired.
+//
+// Nothing ever deleted from httpCache, and the key space is not bounded:
+// espnScoreboardUrl embeds today's date, so every calendar day minted brand-new
+// keys for both the near and the 45-day windows, and per-event odds URLs add a
+// key per game per sport. The previous day's multi-megabyte payloads were
+// retained forever, which on a long-lived instance is a slow leak rather than a
+// cache.
+function sweepHttpCache() {
+  const now = Date.now();
+  let dropped = 0;
+  for (const key of Object.keys(httpCache)) {
+    if ((now - httpCache[key].timestamp) >= HTTP_CACHE_TTL_MS) {
+      delete httpCache[key];
+      dropped++;
+    }
+  }
+  if (dropped) console.log(`[CACHE] dropped ${dropped} expired entries`);
+  return dropped;
+}
+setInterval(sweepHttpCache, HTTP_CACHE_TTL_MS).unref?.();
+
 async function cachedGet(url, options) {
   const hit = httpCache[url];
   if (hit && (Date.now() - hit.timestamp) < HTTP_CACHE_TTL_MS) {
@@ -1749,10 +1771,19 @@ const BROWSER_HEADERS = {
 // into one attempt, which matters more when something is broken than when it
 // is working.
 const injuryCache = {};
+const injuryInFlight = {};
 const INJURY_CACHE_TTL_MS = 10 * 60 * 1000;
 
 /** Every team's injuries for a league, keyed by normalised team name. */
-async function fetchLeagueInjuries(sport) {
+function fetchLeagueInjuries(sport) {
+  const p = buildLeagueInjuries(sport);
+  // Only track a promise that is actually going to do work; the cached path
+  // inside returns immediately and clears nothing.
+  if (INJURY_PATHS[sport] && !injuryCache[sport]) injuryInFlight[sport] = p;
+  return p;
+}
+
+async function buildLeagueInjuries(sport) {
   const path = INJURY_PATHS[sport];
   if (!path) return new Map();
   const key = (name) => String(name || '').toLowerCase().replace(/[^a-z]/g, '');
@@ -1761,8 +1792,21 @@ async function fetchLeagueInjuries(sport) {
   if (cached && (Date.now() - cached.timestamp) < INJURY_CACHE_TTL_MS) {
     return cached.map;
   }
+  // Share the in-flight work, not just the HTTP.
+  //
+  // cachedGet already collapses the concurrent requests to one download, but
+  // the cache below is only written AFTER the transform — so on a ten-game card
+  // all twenty callers missed the check above, all awaited the same download,
+  // and then each one independently classified and sorted the same 290-entry,
+  // 30-team payload and built its own Map. Nineteen of those were discarded,
+  // and which one survived in the cache was a race.
+  //
+  // Storing the promise before awaiting is the same fix cachedGet already uses
+  // for the download.
+  if (injuryInFlight[sport]) return injuryInFlight[sport];
   const remember = (map, error) => {
     injuryCache[sport] = { timestamp: Date.now(), map, error: error || null };
+    delete injuryInFlight[sport];
     return map;
   };
 
@@ -1822,7 +1866,13 @@ async function fetchInjuries(teamFullName, sport) {
 
   // Fall back to a suffix match, which covers the handful of places where the
   // scoreboard and the injury feed disagree on a name.
+  //
+  // The empty string has to be rejected first: key() strips everything
+  // non-alphabetic, so a missing name gives '', and name.endsWith('') is true
+  // for the FIRST team in the Map — which returned an unrelated team's injured
+  // players as this game's rather than returning nothing.
   const want = key(teamFullName);
+  if (!want) return [];
   for (const [name, entries] of league) {
     if (name.endsWith(want) || want.endsWith(name)) return entries;
   }
