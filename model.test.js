@@ -1959,12 +1959,17 @@ test('the working reports a check that found nothing, rather than staying quiet'
 });
 
 test('the working warns that a push is a loss in the pool', () => {
+  // -4 to -3 buys both kinds of value: a couple of points of outright win from
+  // the 4, and the whole 3 turned from a loss into a refund. Both get said, and
+  // the refund is flagged as something the pool does not credit.
   const r = m.bestBet({ sport: 'nfl', bookValuePts: 1, bookSide: 'home', bookPick: 'Bills -3',
     marketSpread: -4, bookSpread: -3, predictedMargin: 4, situationFlags: [],
     homeTeam: 'Bills', awayTeam: 'Jets' });
-  const push = r.basis.find(b => b.label === 'lands exactly there');
-  assert.ok(push, 'a whole number on the 3 must flag its push rate');
-  assert.match(push.text, /loss in the Pick 6/);
+  const buys = r.basis.find(b => b.label === 'what it buys');
+  assert.match(buys.text, /points of win probability/, 'the real win gain must be reported');
+  const refund = r.basis.find(b => b.label === 'and at the book');
+  assert.ok(refund, 'the pushes gained must be reported too');
+  assert.match(refund.text, /Pick 6 does not/);
 });
 
 test('the working never repeats the caveat printed above it', () => {
@@ -1975,4 +1980,32 @@ test('the working never repeats the caveat printed above it', () => {
   assert.ok(r.caveat, 'a contradicted total should carry a caveat');
   assert.equal(r.basis.filter(b => b.text === r.caveat).length, 0,
     'the caveat is shown above the working and must not repeat inside it');
+});
+
+test('a half point that only buys pushes is called worthless in the pool', () => {
+  // Broncos +2.5 -> +3 wins no extra games; it turns 9.3% of losses into
+  // refunds. That is money at a book and nothing in a pool where a push loses,
+  // and the working said "0.0 points of win probability" under "Slight edge".
+  const r = m.bestBet({ sport: 'nfl', bookValuePts: 0.5, bookSide: 'away',
+    bookPick: 'Denver Broncos +3', marketSpread: -2.5, bookSpread: -3,
+    predictedMargin: -2, situationFlags: [],
+    homeTeam: 'Kansas City Chiefs', awayTeam: 'Denver Broncos' });
+  const buys = r.basis.find(b => b.label === 'what it buys');
+  assert.match(buys.text, /no extra wins at all/,
+    `a push-only half point must not be sold as win probability: ${buys.text}`);
+  assert.ok(r.basis.some(b => b.label === 'in the Pick 6' && /worth nothing/.test(b.text)),
+    'the pool reader has to be told this one is worthless there');
+  // and it must not also print the generic push row
+  assert.equal(r.basis.filter(b => b.label === 'lands exactly there').length, 0,
+    'the refund point should be made once, not twice');
+});
+
+test('a half point that buys real wins still reports them', () => {
+  const r = m.bestBet({ sport: 'nfl', bookValuePts: 1, bookSide: 'home', bookPick: 'Chiefs -2.5',
+    marketSpread: -3.5, bookSpread: -2.5, predictedMargin: 5, situationFlags: [],
+    homeTeam: 'Chiefs', awayTeam: 'Ravens' });
+  const buys = r.basis.find(b => b.label === 'what it buys');
+  assert.match(buys.text, /9\.\d points of win probability/);
+  assert.ok(!r.basis.some(b => b.label === 'in the Pick 6'),
+    'a genuinely valuable number must not be labelled worthless in the pool');
 });

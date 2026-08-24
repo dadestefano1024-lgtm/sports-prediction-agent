@@ -2176,7 +2176,8 @@ function lineValueProb({ sport, market = 'spread', side, marketNumber, bookNumbe
       return { p: side === 'over' ? o.over : o.under, push: o.push };
     };
     const book = at(bookNumber), mkt = at(marketNumber);
-    return { gain: book.p - mkt.p, bookProb: book.p, marketProb: mkt.p, push: book.push };
+    return { gain: book.p - mkt.p, pushGain: book.push - mkt.push,
+             bookProb: book.p, marketProb: mkt.p, push: book.push };
   }
   if (side !== 'home' && side !== 'away') return null;
   const at = (spread) => {
@@ -2185,7 +2186,8 @@ function lineValueProb({ sport, market = 'spread', side, marketNumber, bookNumbe
     return { p: side === 'home' ? o.win : o.loss, push: o.push };
   };
   const book = at(bookNumber), mkt = at(marketNumber);
-  return { gain: book.p - mkt.p, bookProb: book.p, marketProb: mkt.p, push: book.push };
+  return { gain: book.p - mkt.p, pushGain: book.push - mkt.push,
+           bookProb: book.p, marketProb: mkt.p, push: book.push };
 }
 
 function bestBet({
@@ -2285,18 +2287,45 @@ function bestBet({
     // 2. What that difference actually buys. The point of the whole exercise:
     //    a point is worth about three and a half at a spread of 3 and barely
     //    two at 12, and nobody carries that table in their head.
-    if (val && val.gain > 0) {
-      rows.push({ label: 'what it buys', text:
-        `${(val.gain * 100).toFixed(1)} points of win probability — ${pct(val.marketProb)} at the ` +
-        `market number, ${pct(val.bookProb)} at yours` +
-        (DISCRETE_MARGIN_SPORTS.has(String(sport).toLowerCase()) && !isTotal
-          ? ', priced on counted game margins rather than a bell curve' : '') });
+    // A better number buys two different things and they are not worth the same
+    // to this reader. Extra WINS are worth the same everywhere. Extra PUSHES are
+    // worth a refund at a book and nothing at all in the pool, where a push is a
+    // loss — so a half point that only converts losses into pushes is a real
+    // edge on Sunday and literally zero in the Pick 6.
+    //
+    // Reported separately because collapsing them printed "0.0 points of win
+    // probability" under a verdict reading "Slight edge" on Broncos +3, which
+    // is both true and useless: +2.5 to +3 wins no extra games, it turns 9.3%
+    // of losses into refunds.
+    if (val) {
+      const win = val.gain, extraPush = val.pushGain || 0;
+      const counted = DISCRETE_MARGIN_SPORTS.has(String(sport).toLowerCase()) && !isTotal
+        ? ', priced on counted game margins rather than a bell curve' : '';
+      const refundLine = `${pct(extraPush)} of outcomes turn from a loss into a refund — ` +
+        'which your book pays back and the Pick 6 does not, because a push is a loss there';
+      if (win >= 0.005 && extraPush >= 0.005) {
+        rows.push({ label: 'what it buys', text:
+          `${(win * 100).toFixed(1)} points of win probability — ${pct(val.marketProb)} at the ` +
+          `market number, ${pct(val.bookProb)} at yours${counted}` });
+        rows.push({ label: 'and at the book', text: refundLine });
+      } else if (win >= 0.005) {
+        rows.push({ label: 'what it buys', text:
+          `${(win * 100).toFixed(1)} points of win probability — ${pct(val.marketProb)} at the ` +
+          `market number, ${pct(val.bookProb)} at yours${counted}` });
+      } else if (extraPush >= 0.005) {
+        rows.push({ label: 'what it buys', text:
+          `no extra wins at all — both numbers win ${pct(val.bookProb)} of the time. ` + refundLine });
+        rows.push({ label: 'in the Pick 6', text:
+          'this one is worth nothing. Do not spend a pick on it' });
+      }
     }
 
     // 3. Whether it lands on a number games actually finish on. Worth saying in
     //    both directions, because a push is a refund at the book and a LOSS in
     //    the pool, and the same half point means opposite things across the two.
-    if (val && val.push >= 0.03) {
+    // Only when the push was NOT the thing being bought — otherwise the rows
+    // above have already said it, at more length and more usefully.
+    if (val && val.push >= 0.03 && (val.pushGain || 0) < 0.005) {
       rows.push({ label: 'lands exactly there', text:
         `${pct(val.push)} of games finish on that number — a refund at your book, ` +
         'but a loss in the Pick 6' });
