@@ -319,7 +319,7 @@ test('sportConfig', () => {
     assert.ok(c.sigma > 0 && c.totalSigma > 0 && c.eloPerPoint > 0 && c.k > 0);
   }
   m.sportConfig('nfl').sigma = 999;
-  assert.equal(m.sportConfig('nfl').sigma, 13.5, 'config must be returned by value');
+  assert.equal(m.sportConfig('nfl').sigma, 10.82, 'config must be returned by value');
 });
 
 // ----------------------------------------------------------------------------
@@ -1646,4 +1646,31 @@ test('bestBet withholds a hockey verdict until the sweep is explained', () => {
   assert.equal(v.level, 'coinflip', 'but it must not become a recommendation');
   assert.equal(v.pick, null);
   assert.match(v.reason, /not trusted yet/);
+});
+
+test('the NFL sigma is the measured one, and prices a stale line correctly', () => {
+  // Measured over 1,087 games, 2022-2025. If this drifts back toward 13.5 the
+  // Pick 6 numbers go quietly wrong again, so it is pinned.
+  assert.ok(Math.abs(m.SPORTS.nfl.sigma - 10.82) < 0.01, `sigma is ${m.SPORTS.nfl.sigma}`);
+
+  // What actually happened at each offset, against what the model says now.
+  const real = { 2: 0.583, 3: 0.616, 5: 0.686, 7: 0.741 };
+  for (const [stale, actual] of Object.entries(real)) {
+    const d = m.marginDistribution(0, m.SPORTS.nfl.sigma);
+    const predicted = d.probAbove(-Number(stale));
+    assert.ok(Math.abs(predicted - actual) < 0.015,
+      `${stale} points stale: model ${predicted.toFixed(3)}, reality ${actual}`);
+  }
+});
+
+test('the lean threshold is stated per sport, not derived from football', () => {
+  // It used to be a fraction of nfl sigma, so measuring football moved
+  // basketball. Basketball's sigma is still a placeholder; the two must not be
+  // coupled.
+  assert.equal(m.SPORTS.nfl.leanThreshold, 3);
+  assert.equal(m.SPORTS.nba.leanThreshold, 2.5);
+  assert.equal(m.bestBet({ sport: 'nfl', predictedMargin: 2.9, marketSpread: 0 }).level, 'coinflip');
+  assert.equal(m.bestBet({ sport: 'nfl', predictedMargin: 3, marketSpread: 0 }).level, 'lean');
+  assert.equal(m.bestBet({ sport: 'nba', predictedMargin: 2.4, marketSpread: 0 }).level, 'coinflip');
+  assert.equal(m.bestBet({ sport: 'nba', predictedMargin: 2.5, marketSpread: 0 }).level, 'lean');
 });

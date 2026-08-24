@@ -69,8 +69,30 @@
 // on. Recalibrate from your own graded results.
 
 const SPORTS = {
-  nfl: { sigma: 13.5, totalSigma: 10.5, hfa: 1.8,  eloPerPoint: 25, k: 20 },
-  nba: { sigma: 11.5, totalSigma: 15.0, hfa: 2.5,  eloPerPoint: 28, k: 20 },
+  // nfl sigma is MEASURED, not cited. 1,087 games across 2022-2025 with a
+  // closing spread and a final score: the residual (margin + closing spread)
+  // has a standard deviation of 12.38 and is slightly peaked, 71.1% inside one
+  // SD against a normal's 68.3%.
+  //
+  // 10.82 rather than 12.38 because of what this number is used FOR. Nearly
+  // every call asks how much probability is bought by moving a line a few
+  // points — which is a question about the middle of the distribution, and the
+  // middle is where the peak is. Fitting to what actually happened at offsets
+  // of one to seven points gives 10.82, and it tracks:
+  //
+  //   line 2 pts stale   real 58.3%   at 10.82 57.3%   at 13.5 55.9%
+  //   line 5 pts stale   real 68.6%   at 10.82 67.8%   at 13.5 64.4%
+  //   line 7 pts stale   real 74.1%   at 10.82 74.1%   at 13.5 69.8%
+  //
+  // The old 13.5 was understating a stale line by up to 4.3 points, which the
+  // Pick 6 tab has been quietly paying for the whole time.
+  //
+  // leanThreshold is stated per sport rather than derived from nfl sigma. It
+  // used to be a fraction of it, which meant correcting a MEASURED football
+  // number silently moved basketball's behaviour — and basketball's sigma is
+  // still an unmeasured placeholder, so the ratio meant nothing.
+  nfl: { sigma: 10.82, totalSigma: 10.5, hfa: 1.8,  eloPerPoint: 25, k: 20, leanThreshold: 3 },
+  nba: { sigma: 11.5, totalSigma: 15.0, hfa: 2.5,  eloPerPoint: 28, k: 20, leanThreshold: 2.5 },
   mlb: { sigma: 4.4,  totalSigma: 4.4,  hfa: 0.20, eloPerPoint: 4,  k: 4,  fixedSpread: true },
   nhl: { sigma: 2.2,  totalSigma: 2.4,  hfa: 0.25, eloPerPoint: 2,  k: 6,  fixedSpread: true },
 };
@@ -1927,11 +1949,10 @@ function bestBet({
   const size = Math.abs(disagreement);
 
   // How far the projection has to sit from the market before it is worth
-  // saying. A field goal in football, and the same FRACTION of the other
-  // sport's margin spread — three points of basketball being a good deal less
-  // than three points of football. NFL sigma is 13.5, so the football threshold
-  // is 0.22 of a standard deviation, which gives 2.5 for basketball.
-  const threshold = Math.max(0.5, Math.round(cfg.sigma * (3 / SPORTS.nfl.sigma) * 2) / 2);
+  // saying: a field goal in football, and a little less in basketball where a
+  // point is worth less. Stated per sport in SPORTS, deliberately not derived
+  // from one sport's sigma — see the note there.
+  const threshold = cfg.leanThreshold || 3;
 
   // Only a flag that names the side it is against may corroborate, and a flag
   // against one side supports leaning to the OTHER — a quarterback ruled out is
