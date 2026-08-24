@@ -2058,17 +2058,29 @@ function situationFlags({
   // The stillness test is dropped where the spread CANNOT move: a run line and
   // a puck line are fixed at 1.5, so "the spread has barely moved" is true by
   // construction there and adds nothing to the condition.
+  // Compared PER TEAM, because the baseline is per team.
+  //
+  // The first version of this compared the two sides added together against a
+  // one-team norm, which is close to guaranteed to clear it: baseball's median
+  // is about four short-term absences a team, so a combined count averages
+  // eight against a bar of seven. It fired on eight of ten baseball games —
+  // better than the twenty-nine of thirty it replaced, and still noise.
+  //
+  // What the flag is for is one team being unusually depleted, so that is what
+  // it now measures, and the side it names is the one that cleared the bar.
   const bar = Number.isFinite(injuryBaseline) ? Math.max(3, Math.ceil(injuryBaseline) + 3) : 3;
   const lineIsStill = !spreadCanMove || (spreadMoved !== null && spreadMoved < 1);
-  if (totalOut >= bar && lineIsStill) {
-    // Whichever side is actually missing the players. Level, or not broken down
-    // by side at all, means no side - better to say nothing than to guess.
-    const against = injuriesOutHome > injuriesOutAway ? 'home'
-      : injuriesOutAway > injuriesOutHome ? 'away' : null;
+  const bySideKnown = injuriesOutHome > 0 || injuriesOutAway > 0;
+  const worst = bySideKnown ? Math.max(injuriesOutHome, injuriesOutAway) : totalOut;
+  if (worst >= bar && lineIsStill) {
+    // The side that actually cleared the bar. Level means neither is the story.
+    const against = !bySideKnown ? null
+      : injuriesOutHome > injuriesOutAway ? 'home'
+        : injuriesOutAway > injuriesOutHome ? 'away' : null;
     flags.push({
       type: 'injuries-static-line', severity: 'medium', against,
-      note: `${totalOut} players ruled out${Number.isFinite(injuryBaseline)
-        ? `, against a league norm of about ${Math.round(injuryBaseline)}` : ''}` +
+      note: `${worst} players ruled out on one side${Number.isFinite(injuryBaseline)
+        ? `, against a league norm of about ${Math.round(injuryBaseline)} a team` : ''}` +
         `${spreadCanMove ? ', but the spread has barely moved' : ''}.`,
     });
   }

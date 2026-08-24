@@ -1333,17 +1333,22 @@ test('situationFlags reports which side each flag is against', () => {
   // Injuries follow whichever side is actually missing people.
   assert.equal(m.situationFlags({ injuriesOutHome:4, injuriesOutAway:0, spreadMovement:0 })[0].against, 'home');
   assert.equal(m.situationFlags({ injuriesOutHome:0, injuriesOutAway:3, spreadMovement:0 })[0].against, 'away');
-  // Level, so neither side has the complaint.
-  assert.equal(m.situationFlags({ injuriesOutHome:2, injuriesOutAway:2, spreadMovement:0 })[0].against, null);
+  // Level and both above the bar, so neither side is the story.
+  assert.equal(m.situationFlags({ injuriesOutHome:4, injuriesOutAway:4, spreadMovement:0 })[0].against, null);
 
   // Weather and unexplained movement are sideless by design.
   assert.equal(m.situationFlags({ windy:true, windSpeed:22, totalMovement:0.5 })[0].against, null);
   assert.equal(m.situationFlags({ spreadMovement:-2.5 })[0].against, null);
 });
 
-test('situationFlags counts injuries per side or in total, not both', () => {
-  // Per-side counts are summed for the threshold.
-  assert.equal(m.situationFlags({ injuriesOutHome:2, injuriesOutAway:1, spreadMovement:0 }).length, 1);
+test('situationFlags measures one team against the bar, not two added together', () => {
+  // Per-side counts are compared PER SIDE. Adding them and testing the total
+  // against a one-team bar is close to guaranteed to clear it — that version
+  // fired on eight of ten baseball games.
+  assert.equal(m.situationFlags({ injuriesOutHome:2, injuriesOutAway:1, spreadMovement:0 }).length, 0,
+    'two and one is not one depleted team');
+  assert.equal(m.situationFlags({ injuriesOutHome:3, injuriesOutAway:0, spreadMovement:0 }).length, 1,
+    'three on one side is');
   assert.equal(m.situationFlags({ injuriesOutHome:1, injuriesOutAway:1, spreadMovement:0 }).length, 0);
   // The old flat count still works for any caller that has not been updated.
   assert.equal(m.situationFlags({ injuriesOut:4, spreadMovement:0 }).length, 1);
