@@ -264,6 +264,17 @@
     /* Anything that has moved since it opened is the interesting part. */
     .ob-moved .ob-num { color: #58a6ff; }
     input.pool-bothlay { border-color: #d29922; }
+    .clv-box { border: 1px solid #21262d; border-radius: 8px; background: #10151c;
+               padding: 14px 16px; margin-bottom: 16px; }
+    .clv-head { font-size: 11px; color: #6e7681; text-transform: uppercase;
+                letter-spacing: 0.5px; margin-bottom: 8px; }
+    .clv-row { display: flex; align-items: baseline; gap: 10px; }
+    .clv-fig { font-size: 26px; font-weight: 800; }
+    .clv-fig.clv-good { color: #3fb950; }
+    .clv-fig.clv-bad { color: #f85149; }
+    .clv-lab { font-size: 12px; color: #8b949e; }
+    .clv-detail { font-size: 12px; color: #8b949e; margin-top: 6px; }
+    .clv-note { font-size: 11px; color: #6e7681; margin-top: 8px; line-height: 1.5; }
     .inj-box { margin-top: 10px; border: 1px solid #21262d; border-radius: 6px;
                background: #10151c; }
     .inj-summary { cursor: pointer; padding: 7px 10px; font-size: 12px; color: #c9d1d9;
@@ -1192,7 +1203,19 @@
         const awaySpread = ap && ap.value !== '' ? Number(ap.value) : null;
         const total = tt && tt.value !== '' ? Number(tt.value) : null;
         if (spread !== null || awaySpread !== null || total !== null) {
-          out[g.id] = { spread, awaySpread, total };
+          // Whether the away box was typed in BY HAND is saved alongside its
+          // value, because the two are not the same thing and conflating them
+          // broke the mirror permanently.
+          //
+          // The auto-fill writes a value immediately, so "has a value" is true
+          // from the first keystroke in the HOME box. Re-deriving touched from
+          // that meant every row came back marked hand-edited after the first
+          // tab switch, and the mirror never fired again — so correcting a home
+          // line later left the away number frozen at its old value, which
+          // poolEdge then reads as a both-lay line the pool never posted and
+          // recommends the wrong side of.
+          out[g.id] = { spread, awaySpread, total,
+                        awayTouched: !!(ap && ap.dataset.touched === '1') };
         }
       }
       try { localStorage.setItem(POOL_KEY, JSON.stringify(out)); } catch (e) { /* ignore */ }
@@ -1255,7 +1278,7 @@
                        value="${v.spread ?? ''}" oninput="mirrorAway('${g.id}')"></td>
             <td><input id="pa-${g.id}" type="number" step="0.5" placeholder="—"
                        class="${bothLay ? 'pool-bothlay' : ''}"
-                       data-touched="${v.awaySpread !== null && v.awaySpread !== undefined ? '1' : '0'}"
+                       data-touched="${v.awayTouched ? '1' : '0'}"
                        value="${v.awaySpread ?? (v.spread !== null && v.spread !== undefined ? -v.spread : '')}"
                        oninput="markAwayTouched('${g.id}')"></td>
             <td class="pool-market">${mt}</td>
@@ -1332,8 +1355,25 @@
               <div class="detail">${b.matchup}</div>
               <div class="detail">
                 your line ${b.poolLine} &middot; market ${b.marketLine} &middot;
-                ${b.gap} pt${b.gap === 1 ? '' : 's'} stale${b.pushProb > 0.005
-                  ? ` &middot; ${(b.pushProb * 100).toFixed(1)}% push risk` : ''}
+                ${b.gap} pt${b.gap === 1 ? '' : 's'} stale${(() => {
+                  // Three different things were all being printed as "push
+                  // risk". A push lands exactly on the number and, in this
+                  // pool, loses. A dead zone is a range where NEITHER side
+                  // wins, which is what a both-lay line creates and is far
+                  // bigger. An overlap is a range where BOTH win — a middle,
+                  // which is good news and was being reported as a trap.
+                  const bits = [];
+                  if (b.overlapProb > 0.005) {
+                    bits.push(`${(b.overlapProb * 100).toFixed(1)}% both sides win`);
+                  }
+                  if (b.deadProb > 0.005) {
+                    bits.push(`${(b.deadProb * 100).toFixed(1)}% neither side wins`);
+                  }
+                  if (b.pushProb > 0.005) {
+                    bits.push(`${(b.pushProb * 100).toFixed(1)}% lands on the number`);
+                  }
+                  return bits.length ? ' &middot; ' + bits.join(' &middot; ') : '';
+                })()}
               </div>
             </div>`).join('')}
           <div class="pool-note" style="margin-top:12px">
@@ -1476,7 +1516,39 @@
       }
 
       // By Confidence breakdown
-      let confidenceHTML = '';
+      // CLOSING LINE VALUE.
+      //
+      // The win-loss record needs about 1,500 settled bets to say anything —
+      // eighteen seasons at this volume. CLV is readable the moment a line
+      // closes, compares a number against a number rather than against one
+      // coin flip, and is the only feedback here that can say something inside
+      // a single season. The columns and the capture job already existed; this
+      // is the first thing that reads them.
+      let clvHTML = '';
+      if (data.clv && data.clv.picks > 0) {
+        const c = data.clv;
+        const good = c.avgPoints > 0;
+        clvHTML = `
+          <div class="clv-box">
+            <div class="clv-head">Closing line value &middot; ${c.picks} graded spread pick${c.picks === 1 ? '' : 's'}</div>
+            <div class="clv-row">
+              <div class="clv-fig ${good ? 'clv-good' : 'clv-bad'}">${c.avgPoints > 0 ? '+' : ''}${c.avgPoints}</div>
+              <div class="clv-lab">points per bet against the close</div>
+            </div>
+            <div class="clv-detail">
+              beat the close ${c.beatClose} &middot; worse ${c.worseThanClose} &middot; level ${c.level}
+              (${c.beatPct}% beat it)
+            </div>
+            <div class="clv-note">
+              Positive means the line moved toward the side recommended &mdash; the bet was taken
+              at a better number than the market settled on. This is the fastest honest read on
+              whether the app is finding anything; a win-loss record needs roughly 1,500 bets to
+              say the same thing.${c.picks < 30 ? ' Too few picks yet to mean much.' : ''}
+            </div>
+          </div>`;
+      }
+
+      let byConfidenceHTML = '';
       if (data.byConfidence && data.byConfidence.length > 0) {
         const order = { 'High': 0, 'Medium': 1, 'Low': 2 };
         const sorted = [...data.byConfidence].sort((a, b) => (order[a.confidence] ?? 99) - (order[b.confidence] ?? 99));
@@ -1488,7 +1560,7 @@
               <div class="breakdown-record">${r.record}<span class="breakdown-pct ${r.cls}">${r.pct}%</span></div>
             </div>`;
         }).join('');
-        confidenceHTML = `
+        byConfidenceHTML = `
           <div class="history-section">
             <div class="history-section-title">Performance by Confidence Level</div>
             <div class="breakdown-grid">${confCards}</div>
@@ -1553,7 +1625,7 @@
           </div>`;
       }
 
-      document.getElementById('content').innerHTML = filtersHTML + summaryHTML + marketHTML + confidenceHTML + recentHTML;
+      document.getElementById('content').innerHTML = filtersHTML + summaryHTML + clvHTML + marketHTML + byConfidenceHTML + recentHTML;
     }
   </script>
 </body>

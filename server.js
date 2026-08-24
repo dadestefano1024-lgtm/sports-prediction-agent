@@ -3004,18 +3004,53 @@ app.post('/api/pool/:sport', async (req, res) => {
       const awayFull = away.team.displayName;
       const odds = matchOddsToGame(oddsData, homeFull, awayFull);
       const espnOdds = (comp.odds || [])[0] || null;
-      const marketSpread = odds && Number.isFinite(Number(odds.spread)) ? Number(odds.spread)
-        : (espnOdds && Number.isFinite(Number(espnOdds.spread)) ? Number(espnOdds.spread) : null);
-      const marketTotal = odds && Number.isFinite(Number(odds.total)) ? Number(odds.total)
-        : (espnOdds && Number.isFinite(Number(espnOdds.overUnder)) ? Number(espnOdds.overUnder) : null);
+      // The number to score a frozen pool line against is the one on the screen
+      // of the book being bet at — DraftKings — not a consensus of nine books
+      // eight of which have no account behind them. They are usually the same,
+      // DraftKings being a market-maker, and where they differ the reader can
+      // see the DraftKings number on the card and would otherwise be comparing
+      // against something they never saw.
+      //
+      // Consensus stays as the fallback, and the ESPN scrape behind that, so a
+      // game missing from the book still gets scored.
+      const mb = odds && odds.myBook;
+      const pickNum = (...vals) => {
+        for (const v of vals) {
+          if (v === null || v === undefined || v === '') continue;
+          const n = Number(v);
+          if (Number.isFinite(n)) return n;
+        }
+        return null;
+      };
+      const marketSpread = pickNum(mb && mb.spread, odds && odds.spread,
+                                   espnOdds && espnOdds.spread);
+      const marketTotal = pickNum(mb && mb.total, odds && odds.total,
+                                  espnOdds && espnOdds.overUnder);
+      const marketFrom = (mb && Number.isFinite(Number(mb.spread))) ? (mb.name || MY_BOOK)
+        : (odds && Number.isFinite(Number(odds.spread))) ? 'market consensus' : 'ESPN';
 
       const usableSpread = marketSpread !== null && model.plausibleSpread(sport, marketSpread);
-      const poolSpread = entry && Number.isFinite(Number(entry.spread)) ? Number(entry.spread) : null;
-      const poolTotal = entry && Number.isFinite(Number(entry.total)) ? Number(entry.total) : null;
+
+      // Number(null) is 0, and Number.isFinite(0) is true, so the obvious guard
+      // turns every EMPTY box into a real pool line of zero. The interface
+      // stores explicit nulls for blank inputs, so a user who fills in the
+      // spreads and skips the totals was handed "Over 0" at a 100% win
+      // probability, sitting at the top of Best 6 — a bet on a line nobody
+      // entered, ranked above every real one.
+      //
+      // This is the same falsy-zero trap that made every score read as 0-10
+      // earlier in this file's history, and zero is a legitimate value in both
+      // cases. Reject the empties BEFORE converting, exactly as parseScore does.
+      const poolNum = (v) => {
+        if (v === null || v === undefined || v === '') return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+      const poolSpread = entry ? poolNum(entry.spread) : null;
+      const poolTotal = entry ? poolNum(entry.total) : null;
       // The away side's own number, which only differs from the mirror when the
       // pool lays points both ways on a tight game.
-      const poolAway = entry && Number.isFinite(Number(entry.awaySpread))
-        ? Number(entry.awaySpread) : null;
+      const poolAway = entry ? poolNum(entry.awaySpread) : null;
 
       const edge = model.poolEdge({
         sport,
@@ -3028,7 +3063,8 @@ app.post('/api/pool/:sport', async (req, res) => {
 
       const label = `${awayFull} @ ${homeFull}`;
       games.push({ id: event.id, matchup: label, gameTime: new Date(event.date).toLocaleString(),
-                   marketSpread, marketTotal, spread: edge.spread, total: edge.total });
+                   marketSpread, marketTotal, marketFrom,
+                   spread: edge.spread, total: edge.total });
       if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label });
       if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label });
     }
@@ -3656,10 +3692,77 @@ app.get('/api/health', (req, res) => {
 });
 
 // History endpoint — returns picks history and W/L stats
+/**
+ * Closing line value: did the number move toward the recommendation or away?
+ *
+ * This is the feedback loop that works at the volume available. Grading on
+ * results needs roughly 1,500 settled bets to separate 55% from break-even at
+ * two standard errors — eighteen seasons at four or five flagged games a week.
+ * CLV is measurable the moment the line closes, without waiting for the game,
+ * and it is far less noisy because it compares a number against a number
+ * rather than against one binary outcome.
+ *
+ * Positive means the closing line moved TOWARD the side recommended, i.e. the
+ * bet was taken at a better number than the market settled on. Sustained
+ * positive CLV is the only evidence available in one season that the app is
+ * finding anything; sustained negative CLV says it is not, whatever the
+ * win-loss record happens to say.
+ *
+ * The columns and the capture job already existed. Nothing read them.
+ */
+async function getClvStats(sport) {
+  if (!dbReady || !pool) return null;
+  const params = [];
+  let where = "WHERE closing_line IS NOT NULL AND line_at_pick IS NOT NULL AND market = 'spread'";
+  if (sport) { params.push(sport); where += ` AND sport = $${params.length}`; }
+
+  const { rows } = await pool.query(
+    `SELECT sport, pick, home_team, away_team, line_at_pick, closing_line, result
+       FROM picks ${where}`, params);
+  if (!rows.length) return { picks: 0 };
+
+  // Which side was taken, decided by name rather than by comparing two columns
+  // that are written from the same value and are therefore always equal.
+  const key = (x) => String(x || '').toLowerCase().replace(/[^a-z]/g, '');
+  let beat = 0, worse = 0, level = 0, sum = 0, unknown = 0;
+  for (const r of rows) {
+    const taken = Number(r.line_at_pick);
+    const closed = Number(r.closing_line);
+    if (!Number.isFinite(taken) || !Number.isFinite(closed)) continue;
+    const p = key(r.pick);
+    const isHome = p.startsWith(key(r.home_team));
+    const isAway = p.startsWith(key(r.away_team));
+    if (isHome === isAway) { unknown++; continue; }   // neither or both: skip rather than guess
+    // Both numbers are HOME spreads. A home-side bet gained value when the
+    // closing number is MORE negative than the one taken; an away bet gained
+    // when it is less.
+    const movedToward = isHome ? (taken - closed) : (closed - taken);
+    sum += movedToward;
+    if (movedToward > 0.01) beat++;
+    else if (movedToward < -0.01) worse++;
+    else level++;
+  }
+  const n = beat + worse + level;
+  if (!n) return { picks: 0, unresolvedSide: unknown };
+  return {
+    picks: n,
+    unresolvedSide: unknown,
+    beatClose: beat,
+    worseThanClose: worse,
+    level,
+    beatPct: +(beat / n * 100).toFixed(1),
+    avgPoints: +(sum / n).toFixed(3),
+  };
+}
+
 app.get('/api/history', async (req, res) => {
   const sport = req.query.sport || null;
   const stats = await getHistoryStats(sport, req.query.limit);
-  res.json(stats);
+  let clv = null;
+  try { clv = await getClvStats(sport); } catch (e) {
+    console.error('[CLV] stats failed:', e.message);
+  }
+  res.json({ ...stats, clv });
 });
 
 /**

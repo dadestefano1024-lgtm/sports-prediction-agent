@@ -1593,6 +1593,73 @@ function bestOffer({ quotes, probFor, trust = 0.25, kellyFraction = 0.25 }) {
   return best;
 }
 
+
+/**
+ * What actually happened to 7,239 closing spreads.
+ *
+ * Every number the Pick 6 tab reports is P(final margin beats a line N points
+ * away from the market's). That was answered with a normal curve at a fitted
+ * sigma, and the fit was made on 1,087 games. Re-measured on every regular
+ * season nflverse publishes back to 1999, the curve is wrong in the direction
+ * that flatters the bet:
+ *
+ *   stale by   reality   sigma 10.82   best-fit normal 11.25
+ *      2 pts    56.5%      57.3%           57.1%
+ *      5 pts    65.8%      67.8%           67.2%
+ *      7 pts    71.7%      74.1%           73.3%
+ *
+ * A better sigma does not fix it, because the shape is the problem: football
+ * margins pile up on 3 and 7 and the tails are thinner than a bell. So this is
+ * counted rather than modelled, exactly as the baseball and hockey margin
+ * tables are.
+ *
+ * `survival[i]` is P(residual > from + i*step), where residual is
+ * (final margin + closing spread). Half-point resolution, because every line a
+ * book posts lands on a half point.
+ *
+ * Football only. Basketball has no equivalent measurement yet and still uses
+ * the curve; baseball and hockey never used this path at all, since their
+ * spread is fixed and priced through the moneyline instead.
+ */
+const NFL_RESIDUALS = {
+  games: 7239,
+  from: -28, step: 0.5,
+  survival: [
+    0.98121, 0.97942, 0.97734, 0.97652, 0.97458, 0.97292, 0.97044, 0.96809, 0.96464, 0.9627,
+    0.96022, 0.95842, 0.95552, 0.95207, 0.94723, 0.94281, 0.93728, 0.933, 0.92844, 0.92361,
+    0.91656, 0.91311, 0.90634, 0.9004, 0.89446, 0.88963, 0.88244, 0.87554, 0.86808, 0.86034,
+    0.85122, 0.84321, 0.83561, 0.82788, 0.81572, 0.80412, 0.78989, 0.78008, 0.76751, 0.75632,
+    0.74292, 0.73215, 0.71667, 0.70355, 0.68366, 0.67192, 0.65755, 0.64595, 0.62743, 0.61182,
+    0.59663, 0.5824, 0.56486, 0.54718, 0.53046, 0.51153, 0.46332, 0.44716, 0.43017, 0.41636,
+    0.40309, 0.38969, 0.37505, 0.36207, 0.34287, 0.32905, 0.31579, 0.30474, 0.28996, 0.27504,
+    0.26012, 0.25128, 0.23954, 0.23111, 0.2202, 0.21205, 0.19726, 0.18746, 0.17627, 0.16964,
+    0.16245, 0.15624, 0.1474, 0.14063, 0.13248, 0.12585, 0.11922, 0.11438, 0.10899, 0.10402,
+    0.09767, 0.09103, 0.08523, 0.08095, 0.07708, 0.07335, 0.06797, 0.06258, 0.05719, 0.05415,
+    0.05056, 0.0489, 0.04462, 0.04227, 0.03785, 0.0355, 0.03136, 0.02929, 0.02721, 0.02528,
+    0.02321, 0.021, 0.01865,
+  ],
+};
+
+/**
+ * P(margin + spread > offset) for football, read off the counted table.
+ *
+ * Linear interpolation between half-point steps, which only matters for a
+ * caller asking about a quarter point; every real line lands on a step. Returns
+ * null outside the measured range so the caller can fall back rather than
+ * silently extrapolate off the end of the data.
+ */
+function nflResidualAbove(offset) {
+  if (!Number.isFinite(offset)) return null;
+  const { from, step, survival } = NFL_RESIDUALS;
+  const idx = (offset - from) / step;
+  if (idx < 0) return 1;
+  if (idx > survival.length - 1) return 0;
+  const lo = Math.floor(idx);
+  if (lo === idx) return survival[lo];
+  const frac = idx - lo;
+  return survival[lo] * (1 - frac) + survival[lo + 1] * frac;
+}
+
 // ----------------------------------------------------------------------------
 // Stale-line (pick-em pool) edge
 // ----------------------------------------------------------------------------
@@ -1646,29 +1713,58 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
   const out = { spread: null, total: null };
   const sign = (n) => `${n > 0 ? '+' : ''}${n}`;
 
+  // P(margin + offset > 0) for a line sitting `offset` from the market's.
+  //
+  // Football reads it off 7,239 counted games; anything else falls back to the
+  // curve. The counted version matters because a normal overstates a stale line
+  // by up to 2.4 points at the offsets a pool actually produces, and it
+  // overstates in the direction that flatters the bet.
+  const above = (threshold, expected) => {
+    if (sport === 'nfl') {
+      const counted = nflResidualAbove(threshold - expected);
+      if (counted !== null) return counted;
+    }
+    return coverOutcomes({ predictedMargin: expected, spread: -threshold,
+                           sigma: cfg.sigma, sport }).win;
+  };
+  // Push probability stays on the discrete margin PMF rather than the counted
+  // table. The two are good at different things: the table is measured, but it
+  // pools whole-number and half-point spreads together, so a residual of
+  // exactly -3 is averaged with residuals of -2.5 and -3.5 and the key-number
+  // spike smears out. marginPmf keeps 3 and 7 sharp, which is the entire
+  // question when asking whether a line can land on its own number.
+  const exactly = (value, expected) => {
+    if (Math.abs(value - Math.round(value)) > 1e-9) return 0;   // half points cannot push
+    return coverOutcomes({ predictedMargin: expected, spread: -value,
+                           sigma: cfg.sigma, sport }).push;
+  };
+
   if (Number.isFinite(poolSpread) && Number.isFinite(marketSpread)) {
-    // Absent an away number, the pool is two-sided and it mirrors the home one.
+    // Absent an away number the pool is two-sided and it mirrors the home one.
     const awayLine = Number.isFinite(poolAwaySpread) ? poolAwaySpread : -poolSpread;
+    const expected = -marketSpread;              // the market's expected margin
 
-    // The market expects the home side to win by -marketSpread.
-    const expected = -marketSpread;
+    // Home wins its side when margin > -poolSpread. Away wins when margin <
+    // awayLine. Those are only complements when the two numbers mirror.
+    const homeProb = above(-poolSpread, expected);
+    const awayProb = 1 - above(awayLine, expected) - exactly(awayLine, expected);
+    const push = exactly(-poolSpread, expected);
 
-    // Home covers its own number when margin + poolSpread > 0.
-    const h = coverOutcomes({
-      predictedMargin: expected, spread: poolSpread, sigma: cfg.sigma, sport,
-    });
-    // Away covers ITS number when margin < awayLine, which is the losing side
-    // of a home line set at -awayLine.
-    const a = coverOutcomes({
-      predictedMargin: expected, spread: -awayLine, sigma: cfg.sigma, sport,
-    });
-
-    const homeProb = h.win;
-    const awayProb = a.loss;
-    // Whatever belongs to neither side: pushes on a two-sided line, or the gap
-    // between the two numbers when the pool lays points both ways.
-    const dead = Math.max(0, 1 - homeProb - awayProb);
-    const twoSided = Math.abs(awayLine + poolSpread) < 1e-9;
+    // How the two numbers sit relative to each other decides what the leftover
+    // probability MEANS, and there are three cases rather than two:
+    //
+    //   mirrored   -3 / +3    ordinary line; leftover is the push, a loss here
+    //   both lay   -2 / -2    a gap neither side wins; leftover is dead
+    //   overlap    -3 / +7    a MIDDLE; margins of 4-6 win BOTH picks
+    //
+    // The third was being reported as a both-lay trap with a zero dead zone,
+    // because the leftover was clamped at zero and anything not mirrored was
+    // called both-lay. A middle is the opposite of a trap.
+    const offset = +(awayLine + poolSpread).toFixed(4);
+    const shape = Math.abs(offset) < 1e-9 ? 'mirrored' : offset < 0 ? 'both-lay' : 'overlap';
+    const leftover = 1 - homeProb - awayProb;
+    const dead = shape === 'both-lay' ? Math.max(0, leftover) : 0;
+    const overlap = shape === 'overlap' ? Math.max(0, -leftover) : 0;
 
     const backHome = homeProb >= awayProb;
     out.spread = {
@@ -1676,55 +1772,56 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
       pick: backHome ? `${homeTeam} ${sign(poolSpread)}` : `${awayTeam} ${sign(awayLine)}`,
       poolLine: backHome ? poolSpread : awayLine,
       marketLine: backHome ? marketSpread : -marketSpread,
-      // How many points of stale value the pool number gives away against the
-      // market. Measured on the side actually being picked.
-      gap: +Math.abs((backHome ? poolSpread : awayLine) - (backHome ? marketSpread : -marketSpread)).toFixed(2),
-      // Unconditional: the chance this pick wins, full stop.
-      //
-      // In THIS pool a push is a loss — confirmed by the person who plays in
-      // it. The old code reported win/(win+loss), which silently refunds a
-      // push, and that is not a rounding difference: a pool line sitting on a
-      // whole number is 50% under one rule and 47% under the other, and three
-      // is the most common margin in football. Every number here now assumes a
-      // push loses, which is also what the both-lay format does anyway.
+      gap: +Math.abs((backHome ? poolSpread : awayLine) -
+                     (backHome ? marketSpread : -marketSpread)).toFixed(2),
+      // Unconditional. A push is a loss in this pool, confirmed by the person
+      // who plays in it, so nothing is divided out of the denominator.
       winProb: +(backHome ? homeProb : awayProb).toFixed(4),
       otherSideProb: +(backHome ? awayProb : homeProb).toFixed(4),
-      // On a two-sided line this is the push, which in this pool is simply a
-      // loss. When the pool lays points both ways it is the whole range where
-      // neither pick wins, which is far bigger and is the thing worth seeing.
-      pushProb: +(twoSided ? h.push : dead).toFixed(4),
-      // Whole numbers are worth avoiding when a push cannot be refunded, and
-      // in football the whole numbers that matter are 3 and 7.
-      pushRisk: +(twoSided ? h.push : dead).toFixed(4) >= 0.04,
+      // Kept distinct, because they are different things that were being
+      // reported under one name: a push lands exactly on the number, a dead
+      // zone is a range neither side wins, and an overlap is a range BOTH win.
+      shape,
+      pushProb: +push.toFixed(4),
       deadProb: +dead.toFixed(4),
-      bothLay: !twoSided,
+      overlapProb: +overlap.toFixed(4),
+      // Worth warning about when a push cannot be refunded, which in this pool
+      // it cannot. In football the whole numbers that matter are 3 and 7.
+      pushRisk: push >= 0.04 || dead >= 0.04,
+      bothLay: shape === 'both-lay',
       homeLine: poolSpread,
       awayLine,
+      // Spreads are the half of this with a holdout season behind them.
+      tested: true,
     };
   }
-
-  // Spreads are the tested half of this. Totals are priced the same way and
-  // carry a flag saying they are not backed by the same measurement.
-  if (out.spread) out.spread.tested = true;
 
   if (Number.isFinite(poolTotal) && Number.isFinite(marketTotal)) {
     const o = totalOutcomes({
       predictedTotal: marketTotal, line: poolTotal, sigma: cfg.totalSigma,
     });
-    const resolved = o.over + o.under;
-    const overProb = resolved > 0 ? o.over / resolved : 0.5;
-    const backOver = overProb >= 0.5;
+    // Unconditional, to match the spread. This used to be over/(over+under),
+    // which refunds a push — so a stale total was quoted two to three points
+    // higher than a stale spread of the same size and outranked it in Best 6,
+    // which is the reverse of what the measurement says to do.
+    const backOver = o.over >= o.under;
     out.total = {
       side: backOver ? 'over' : 'under',
       pick: `${backOver ? 'Over' : 'Under'} ${poolTotal}`,
       poolLine: poolTotal,
       marketLine: marketTotal,
       gap: +Math.abs(poolTotal - marketTotal).toFixed(2),
-      winProb: +(backOver ? overProb : 1 - overProb).toFixed(4),
+      winProb: +(backOver ? o.over : o.under).toFixed(4),
+      otherSideProb: +(backOver ? o.under : o.over).toFixed(4),
+      shape: 'mirrored',
       pushProb: +o.push.toFixed(4),
-      // The same arithmetic as the spread, without the evidence behind it: the
-      // stale-total rule was measured at 51.4% over 401 bets against 55.4% for
-      // spreads, so this number is a fair price and not a demonstrated edge.
+      pushRisk: o.push >= 0.04,
+      deadProb: 0,
+      overlapProb: 0,
+      bothLay: false,
+      // The same arithmetic as the spread without the evidence: a stale total
+      // was measured at 51.4% over 401 bets against 55.4% for a stale spread,
+      // under the 52.4% needed to break even. A fair price, not a shown edge.
       tested: false,
     };
   }
@@ -1742,8 +1839,21 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
  */
 function rankPoolPicks(candidates, count = 6) {
   return (candidates || [])
+    // A candidate with no usable probability is dropped rather than sorted to
+    // the bottom — it is a game the market had no line for, not a bad bet.
     .filter(c => c && Number.isFinite(c.winProb))
-    .sort((a, b) => (b.winProb - a.winProb) || (b.gap - a.gap))
+    .slice()
+    .sort((a, b) => {
+      // Tested before untested. A stale spread has a holdout season behind it
+      // (55.4% over 325 bets); a stale total was measured at 51.4% over 401 and
+      // does not clear the vig. Sorting them together on win probability alone
+      // let the untested one win on an accounting difference, which is exactly
+      // backwards. Probability still decides within each group.
+      const at = a.tested === false ? 1 : 0;
+      const bt = b.tested === false ? 1 : 0;
+      if (at !== bt) return at - bt;
+      return (b.winProb - a.winProb) || (b.gap - a.gap);
+    })
     .slice(0, count);
 }
 
@@ -2119,6 +2229,8 @@ module.exports = {
   coverProbability,
   overProbability,
   MARGIN_TABLES,
+  NFL_RESIDUALS,
+  nflResidualAbove,
   marginAtLeast,
   coverProbFromWinProb,
   runLineEdge,
