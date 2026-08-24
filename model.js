@@ -1703,6 +1703,10 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
     };
   }
 
+  // Spreads are the tested half of this. Totals are priced the same way and
+  // carry a flag saying they are not backed by the same measurement.
+  if (out.spread) out.spread.tested = true;
+
   if (Number.isFinite(poolTotal) && Number.isFinite(marketTotal)) {
     const o = totalOutcomes({
       predictedTotal: marketTotal, line: poolTotal, sigma: cfg.totalSigma,
@@ -1718,6 +1722,10 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
       gap: +Math.abs(poolTotal - marketTotal).toFixed(2),
       winProb: +(backOver ? overProb : 1 - overProb).toFixed(4),
       pushProb: +o.push.toFixed(4),
+      // The same arithmetic as the spread, without the evidence behind it: the
+      // stale-total rule was measured at 51.4% over 401 bets against 55.4% for
+      // spreads, so this number is a fair price and not a demonstrated edge.
+      tested: false,
     };
   }
 
@@ -1822,11 +1830,32 @@ function betRecommendation({ bookValuePts = 0, inProgress = false, hasLine = tru
  * only offers four numbers that moved two points.
  */
 function poolCandidate(spreadMovement, totalMovement) {
-  const biggest = Math.max(
-    Number.isFinite(spreadMovement) ? Math.abs(spreadMovement) : 0,
-    Number.isFinite(totalMovement) ? Math.abs(totalMovement) : 0);
-  if (biggest >= 2) return { level: 'strong', points: +biggest.toFixed(2) };
-  if (biggest >= 1) return { level: 'worth checking', points: +biggest.toFixed(2) };
+  // SPREAD movement only. This used to take whichever of the two had moved
+  // furthest and flag on that, which quietly applied a spread result to a
+  // market it was never tested on.
+  //
+  // It has now been tested. Same rule, same seasons, 543 games with an opening
+  // total, a closing total and a final score:
+  //
+  //                 spreads          totals
+  //   move >= 1     55.4% / 325      51.4% / 401
+  //   move >= 2     60.0% / 140      50.8% / 183
+  //   2025 / 2024   63.0% / 56.7%    53.2% / 49.5%
+  //
+  // Break-even is 52.4%. Totals miss it, do not replicate between seasons, and
+  // fading them does no better — 48.6% at a point. The control says why: taking
+  // the over at the opening number regardless of movement went 51.9%, so the
+  // movement adds essentially nothing. A closing spread is a better estimate
+  // than an opening spread; a closing total apparently is not.
+  //
+  // Totals are still PRICED on the Pick 6 tab, because pricing a frozen number
+  // against the market number is arithmetic either way. They are simply no
+  // longer advertised as candidates, and the tab marks them as untested so a
+  // stale total cannot outrank a stale spread on a claim that was never
+  // supported.
+  const moved = Number.isFinite(spreadMovement) ? Math.abs(spreadMovement) : 0;
+  if (moved >= 2) return { level: 'strong', points: +moved.toFixed(2), market: 'spread' };
+  if (moved >= 1) return { level: 'worth checking', points: +moved.toFixed(2), market: 'spread' };
   return null;
 }
 

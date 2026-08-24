@@ -1115,9 +1115,16 @@
                 // The pool note sits with the verdict because the two are easy
                 // to confuse and mean opposite things: movement is an edge
                 // against a frozen line and nothing against a live one.
+                // Worded carefully, because it was read as a claim about a
+                // pool line that had never been entered. Nothing here knows
+                // any pool number. It is reporting that the MARKET spread has
+                // moved since it opened, which is only interesting if the
+                // number in the pool is still the old one.
                 const pf = g.poolFlag
-                  ? `<div class="pool-flag">Pick 6: the line has moved ${g.poolFlag.points} pt${g.poolFlag.points === 1 ? '' : 's'} since it opened — ${
-                      g.poolFlag.level === 'strong' ? 'strong candidate if your pool number is still the old one' : 'worth checking your pool number'}.</div>`
+                  ? `<div class="pool-flag">Pick 6: the market spread has moved ${g.poolFlag.points} pt${g.poolFlag.points === 1 ? '' : 's'} since it opened${
+                      g.lineMovement && Number.isFinite(g.lineMovement.openSpread) && Number.isFinite(g.lineMovement.currentSpread)
+                        ? ` (${g.lineMovement.openSpread > 0 ? '+' : ''}${g.lineMovement.openSpread} &rarr; ${g.lineMovement.currentSpread > 0 ? '+' : ''}${g.lineMovement.currentSpread})` : ''
+                    } — ${g.poolFlag.level === 'strong' ? 'strong candidate if your pool is still on the old number' : 'worth comparing against your pool number'}.</div>`
                   : '';
                 // Situation flags sit with the verdict because they are the
                 // reason to look past it: the verdict grades price, a flag says
@@ -1273,6 +1280,15 @@
           <br><br>
           Ranking is by win probability rather than the size of the gap, because two points across
           a key number is worth more than three through empty space.
+          <br><br>
+          <strong>Spreads are the tested half.</strong> The same rule was run on totals over the
+          same 543 games and does not hold: a total that moved a point went 51.4% across 401 bets
+          against 55.4% for spreads, it does not repeat between seasons, and fading it is no
+          better. Taking the over at the opening number regardless of movement went 51.9%, so the
+          movement is adding almost nothing. Totals are still priced here, and a stale total is
+          still worth what the arithmetic says &mdash; there is just no evidence behind it the way
+          there is for spreads. Given a choice between a stale spread and a stale total, take the
+          spread.
         </div>
         <div style="margin-bottom:14px">
           <button class="btn btn-primary" onclick="rankPool()">Rank my picks</button>

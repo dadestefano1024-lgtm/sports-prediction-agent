@@ -1088,14 +1088,32 @@ test('betRecommendation singularises one point', () => {
   assert.match(m.betRecommendation({ bookValuePts: 2, bookName: 'DK' }).reason, /2 points better/);
 });
 
-test('poolCandidate flags games whose line has drifted', () => {
+test('poolCandidate flags a drifting spread and ignores a drifting total', () => {
   assert.equal(m.poolCandidate(0.5, 0.5), null, 'small moves are not candidates');
   assert.equal(m.poolCandidate(-1.5, 0).level, 'worth checking');
   assert.equal(m.poolCandidate(-2.5, 0).level, 'strong');
-  assert.equal(m.poolCandidate(0, 3).level, 'strong', 'a total move counts too');
   assert.equal(m.poolCandidate(-2.5, 0).points, 2.5);
+  assert.equal(m.poolCandidate(-2.5, 0).market, 'spread');
   assert.equal(m.poolCandidate(null, null), null);
-  assert.equal(m.poolCandidate(undefined, 4).level, 'strong');
+
+  // A total that has moved is NOT a candidate, however far it moved. It used
+  // to be — the flag took whichever market had drifted furthest — and that
+  // applied a spread result to a market it was never tested on. Measured over
+  // the same 543 games, a stale total went 51.4% against 55.4% for a stale
+  // spread, under the 52.4% needed to break even.
+  assert.equal(m.poolCandidate(0, 3), null, 'a total move is not a candidate');
+  assert.equal(m.poolCandidate(undefined, 4), null);
+  assert.equal(m.poolCandidate(0.5, 6), null);
+});
+
+test('poolEdge marks which half of it has been tested', () => {
+  const both = m.poolEdge({ sport: 'nfl', poolSpread: -3, marketSpread: -6,
+                            poolTotal: 44, marketTotal: 48 });
+  assert.equal(both.spread.tested, true, 'the spread rule has a holdout behind it');
+  assert.equal(both.total.tested, false, 'the total rule was measured and did not hold');
+  // Both are still priced — the flag is about evidence, not about refusing to
+  // do the arithmetic.
+  assert.ok(both.total.winProb > 0.5, 'a stale total is still worth what it is worth');
 });
 
 // ----------------------------------------------------------------------------
