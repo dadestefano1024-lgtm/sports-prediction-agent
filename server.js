@@ -1923,8 +1923,15 @@ async function fetchEspnOpeningLines(sport) {
     // shared HTTP cache usually makes it free.
     // Identical URL to the handlers', so this is a cache hit rather than a
     // second request — and so both see exactly the same set of games.
-    const sb = await cachedGet(espnScoreboardUrl(scoreboardPath), { timeout: 10000 });
-    const events = (sb.data && sb.data.events) || [];
+    // The same slate the handlers show, not just today's.
+    //
+    // This used to ask for today and tomorrow while the handlers had moved on
+    // to a look-ahead, so on any day a sport was dark the two disagreed: the
+    // card showed sixteen Week 1 games and every one of them came back without
+    // an odds board, because the opening lines had been fetched for a date
+    // range containing no football at all.
+    const slate = await fetchSlate(scoreboardPath);
+    const events = slate.events;
 
     await Promise.all(events.map(async (event) => {
       const comp = (event.competitions || [])[0];
