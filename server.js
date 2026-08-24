@@ -783,7 +783,27 @@ function nextSlate(events) {
  * In season this costs one extra request on the rare day a league is dark, and
  * nothing at all otherwise.
  */
-async function fetchSlate(sportPath, { lookaheadDays = 45, weekSpanDays = 5 } = {}) {
+// How much of a look-ahead counts as ONE slate, per sport.
+//
+// Five days is a football week, Thursday through Monday. Applied to a daily
+// league it glues several nights together: the hockey tab returned 35 games in
+// one slate against a maximum of 16 for a single night, and every extra game
+// costs seven parallel fetches plus a per-event odds call. The scoreboard URL
+// also carries limit=100, so a dense sport gets silently truncated rather than
+// merely slow.
+//
+// nextSlate already groups by day correctly for the normal path; this is the
+// same idea for the look-ahead.
+const SLATE_SPAN_DAYS = {
+  'football/nfl': 5,      // a week, Thursday to Monday
+  'basketball/nba': 1,
+  'hockey/nhl': 1,
+  'baseball/mlb': 1,
+};
+
+async function fetchSlate(sportPath, { lookaheadDays = 45, weekSpanDays = null } = {}) {
+  const span = Number.isFinite(weekSpanDays) ? weekSpanDays
+    : (SLATE_SPAN_DAYS[sportPath] ?? 1);
   const near = await cachedGet(espnScoreboardUrl(sportPath), { timeout: 10000 });
   const nearEvents = nextSlate((near.data || {}).events);
   if (nearEvents.length) return { events: nearEvents, payload: near.data || {}, upcoming: false };
@@ -812,7 +832,7 @@ async function fetchSlate(sportPath, { lookaheadDays = 45, weekSpanDays = 5 } = 
   const usable = regular.length ? regular : scheduled;
 
   const first = new Date(usable[0].date).getTime();
-  const cutoff = first + weekSpanDays * 24 * 60 * 60 * 1000;
+  const cutoff = first + span * 24 * 60 * 60 * 1000;
   const events = usable.filter(e => new Date(e.date).getTime() <= cutoff);
   const wk = events[0] && events[0].week && events[0].week.number;
   console.log(`[SLATE] ${sportPath}: nothing today, showing ${events.length} upcoming games` +
@@ -1772,6 +1792,15 @@ const BROWSER_HEADERS = {
 // is working.
 const injuryCache = {};
 const injuryInFlight = {};
+// Whether the last fetch for a league actually worked.
+//
+// A failed fetch cached an empty Map, and downstream an empty Map is
+// indistinguishable from a league with nobody injured: the situation flag
+// cannot fire, and the commentary prompt is handed empty lists and writes prose
+// asserting both teams are healthy. A 403 therefore presented and NARRATED a
+// whole slate as injury-free for ten minutes, with nothing in the response
+// saying otherwise.
+const injuryFeedOk = {};
 const INJURY_CACHE_TTL_MS = 10 * 60 * 1000;
 
 /** Every team's injuries for a league, keyed by normalised team name. */
@@ -1806,6 +1835,7 @@ async function buildLeagueInjuries(sport) {
   if (injuryInFlight[sport]) return injuryInFlight[sport];
   const remember = (map, error) => {
     injuryCache[sport] = { timestamp: Date.now(), map, error: error || null };
+    injuryFeedOk[sport] = !error;
     delete injuryInFlight[sport];
     return map;
   };
@@ -1851,6 +1881,24 @@ async function buildLeagueInjuries(sport) {
       '— not retrying for 10 minutes');
     return remember(new Map(), `${status || 'error'}: ${err.message}`);
   }
+}
+
+/**
+ * The typical number of short-term absences per team in a league right now.
+ *
+ * Used as the bar the injury flag has to clear, because "three players out" is
+ * remarkable in football and a normal Tuesday in baseball. Measured from the
+ * same feed that produces the counts, so it moves with the season rather than
+ * being a constant somebody guessed.
+ */
+async function injuryBaseline(sport) {
+  const league = await fetchLeagueInjuries(sport);
+  if (!league || !league.size) return null;
+  const counts = [...league.values()]
+    .map(list => list.filter(i => i.level === 'out' && !i.longTerm).length)
+    .sort((a, b) => a - b);
+  const mid = counts.length >> 1;
+  return counts.length % 2 ? counts[mid] : (counts[mid - 1] + counts[mid]) / 2;
 }
 
 /**
@@ -2545,8 +2593,15 @@ function commentaryByMatchup(predictions) {
  * Work out, for each game, where what we know and what the line shows disagree.
  * Run before the prompt so both the model and the reader see the same flags.
  */
-function attachSituationFlags(games) {
+async function attachSituationFlags(games, sport) {
+  // One measurement for the whole card rather than one per game.
+  let baseline = null;
+  try { baseline = await injuryBaseline(sport); } catch (e) { /* flag just loses its bar */ }
+  const cfg = (() => { try { return model.sportConfig(sport); } catch (e) { return null; } })();
+  const spreadCanMove = !(cfg && cfg.fixedSpread);
+
   for (const g of games || []) {
+    g.injuriesKnown = injuryFeedOk[sport] !== false;
     const lm = g.lineMovement || {};
     const qb = g.startingQB || {};
     // Which side, not just how many. A flag is only allowed to influence the
@@ -2580,6 +2635,11 @@ function attachSituationFlags(games) {
       qbOutSide,
       injuriesOutHome: outBySide.home,
       injuriesOutAway: outBySide.away,
+      injuryBaseline: baseline,
+      spreadCanMove,
+      // A flag about players being out is meaningless when the list of who is
+      // out could not be fetched.
+      injuriesKnown: injuryFeedOk[sport] !== false,
       windy: !!(g.weather && g.weather.windy),
       windSpeed: g.weather ? g.weather.windSpeed : null,
     });
@@ -2611,7 +2671,9 @@ function buildCommentaryPrompt(sport, gamesWithStats, note) {
         spread: odds.myBook.spread,
         total: odds.myBook.total,
       } : null,
-      injuriesOut: {
+      // Explicitly unknown rather than an empty list, so a failed fetch cannot
+      // be read as a clean bill of health and written up as one.
+      injuriesOut: g.injuriesKnown === false ? 'UNAVAILABLE — do not say either team is healthy' : {
         home: (g.injuries?.home || []).filter(i => i.level === 'out' && !i.longTerm)
           .slice(0, 6).map(i => `${i.player} (${i.position})`),
         away: (g.injuries?.away || []).filter(i => i.level === 'out' && !i.longTerm)
@@ -2933,6 +2995,7 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
         ? model.poolCandidate(g.lineMovement.spreadMovement, g.lineMovement.totalMovement)
         : null,
 
+      injuriesKnown: g.injuriesKnown !== false,
       keyFactors: (commentary[g.homeTeam + '|' + g.awayTeam] || {}).keyFactors || [],
       assessment: (commentary[g.homeTeam + '|' + g.awayTeam] || {}).assessment || null,
       situationFlags: g.situationFlags || [],
@@ -3425,7 +3488,7 @@ async function handleNFLPredictions(res, oddsData) {
     // Claude writes notes only; every number comes from model.js. Kept short on
     // purpose — the long legacy prompts still ask the other three sports for
     // figures that are now discarded.
-    attachSituationFlags(gamesWithStats);
+    await attachSituationFlags(gamesWithStats, 'nfl');
     const prompt = buildCommentaryPrompt('nfl', gamesWithStats, isPreseason ? 'NOTE: these are PRESEASON games. Starters play limited snaps and results are not predictive. Say so where relevant.' : null);
     console.log('[NFL] Fetching commentary...');
     const commentary = await fetchCommentary('nfl', prompt);
@@ -3522,7 +3585,7 @@ async function handleNBAPredictions(res, oddsData) {
     const withMovement = gamesWithStats.filter(g => g.lineMovement).length;
     console.log(`[NBA] Matched odds to ${matched}/${gamesWithStats.length} games, opening lines for ${withMovement}/${gamesWithStats.length}`);
 
-    attachSituationFlags(gamesWithStats);
+    await attachSituationFlags(gamesWithStats, 'nba');
     const prompt = buildCommentaryPrompt('nba', gamesWithStats, null);
     console.log('[NBA] Fetching commentary...');
     const commentary = await fetchCommentary('nba', prompt);
@@ -3614,7 +3677,7 @@ async function handleNHLPredictions(res, oddsData) {
     const withGoalies = gamesWithStats.filter(g => g.goalies?.home || g.goalies?.away).length;
     console.log(`[NHL] Matched odds to ${matched}/${gamesWithStats.length}, opening lines ${withMovement}/${gamesWithStats.length}, goalies ${withGoalies}/${gamesWithStats.length}`);
 
-    attachSituationFlags(gamesWithStats);
+    await attachSituationFlags(gamesWithStats, 'nhl');
     const prompt = buildCommentaryPrompt('nhl', gamesWithStats, null);
     console.log('[NHL] Fetching commentary...');
     const commentary = await fetchCommentary('nhl', prompt);
@@ -3714,7 +3777,7 @@ async function handleMLBPredictions(res, oddsData) {
     const withPitchers = gamesWithStats.filter(g => g.pitchers?.home?.era && g.pitchers.home.era !== 'N/A').length;
     console.log(`[MLB] Matched odds to ${matched}/${gamesWithStats.length}, opening lines ${withMovement}/${gamesWithStats.length}, pitchers ${withPitchers}/${gamesWithStats.length}`);
 
-    attachSituationFlags(gamesWithStats);
+    await attachSituationFlags(gamesWithStats, 'mlb');
     const prompt = buildCommentaryPrompt('mlb', gamesWithStats, null);
     console.log('[MLB] Fetching commentary...');
     const commentary = await fetchCommentary('mlb', prompt);

@@ -1712,9 +1712,99 @@ test('bestBet withholds a hockey verdict until the sweep is explained', () => {
 
   const v = m.bestBet({ sport, marketSpread: -1.5, homeTeam: 'Oilers', awayTeam: 'Canucks',
                         runLine: r });
-  assert.equal(v.level, 'coinflip', 'but it must not become a recommendation');
-  assert.equal(v.pick, null);
-  assert.match(v.reason, /not trusted yet/);
+  // Withheld, not silent. 'coinflip' renders as nothing, which meant this
+  // explanation was written carefully and then shown to nobody — the reader
+  // never learned the pricing existed or why it was being held back.
+  assert.equal(v.level, 'withheld', 'it must say it is withholding');
+  assert.equal(v.pick, null, 'and still not recommend a side');
+  assert.match(v.reason, /waiting for results/);
+  assert.match(v.reason, /worth/, 'the numbers are shown even though the advice is not');
+});
+
+test('bestBet names the line it actually priced, not the consensus', () => {
+  // runLine is built entirely from the book's own spread and prices, so
+  // labelling the pick with a consensus point from nine other books could name
+  // a number that was never priced.
+  const p = m.deVigTwoWayShin(-160, 140).probA;
+  const cover = m.coverProbFromWinProb({ sport: 'mlb', winProb: p, line: -1.5 });
+  const rl = m.runLineEdge({
+    sport: 'mlb', homeML: -160, awayML: 140, spread: -1.5,
+    spreadHomePrice: m.decimalToAmerican(1 / (cover * 0.9)),
+    spreadAwayPrice: m.decimalToAmerican(1 / ((1 - cover) * 1.02)),
+  });
+  const v = m.bestBet({ sport: 'mlb', marketSpread: -1.5, bookSpread: -2.5,
+                        homeTeam: 'Dodgers', awayTeam: 'Rockies', runLine: rl });
+  assert.equal(v.pick, 'Dodgers -2.5', `named ${v.pick}, but -2.5 is what was priced`);
+
+  // Absent a book line it falls back to the consensus one rather than refusing.
+  const fallback = m.bestBet({ sport: 'mlb', marketSpread: -1.5,
+                               homeTeam: 'Dodgers', awayTeam: 'Rockies', runLine: rl });
+  assert.equal(fallback.pick, 'Dodgers -1.5');
+});
+
+test('a situation flag still reaches a verdict in baseball', () => {
+  // The fixedSpread branch returned on every path, so the flag check below it
+  // was dead for MLB and NHL — and injury classification had just been fixed
+  // specifically so those flags fire in those sports.
+  const p = m.deVigTwoWayShin(-160, 140).probA;
+  const cover = m.coverProbFromWinProb({ sport: 'mlb', winProb: p, line: -1.5 });
+  const fair = m.runLineEdge({
+    sport: 'mlb', homeML: -160, awayML: 140, spread: -1.5,
+    spreadHomePrice: m.decimalToAmerican(1 / (cover * 1.023)),
+    spreadAwayPrice: m.decimalToAmerican(1 / ((1 - cover) * 1.023)),
+  });
+
+  const quiet = m.bestBet({ sport: 'mlb', marketSpread: -1.5, bookSpread: -1.5,
+                            homeTeam: 'Cubs', awayTeam: 'Reds', runLine: fair });
+  assert.equal(quiet.level, 'coinflip', 'a fair price with nothing else to say stays quiet');
+
+  const flagged = m.bestBet({
+    sport: 'mlb', marketSpread: -1.5, bookSpread: -1.5,
+    homeTeam: 'Cubs', awayTeam: 'Reds', runLine: fair,
+    situationFlags: [{ type: 'injuries-static-line', against: 'away', note: 'Four players ruled out.' }],
+  });
+  assert.equal(flagged.level, 'lean');
+  assert.equal(flagged.side, 'home', 'a flag against away argues for home');
+  assert.equal(flagged.pick, 'Cubs -1.5');
+  assert.ok(flagged.caveat, 'and it is labelled a situation lean, not a price edge');
+
+  // A sideless flag still cannot produce a pick.
+  const sideless = m.bestBet({
+    sport: 'mlb', marketSpread: -1.5, bookSpread: -1.5,
+    homeTeam: 'Cubs', awayTeam: 'Reds', runLine: fair,
+    situationFlags: [{ type: 'unexplained-move', against: null, note: 'The line moved.' }],
+  });
+  assert.equal(sideless.level, 'coinflip');
+});
+
+test('the injury flag measures against the league, not against three', () => {
+  // Three players out is remarkable in football and a normal Tuesday in
+  // baseball, where the median team carries about four on short-term IL. The
+  // absolute threshold fired on essentially every baseball card.
+  const fires = (opts) => m.situationFlags(opts).some(x => x.type === 'injuries-static-line');
+
+  // No baseline supplied: unchanged behaviour, so existing callers are safe.
+  assert.equal(fires({ injuriesOut: 4, spreadMovement: 0 }), true);
+  assert.equal(fires({ injuriesOut: 2, spreadMovement: 0 }), false);
+
+  // With a baseline, routine churn is no longer news.
+  assert.equal(fires({ injuriesOut: 4, spreadMovement: 0, injuryBaseline: 4 }), false,
+    'four out against a norm of four is not a story');
+  assert.equal(fires({ injuriesOut: 7, spreadMovement: 0, injuryBaseline: 4 }), true,
+    'seven against a norm of four is');
+
+  // Where the spread cannot move, the stillness test is vacuous and dropped —
+  // but the count still has to clear the bar.
+  assert.equal(fires({ injuriesOut: 7, injuryBaseline: 4, spreadCanMove: false }), true);
+  assert.equal(fires({ injuriesOut: 4, injuryBaseline: 4, spreadCanMove: false }), false);
+  // And with a movable spread, a line that HAS moved explains itself.
+  assert.equal(fires({ injuriesOut: 7, injuryBaseline: 4, spreadMovement: 3 }), false);
+
+  const note = m.situationFlags({ injuriesOut: 7, injuryBaseline: 4, spreadCanMove: false })
+    .find(x => x.type === 'injuries-static-line').note;
+  assert.match(note, /league norm/, 'the note should say what normal is');
+  assert.ok(!/spread has barely moved/.test(note),
+    'and should not claim a fixed line failed to move');
 });
 
 test('the NFL sigma is the measured one, and prices a stale line correctly', () => {

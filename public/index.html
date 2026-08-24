@@ -216,6 +216,9 @@
     .verdict.lean     { border-left-color: #58a6ff; }
     .verdict.coinflip,
     .verdict.none     { border-left-color: #6e7681; }
+    /* Priced but not advised: amber, because it is neither a recommendation
+       nor nothing — the numbers are real and the advice is being held back. */
+    .verdict.withheld { border-left-color: #d29922; }
     .verdict.pass     { border-left-color: #6e7681; opacity: 0.75; }
 
     .verdict-label { font-weight: 800; font-size: 14px; }
@@ -223,6 +226,7 @@
     .verdict.strong .verdict-label { color: #3fb950; }
     .verdict.slight .verdict-label { color: #56d364; }
     .verdict.lean .verdict-label   { color: #58a6ff; }
+    .verdict.withheld .verdict-label { color: #d29922; }
     .verdict.coinflip .verdict-label,
     .verdict.none .verdict-label,
     .verdict.pass .verdict-label   { color: #8b949e; }
@@ -885,7 +889,10 @@
 
     // Where a game sits in the list. Anything the app will actually stand
     // behind goes first; everything else keeps its kickoff order underneath.
-    const VERDICT_ORDER = { edge: 0, strong: 0, slight: 1, lean: 2 };
+    // withheld sits below the actionable verdicts and above silence: it has
+    // something to say — a priced number and a reason it is not being acted on
+    // — which is more than a card with no verdict at all.
+    const VERDICT_ORDER = { edge: 0, strong: 0, slight: 1, lean: 2, withheld: 3 };
     function verdictRank(g) {
       const r = g.bestBet || g.recommendation;
       const rank = r ? VERDICT_ORDER[r.level] : undefined;
@@ -1049,7 +1056,19 @@
           const home = (g.stats && g.stats.injuries && g.stats.injuries.home) || [];
           const away = (g.stats && g.stats.injuries && g.stats.injuries.away) || [];
 
-          if (home.length || away.length) {
+          if (g.injuriesKnown === false) {
+            // Say the report could not be fetched. An empty box reads as "both
+            // teams are healthy", which is a different and much more useful
+            // claim than the one the app can actually make.
+            injuriesHTML = `
+              <details class="inj-box">
+                <summary class="inj-summary">🏥 Injuries <span class="inj-counts inj-quest">report unavailable</span></summary>
+                <div class="inj-body"><div class="inj-row"><span class="inj-name">
+                  The injury feed did not answer for this league, so nobody is listed here &mdash;
+                  which is not the same as nobody being hurt.
+                </span></div></div>
+              </details>`;
+          } else if (home.length || away.length) {
             const isOut = (i) => i.level === 'out' && !i.longTerm;
             const isDoubt = (i) => i.level === 'doubtful';
             const all = home.concat(away);
@@ -1122,6 +1141,10 @@
                 // note below still render on their own when they have
                 // something to say; an in-progress game keeps its box, because
                 // there it is explaining why the rest of the card is empty.
+                // 'withheld' is NOT silent. It is the case where the pricing
+                // ran, produced a number, and is deliberately not being acted
+                // on — which the reader needs told, or the whole feature is
+                // invisible in that sport.
                 const silent = r.level === 'coinflip' || r.level === 'none';
                 // The pool note sits with the verdict because the two are easy
                 // to confuse and mean opposite things: movement is an edge

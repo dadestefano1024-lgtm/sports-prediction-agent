@@ -2003,6 +2003,7 @@ function situationFlags({
   spreadMovement = null, totalMovement = null,
   qbOut = null, qbOutSide = null,
   injuriesOut = 0, injuriesOutHome = 0, injuriesOutAway = 0,
+  injuryBaseline = null, spreadCanMove = true,
   windy = false, windSpeed = null,
 } = {}) {
   const flags = [];
@@ -2041,14 +2042,34 @@ function situationFlags({
     });
   }
 
-  if (totalOut >= 3 && spreadMoved !== null && spreadMoved < 1) {
+  // Unusual for THIS league, not three in absolute terms.
+  //
+  // Three players out is remarkable in football and completely routine in
+  // baseball, where every roster carries a rolling handful on the 10- and
+  // 15-day IL and the league median short-term count is around four per team.
+  // An absolute threshold of three therefore fired on essentially every
+  // baseball and hockey card and was handed to Claude as "the most interesting
+  // thing about the game" — noise dressed as signal.
+  //
+  // The baseline is the league's own median, measured from the same feed that
+  // produced the counts, so the flag means "more than usual" rather than "more
+  // than a number chosen for a different sport".
+  //
+  // The stillness test is dropped where the spread CANNOT move: a run line and
+  // a puck line are fixed at 1.5, so "the spread has barely moved" is true by
+  // construction there and adds nothing to the condition.
+  const bar = Number.isFinite(injuryBaseline) ? Math.max(3, Math.ceil(injuryBaseline) + 3) : 3;
+  const lineIsStill = !spreadCanMove || (spreadMoved !== null && spreadMoved < 1);
+  if (totalOut >= bar && lineIsStill) {
     // Whichever side is actually missing the players. Level, or not broken down
     // by side at all, means no side - better to say nothing than to guess.
     const against = injuriesOutHome > injuriesOutAway ? 'home'
       : injuriesOutAway > injuriesOutHome ? 'away' : null;
     flags.push({
       type: 'injuries-static-line', severity: 'medium', against,
-      note: `${totalOut} players ruled out but the spread has barely moved.`,
+      note: `${totalOut} players ruled out${Number.isFinite(injuryBaseline)
+        ? `, against a league norm of about ${Math.round(injuryBaseline)}` : ''}` +
+        `${spreadCanMove ? ', but the spread has barely moved' : ''}.`,
     });
   }
 
@@ -2098,7 +2119,7 @@ function situationFlags({
  */
 function bestBet({
   sport, bookValuePts = 0, bookSide = null, bookPick = null,
-  predictedMargin = null, marketSpread = null,
+  predictedMargin = null, marketSpread = null, bookSpread = null,
   situationFlags = [], inProgress = false,
   homeTeam = 'Home', awayTeam = 'Away',
   runLine = null,
@@ -2142,21 +2163,42 @@ function bestBet({
     const table = MARGIN_TABLES[sport];
     const noun = sport === 'nhl' ? 'puck' : 'run';
 
-    if (!Number.isFinite(marketSpread)) return no(`there is no ${noun} line here to price`);
+    // The line to NAME is the one that was priced. runLine is built entirely
+    // from the book's own spread and its two prices, so labelling the pick with
+    // a consensus point taken from nine other books could name a number that
+    // was never priced — "Home -1.5" quoting a fair price computed for -2.5.
+    const priceLine = Number.isFinite(bookSpread) ? bookSpread : marketSpread;
+
+    if (!Number.isFinite(priceLine)) return no(`there is no ${noun} line here to price`);
     if (!runLine || !table) {
       return no(`the ${noun} line barely moves whoever is playing, and there is ` +
                 'no moneyline here to price it against');
     }
-    if (!table.verdict) return no(`priced but not trusted yet — ${table.verdictNote}`);
 
     const takeHome = runLine.homeEdgePts >= runLine.awayEdgePts;
     const pts = takeHome ? runLine.homeEdgePts : runLine.awayEdgePts;
-    const line = takeHome ? marketSpread : -marketSpread;
+    const line = takeHome ? priceLine : -priceLine;
     const fair = takeHome ? runLine.fairHomePrice : runLine.fairAwayPrice;
     const offered = takeHome ? runLine.offeredHomePrice : runLine.offeredAwayPrice;
     const priced = `${takeHome ? homeTeam : awayTeam} ${line > 0 ? '+' : ''}${line}`;
     const show = (n) => `${n > 0 ? '+' : ''}${Math.round(n)}`;
     const side = takeHome ? 'home' : 'away';
+
+    // A sport can be priced without being trusted, and that is worth SAYING
+    // rather than swallowing. Hockey calibrates as well as baseball but every
+    // positive edge on a live card was the underdog, twelve for twelve, so the
+    // numbers are shown and the recommendation is withheld.
+    //
+    // Its own level, because 'coinflip' is rendered as silence — which meant
+    // this explanation was written carefully and then never displayed to
+    // anybody.
+    if (!table.verdict) {
+      return {
+        level: 'withheld', label: 'Priced, not advised', pick: null,
+        reason: `the moneyline makes ${priced} worth ${show(fair)} against ${show(offered)} on ` +
+                `offer (${pts > 0 ? '+' : ''}${pts} points), but ${table.verdictNote}`,
+      };
+    }
 
     // Two points of probability is roughly four percent on the stake, which is
     // a real bet. One point is thin but on the right side of the price. Below
@@ -2171,7 +2213,29 @@ function bestBet({
                reason: `a little better than this game's own moneyline says it is worth ` +
                        `(fair ${show(fair)}, offered ${show(offered)}), ${pts} points` };
     }
-    return no(`${marketSpread === -1.5 || marketSpread === 1.5 ? 'the ' + noun + ' line' : `the ${Math.abs(marketSpread)} line`} ` +
+
+    // No price edge — but a situation flag is a different kind of signal and
+    // was being thrown away here.
+    //
+    // The projection is skipped for these sports because a fixed 1.5 gives it
+    // nothing to disagree with. A flag is not the projection: it says something
+    // is publicly known that the price may not have absorbed yet, which is the
+    // one way public information beats a market. Injury classification was
+    // fixed this session specifically so these fire in baseball and hockey, and
+    // then every one of them died at this return.
+    const flagged = (situationFlags || []).find(f => f && (f.against === 'home' || f.against === 'away'));
+    if (flagged) {
+      const backHome = flagged.against === 'away';
+      const flagLine = backHome ? priceLine : -priceLine;
+      return {
+        level: 'lean', label: 'Lean', side: backHome ? 'home' : 'away',
+        pick: `${backHome ? homeTeam : awayTeam} ${flagLine > 0 ? '+' : ''}${flagLine}`,
+        reason: `the price is fair, but ${flagged.note ? flagged.note.replace(/\.$/, '') : 'the situation points one way'}`,
+        caveat: 'this is a lean on a situation, not a price edge — the number itself is fair',
+      };
+    }
+
+    return no(`${Math.abs(priceLine) === 1.5 ? 'the ' + noun + ' line' : `the ${Math.abs(priceLine)} line`} ` +
               'agrees with the moneyline on this game, so neither side is mispriced');
   }
 

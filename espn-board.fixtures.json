@@ -1,0 +1,168 @@
+{
+ "nfl": {
+  "matchup": "PIT @ BUF",
+  "date": "2026-08-27T23:00Z",
+  "item": {
+   "provider": {
+    "name": "Draft Kings"
+   },
+   "spread": -2.5,
+   "overUnder": 35.5,
+   "homeTeamOdds": {
+    "moneyLine": -135,
+    "open": {
+     "pointSpread": {
+      "american": "-1.5"
+     },
+     "spread": {
+      "american": "-110"
+     },
+     "moneyLine": {
+      "american": "-130"
+     }
+    },
+    "current": {
+     "pointSpread": {
+      "american": "-2.5"
+     },
+     "spread": {
+      "american": "-110"
+     },
+     "moneyLine": {
+      "american": "-135"
+     }
+    }
+   },
+   "awayTeamOdds": {
+    "moneyLine": 114,
+    "open": {
+     "pointSpread": {
+      "american": "+1.5"
+     },
+     "spread": {
+      "american": "-110"
+     },
+     "moneyLine": {
+      "american": "+110"
+     }
+    },
+    "current": {
+     "pointSpread": {
+      "american": "+2.5"
+     },
+     "spread": {
+      "american": "-110"
+     },
+     "moneyLine": {
+      "american": "+114"
+     }
+    }
+   },
+   "open": {
+    "total": {
+     "american": "35.5"
+    },
+    "over": {
+     "american": "-110"
+    },
+    "under": {
+     "american": "-110"
+    }
+   },
+   "current": {
+    "total": {
+     "american": "35.5"
+    },
+    "over": {
+     "american": "-110"
+    },
+    "under": {
+     "american": "-110"
+    }
+   }
+  }
+ },
+ "mlb": {
+  "matchup": "BOS @ MIA",
+  "date": "2026-08-24T22:40Z",
+  "item": {
+   "provider": {
+    "name": "DraftKings"
+   },
+   "spread": 1.5,
+   "overUnder": 7,
+   "homeTeamOdds": {
+    "moneyLine": 115,
+    "open": {
+     "pointSpread": {
+      "american": "+1.5"
+     },
+     "spread": {
+      "american": "-181"
+     },
+     "moneyLine": {
+      "american": "+113"
+     }
+    },
+    "current": {
+     "pointSpread": {
+      "american": "+1.5"
+     },
+     "spread": {
+      "american": "-162"
+     },
+     "moneyLine": {
+      "american": "+115"
+     }
+    }
+   },
+   "awayTeamOdds": {
+    "moneyLine": -124,
+    "open": {
+     "pointSpread": {
+      "american": "-1.5"
+     },
+     "spread": {
+      "american": "+149"
+     },
+     "moneyLine": {
+      "american": "-136"
+     }
+    },
+    "current": {
+     "pointSpread": {
+      "american": "-1.5"
+     },
+     "spread": {
+      "american": "+134"
+     },
+     "moneyLine": {
+      "american": "-124"
+     }
+    }
+   },
+   "open": {
+    "total": {
+     "american": "7"
+    },
+    "over": {
+     "american": "-120"
+    },
+    "under": {
+     "american": "+100"
+    }
+   },
+   "current": {
+    "total": {
+     "american": "7"
+    },
+    "over": {
+     "american": "-115"
+    },
+    "under": {
+     "american": "-105"
+    }
+   }
+  }
+ }
+}

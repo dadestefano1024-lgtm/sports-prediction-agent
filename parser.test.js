@@ -135,3 +135,125 @@ test('the captured fixtures show real line movement', () => {
   assert.ok(moved.length >= 2,
     `expected at least two sports to show movement, got ${moved.join(', ') || 'none'}`);
 });
+
+// ----------------------------------------------------------------------------
+// The odds board
+// ----------------------------------------------------------------------------
+// Nine fields per phase, none of which the older fixtures carry — they were
+// trimmed to the three the previous parser used. That gap is not academic: two
+// independent reviewers read those fixtures and concluded the board renders
+// blank on every card. It does not, but nothing in the suite could tell the
+// difference either way, which is precisely the silent-degradation mode this
+// file exists to catch.
+//
+// espn-board.fixtures.json is a real captured response per sport, kept trimmed
+// to what the board reads.
+
+const boardFixtures = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'espn-board.fixtures.json'), 'utf8'));
+
+// The extraction fetchEspnOpeningLines performs, kept in step with it.
+const readBoardPhase = (item, w) => {
+  const pick = (obj, phase, field) =>
+    obj && obj[phase] && obj[phase][field] ? obj[phase][field].american : null;
+  const hto = item.homeTeamOdds || {};
+  const ato = item.awayTeamOdds || {};
+  return {
+    homeSpread: parseAmericanValue(pick(hto, w, 'pointSpread')),
+    homeSpreadPrice: parseAmericanValue(pick(hto, w, 'spread')),
+    awaySpread: parseAmericanValue(pick(ato, w, 'pointSpread')),
+    awaySpreadPrice: parseAmericanValue(pick(ato, w, 'spread')),
+    homeML: parseAmericanValue(pick(hto, w, 'moneyLine')),
+    awayML: parseAmericanValue(pick(ato, w, 'moneyLine')),
+    total: parseAmericanValue(item[w] && item[w].total && item[w].total.american),
+    overPrice: parseAmericanValue(item[w] && item[w].over && item[w].over.american),
+    underPrice: parseAmericanValue(item[w] && item[w].under && item[w].under.american),
+  };
+};
+
+test('every sport has a captured board fixture', () => {
+  for (const sport of ['nfl', 'mlb']) {
+    assert.ok(boardFixtures[sport], `no board fixture for ${sport}`);
+    assert.ok(boardFixtures[sport].item, `${sport} fixture has no odds item`);
+  }
+});
+
+test('the board finds a price beside every number it displays', () => {
+  // The whole premise of replacing the old lines row was "the prices — the part
+  // that tells you what a bet actually costs — were fetched and thrown away".
+  // If any of these come back null the board renders a column of blanks and
+  // says less than what it replaced.
+  for (const sport of ['nfl', 'mlb']) {
+    for (const w of ['open', 'current']) {
+      const p = readBoardPhase(boardFixtures[sport].item, w);
+      for (const field of Object.keys(p)) {
+        assert.notEqual(p[field], null, `${sport} ${w}.${field} came back null`);
+      }
+    }
+  }
+});
+
+test('the board reads both teams, not just the home one', () => {
+  // awayTeamOdds is the field the old parser never touched — it took the home
+  // spread and negated it. If ESPN moves or drops that object the away row goes
+  // to em-dashes while the home row still looks fine, which is the kind of
+  // half-broken that survives a glance.
+  for (const sport of ['nfl', 'mlb']) {
+    const now = readBoardPhase(boardFixtures[sport].item, 'current');
+    assert.ok(Number.isFinite(now.awaySpread), `${sport} away spread missing`);
+    assert.ok(Number.isFinite(now.awayML), `${sport} away moneyline missing`);
+    // The two sides of a spread mirror each other.
+    assert.ok(Math.abs(now.homeSpread + now.awaySpread) < 1e-9,
+      `${sport}: ${now.homeSpread} and ${now.awaySpread} should be mirrors`);
+    // And the two moneylines sit on opposite sides of even.
+    assert.ok((now.homeML > 0) !== (now.awayML > 0),
+      `${sport}: both moneylines on the same side of even (${now.homeML}/${now.awayML})`);
+  }
+});
+
+test('board prices are prices, and lines are lines', () => {
+  for (const sport of ['nfl', 'mlb']) {
+    for (const w of ['open', 'current']) {
+      const p = readBoardPhase(boardFixtures[sport].item, w);
+      // A price is an American number and never sits between -100 and +100.
+      for (const [name, v] of [['homeSpreadPrice', p.homeSpreadPrice],
+                               ['awaySpreadPrice', p.awaySpreadPrice],
+                               ['overPrice', p.overPrice], ['underPrice', p.underPrice],
+                               ['homeML', p.homeML], ['awayML', p.awayML]]) {
+        assert.ok(Math.abs(v) >= 100, `${sport} ${w}.${name} = ${v} is not an American price`);
+      }
+      // Lines land on a half point.
+      for (const [name, v] of [['homeSpread', p.homeSpread], ['total', p.total]]) {
+        assert.ok(Math.abs(v * 2 - Math.round(v * 2)) < 1e-9,
+          `${sport} ${w}.${name} = ${v} is not on a half point`);
+      }
+      assert.ok(p.total > 0, `${sport} ${w} total should be positive`);
+    }
+  }
+});
+
+test('the board can tell open from current', () => {
+  // If the two phases were read from the same place every card would show two
+  // identical columns and the movement highlight would never fire — which looks
+  // like a quiet market rather than a bug.
+  const nfl = boardFixtures.nfl.item;
+  const open = readBoardPhase(nfl, 'open');
+  const now = readBoardPhase(nfl, 'current');
+  const moved = Object.keys(open).some(k => open[k] !== now[k]);
+  assert.ok(moved, 'open and current are identical in every field, which is suspicious');
+});
+
+test('a fixture missing its phases yields nulls rather than throwing', () => {
+  // The older fixtures in espn-odds.fixtures.json are exactly this shape, and
+  // the board has to degrade to blanks rather than fail the whole slate.
+  for (const sport of ['nba', 'nhl', 'mlb', 'nfl']) {
+    const p = readBoardPhase(fixtures[sport], 'open');
+    assert.equal(typeof p, 'object');
+    for (const field of Object.keys(p)) {
+      assert.ok(p[field] === null || Number.isFinite(p[field]),
+        `${sport} ${field} should be null or a number, got ${p[field]}`);
+    }
+  }
+  assert.doesNotThrow(() => readBoardPhase({}, 'open'));
+  assert.doesNotThrow(() => readBoardPhase({ homeTeamOdds: null }, 'current'));
+});
