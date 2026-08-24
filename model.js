@@ -58,6 +58,11 @@
 // hfa         — home field advantage, same units
 // eloPerPoint — Elo rating difference worth one point of margin
 // k           — Elo update rate
+// fixedSpread — the spread is 1.5 by convention no matter who is playing,
+//               so the NUMBER carries no information about expected margin and
+//               the price alongside it carries all of it. Run lines and puck
+//               lines are the two. Anything that reads a spread as the market's
+//               estimate of the result has to skip these.
 //
 // TREAT THESE AS PLACEHOLDERS. They are widely cited approximations, good
 // enough to produce sane output and to test against, and not good enough to bet
@@ -66,8 +71,8 @@
 const SPORTS = {
   nfl: { sigma: 13.5, totalSigma: 10.5, hfa: 1.8,  eloPerPoint: 25, k: 20 },
   nba: { sigma: 11.5, totalSigma: 15.0, hfa: 2.5,  eloPerPoint: 28, k: 20 },
-  mlb: { sigma: 4.4,  totalSigma: 4.4,  hfa: 0.20, eloPerPoint: 4,  k: 4  },
-  nhl: { sigma: 2.2,  totalSigma: 2.4,  hfa: 0.25, eloPerPoint: 2,  k: 6  },
+  mlb: { sigma: 4.4,  totalSigma: 4.4,  hfa: 0.20, eloPerPoint: 4,  k: 4,  fixedSpread: true },
+  nhl: { sigma: 2.2,  totalSigma: 2.4,  hfa: 0.25, eloPerPoint: 2,  k: 6,  fixedSpread: true },
 };
 
 /** Kelly fractions at or below this are treated as no edge at all. */
@@ -1230,42 +1235,64 @@ function poolCandidate(spreadMovement, totalMovement) {
  */
 function situationFlags({
   spreadMovement = null, totalMovement = null,
-  qbOut = null, injuriesOut = 0, windy = false, windSpeed = null,
+  qbOut = null, qbOutSide = null,
+  injuriesOut = 0, injuriesOutHome = 0, injuriesOutAway = 0,
+  windy = false, windSpeed = null,
 } = {}) {
   const flags = [];
   const spreadMoved = Number.isFinite(spreadMovement) ? Math.abs(spreadMovement) : null;
   const totalMoved = Number.isFinite(totalMovement) ? Math.abs(totalMovement) : null;
+
+  // Every flag carries `against`: the side it is bad news FOR, or null where it
+  // genuinely has no side. That field is the only thing downstream may read for
+  // direction.
+  //
+  // The alternative was searching the prose for the words "home" and "away",
+  // which quietly made Patrick Mahomes an argument for the home team and
+  // matched nothing else at all. A side has to be passed in, not recovered from
+  // a sentence written for a human.
+  const bySide = injuriesOutHome + injuriesOutAway;
+  const totalOut = bySide > 0 ? bySide : injuriesOut;
 
   // A quarterback is worth several points. If one is out and the number has not
   // moved, either it was priced before the line opened or it has not reacted.
   if (qbOut && spreadMoved !== null && spreadMoved < 1.5) {
     flags.push({
       type: 'qb-static-line', severity: 'high',
+      against: qbOutSide === 'home' || qbOutSide === 'away' ? qbOutSide : null,
       note: `${qbOut} is out but the spread has moved only ${spreadMoved} pt. ` +
             `Either that was priced before the line opened, or the market has not finished reacting.`,
     });
   }
 
-  // Wind is the largest weather effect on a total.
+  // Wind is the largest weather effect on a total. It is an argument about how
+  // many points get scored, not about who wins, so it has no side.
   if (windy && totalMoved !== null && totalMoved < 1.5) {
     flags.push({
-      type: 'wind-static-total', severity: 'medium',
+      type: 'wind-static-total', severity: 'medium', against: null,
       note: `${windSpeed ? windSpeed + ' mph wind' : 'High wind'} forecast but the total has moved ` +
             `only ${totalMoved} pt. Worth checking how recent the forecast is.`,
     });
   }
 
-  if (injuriesOut >= 3 && spreadMoved !== null && spreadMoved < 1) {
+  if (totalOut >= 3 && spreadMoved !== null && spreadMoved < 1) {
+    // Whichever side is actually missing the players. Level, or not broken down
+    // by side at all, means no side - better to say nothing than to guess.
+    const against = injuriesOutHome > injuriesOutAway ? 'home'
+      : injuriesOutAway > injuriesOutHome ? 'away' : null;
     flags.push({
-      type: 'injuries-static-line', severity: 'medium',
-      note: `${injuriesOut} players ruled out but the spread has barely moved.`,
+      type: 'injuries-static-line', severity: 'medium', against,
+      note: `${totalOut} players ruled out but the spread has barely moved.`,
     });
   }
 
-  // The most useful one: the market moved and nothing here explains why.
-  if (spreadMoved !== null && spreadMoved >= 2 && !qbOut && injuriesOut < 3) {
+  // The most useful one to read, and deliberately sideless. The move points at
+  // a side, but backing that side at the CURRENT price went 90-97 across 269
+  // games of 2025 - the information is already in the number being offered. It
+  // is worth knowing about. It is not something to lean on.
+  if (spreadMoved !== null && spreadMoved >= 2 && !qbOut && totalOut < 3) {
     flags.push({
-      type: 'unexplained-move', severity: 'high',
+      type: 'unexplained-move', severity: 'high', against: null,
       note: `The spread has moved ${spreadMoved} pts with no injury or quarterback reason ` +
             `visible here. Somebody is acting on something this app cannot see.`,
     });
@@ -1314,14 +1341,18 @@ function bestBet({
              reason: 'the book is pricing the rest of the game, not the whole one' };
   }
 
+  // Runs and goals are not points, and a verdict that calls them points reads
+  // like it does not know which sport it is looking at.
+  const unit = sport === 'mlb' ? 'run' : sport === 'nhl' ? 'goal' : 'point';
+
   // A price advantage is the only thing here that is an edge.
   if (bookValuePts >= 1 && bookPick) {
     return { level: 'edge', label: 'Best bet', pick: bookPick, side: bookSide,
-             reason: `the number is ${bookValuePts} point${bookValuePts === 1 ? '' : 's'} better than the market` };
+             reason: `the number is ${bookValuePts} ${unit}${bookValuePts === 1 ? '' : 's'} better than the market` };
   }
   if (bookValuePts >= 0.5 && bookPick) {
     return { level: 'slight', label: 'Slight edge', pick: bookPick, side: bookSide,
-             reason: `the number is ${bookValuePts} of a point better than the market` };
+             reason: `the number is ${bookValuePts} of a ${unit} better than the market` };
   }
 
   // No price advantage. Is there anything else pointing one way?
@@ -1335,12 +1366,41 @@ function bestBet({
   const leansHome = disagreement > 0;
   const size = Math.abs(disagreement);
 
-  const flagText = (situationFlags || []).map(f => f.note).join(' ');
-  const flagsPointHome = /home/i.test(flagText) && leansHome;
-  const flagsPointAway = /away/i.test(flagText) && !leansHome;
-  const corroborated = (situationFlags || []).length > 0 && (flagsPointHome || flagsPointAway);
+  const cfg = SPORTS[sport] || SPORTS.nfl;
 
-  if (size >= 3 || corroborated) {
+  // A run line and a puck line are 1.5 whoever is playing. That number is not
+  // the market's estimate of the margin, so the projection disagreeing with it
+  // measures nothing — and it disagrees in the SAME DIRECTION nearly every
+  // time, because a projected baseball margin is a run or so while the line
+  // stays at 1.5. Leaning on that produces "take the underdog run line" across
+  // most of the slate, which is a property of the market's shape rather than
+  // anything known about the teams.
+  //
+  // Caught by replaying a live ten-game card: six of the seven leans it
+  // produced were the +1.5 side. The information in these markets sits in the
+  // price next to the line, not in the line, and nothing here reads it yet.
+  if (cfg.fixedSpread) {
+    return { level: 'coinflip', label: 'No lean', pick: null,
+             reason: `the ${sport === 'nhl' ? 'puck' : 'run'} line is 1.5 whoever is playing, ` +
+                     'so there is no number here to disagree with' };
+  }
+
+  // How far the projection has to sit from the market before it is worth
+  // saying. A field goal in football, and the same FRACTION of the other
+  // sport's margin spread — three points of basketball being a good deal
+  // less than three points of football. NFL sigma is 13.5, so the football
+  // threshold is 0.22 of a standard deviation, which gives 2.5 for basketball.
+  const threshold = Math.max(0.5, Math.round(cfg.sigma * (3 / SPORTS.nfl.sigma) * 2) / 2);
+
+  // Only a flag that names the side it is against may corroborate, and a flag
+  // against one side supports leaning to the OTHER - a quarterback ruled out is
+  // an argument against his own team.
+  const corroborated = (situationFlags || []).some(f =>
+    f && (f.against === 'home' ? !leansHome
+      : f.against === 'away' ? leansHome
+        : false));
+
+  if (size >= threshold || corroborated) {
     const team = leansHome ? homeTeam : awayTeam;
     const line = leansHome ? marketSpread : -marketSpread;
     return {
@@ -1348,7 +1408,7 @@ function bestBet({
       label: 'Lean',
       pick: `${team} ${line > 0 ? '+' : ''}${line}`,
       side: leansHome ? 'home' : 'away',
-      reason: `the projection has this ${size.toFixed(1)} points off the market` +
+      reason: `the projection has this ${size.toFixed(1)} ${unit}s off the market` +
               (corroborated ? ', and the situation points the same way' : ''),
       caveat: 'this is a lean, not an edge — the projection loses to the closing line on its own',
     };

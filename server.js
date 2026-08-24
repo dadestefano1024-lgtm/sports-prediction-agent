@@ -2314,18 +2314,32 @@ function attachSituationFlags(games) {
   for (const g of games || []) {
     const lm = g.lineMovement || {};
     const qb = g.startingQB || {};
-    const outCount = ['home', 'away'].reduce((n, side) =>
-      n + (((g.injuries && g.injuries[side]) || [])
-        .filter(i => /out|injured reserve/i.test(i.status || '')).length), 0);
-    const qbOut =
-      (qb.home && qb.home.starterAvailable === false && qb.home.starter) ||
-      (qb.away && qb.away.starterAvailable === false && qb.away.starter) || null;
+    // Which side, not just how many. A flag is only allowed to influence the
+    // verdict when it knows whose team it is bad news for, so the counts go
+    // through per side and the quarterback carries his own.
+    const outBySide = ['home', 'away'].reduce((acc, side) => {
+      acc[side] = (((g.injuries && g.injuries[side]) || [])
+        .filter(i => /out|injured reserve/i.test(i.status || '')).length);
+      return acc;
+    }, {});
+
+    let qbOut = null;
+    let qbOutSide = null;
+    if (qb.home && qb.home.starterAvailable === false && qb.home.starter) {
+      qbOut = qb.home.starter;
+      qbOutSide = 'home';
+    } else if (qb.away && qb.away.starterAvailable === false && qb.away.starter) {
+      qbOut = qb.away.starter;
+      qbOutSide = 'away';
+    }
 
     g.situationFlags = model.situationFlags({
       spreadMovement: lm.spreadMovement,
       totalMovement: lm.totalMovement,
       qbOut,
-      injuriesOut: outCount,
+      qbOutSide,
+      injuriesOutHome: outBySide.home,
+      injuriesOutAway: outBySide.away,
       windy: !!(g.weather && g.weather.windy),
       windSpeed: g.weather ? g.weather.windSpeed : null,
     });

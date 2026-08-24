@@ -184,19 +184,38 @@
       padding: 9px 11px; border-radius: 6px; margin-bottom: 10px;
       background: #161b22; border: 1px solid #30363d; border-left: 3px solid #6e7681;
     }
-    .verdict.strong { border-left-color: #3fb950; background: #0f2a1a; }
-    .verdict.lean   { border-left-color: #d29922; }
-    .verdict.pass   { border-left-color: #6e7681; opacity: 0.75; }
-    .verdict.lean   { border-left-color: #58a6ff; }
-    .verdict.coinflip { border-left-color: #6e7681; }
-    .verdict.lean .verdict-label { color: #58a6ff; }
-    .verdict.coinflip .verdict-label { color: #8b949e; }
+    /* Two things are colour-coded here, and they must never be confused.
+       GREEN is a price advantage: the book is offering a better number than
+       the market, which is a fact about what is on offer. BLUE is a lean: no
+       price advantage, just the projection and the situation agreeing, and the
+       projection has been measured at 0.35 points per game worse than the
+       closing line. Green means bet. Blue means "if you are betting anyway".
+       Grey means neither, which is most games.
+
+       `edge`/`slight`/`lean`/`coinflip`/`pass` come from bestBet, and
+       `strong`/`none` from the older betRecommendation the interface still
+       falls back to. Both sets are covered, because a level with no rule
+       silently renders as grey - which is how Best bet came to look exactly
+       like No lean. */
+    .verdict.edge,
+    .verdict.strong   { border-left-color: #3fb950; background: #0f2a1a; }
+    .verdict.slight   { border-left-color: #3fb950; }
+    .verdict.lean     { border-left-color: #58a6ff; }
+    .verdict.coinflip,
+    .verdict.none     { border-left-color: #6e7681; }
+    .verdict.pass     { border-left-color: #6e7681; opacity: 0.75; }
+
+    .verdict-label { font-weight: 800; font-size: 14px; }
+    .verdict.edge .verdict-label,
+    .verdict.strong .verdict-label { color: #3fb950; }
+    .verdict.slight .verdict-label { color: #56d364; }
+    .verdict.lean .verdict-label   { color: #58a6ff; }
+    .verdict.coinflip .verdict-label,
+    .verdict.none .verdict-label,
+    .verdict.pass .verdict-label   { color: #8b949e; }
+
     .verdict-pick { font-weight: 800; font-size: 15px; color: #c9d1d9; }
     .verdict-caveat { font-size: 11px; color: #8b949e; font-style: italic; margin-top: 4px; }
-    .verdict-label { font-weight: 800; font-size: 14px; }
-    .verdict.strong .verdict-label { color: #3fb950; }
-    .verdict.lean .verdict-label { color: #d29922; }
-    .verdict.none .verdict-label, .verdict.pass .verdict-label { color: #8b949e; }
     .verdict-reason { font-size: 12px; color: #8b949e; }
     .assessment {
       font-size: 13px; color: #c9d1d9; line-height: 1.5;

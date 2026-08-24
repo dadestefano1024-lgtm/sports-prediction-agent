@@ -1124,14 +1124,165 @@ test('bestBet: a small disagreement alone is not a lean', () => {
 });
 
 test('bestBet: a corroborating flag promotes a small disagreement', () => {
-  const plain = m.bestBet({ sport:'nfl', predictedMargin: 4.5, marketSpread: -3,
+  // Projection leans AWAY (market wants home by 3, projection says home by 1).
+  const plain = m.bestBet({ sport:'nfl', predictedMargin: 1, marketSpread: -3,
                             homeTeam:'Chiefs', awayTeam:'Raiders' });
   assert.equal(plain.level, 'coinflip');
-  const flagged = m.bestBet({ sport:'nfl', predictedMargin: 4.5, marketSpread: -3,
+
+  // A flag against the home side argues FOR the away side, which is where the
+  // projection already leans, so the two agree and it becomes a lean.
+  const flagged = m.bestBet({ sport:'nfl', predictedMargin: 1, marketSpread: -3,
                               homeTeam:'Chiefs', awayTeam:'Raiders',
-                              situationFlags:[{ note:'the home side lost its quarterback and the line has not moved' }] });
+                              situationFlags:[{ type:'qb-static-line', against:'home' }] });
   assert.equal(flagged.level, 'lean');
+  assert.equal(flagged.pick, 'Raiders +3');
   assert.match(flagged.reason, /situation points the same way/);
+});
+
+test('bestBet: a flag pointing the other way does not corroborate', () => {
+  // Same small away lean, but now the bad news is about the away side. That
+  // argues for home, against the projection, so nothing is promoted.
+  const r = m.bestBet({ sport:'nfl', predictedMargin: 1, marketSpread: -3,
+                        homeTeam:'Chiefs', awayTeam:'Raiders',
+                        situationFlags:[{ type:'qb-static-line', against:'away' }] });
+  assert.equal(r.level, 'coinflip');
+});
+
+test('bestBet: a sideless flag corroborates nothing', () => {
+  // An unexplained line move points at a side, but backing that side at the
+  // current price was measured at 90-97. It carries against:null for exactly
+  // that reason, and must not promote anything.
+  for (const flag of [{ type:'unexplained-move', against:null },
+                      { type:'wind-static-total', against:null },
+                      { note:'no side field at all' }]) {
+    const r = m.bestBet({ sport:'nfl', predictedMargin: 1, marketSpread: -3,
+                          homeTeam:'Chiefs', awayTeam:'Raiders',
+                          situationFlags:[flag] });
+    assert.equal(r.level, 'coinflip', JSON.stringify(flag));
+  }
+});
+
+test('bestBet does not read a side out of a player name', () => {
+  // Regression. The first version searched the flag prose for "home" and
+  // "away", so Patrick Mahomes corroborated a home lean, and no other flag
+  // corroborated anything. Real notes from situationFlags, run through.
+  const real = m.situationFlags({ qbOut: 'Patrick Mahomes', qbOutSide: 'away',
+                                  spreadMovement: 0.5 });
+  assert.equal(real.length, 1);
+  assert.equal(real[0].against, 'away');
+
+  // Market has home by 3, projection has home by 4 - a one-point home lean,
+  // well under the threshold, so the flag is the only thing that can promote
+  // it. It is against away, which argues for home, so the two agree.
+  const withSide = m.bestBet({ sport:'nfl', predictedMargin: 4, marketSpread: -3,
+                               homeTeam:'Chiefs', awayTeam:'Raiders',
+                               situationFlags: real });
+  assert.equal(withSide.level, 'lean');
+  assert.equal(withSide.pick, 'Chiefs -3');
+
+  // The identical note with the side stripped must do nothing, which is what
+  // proves the name is no longer being read.
+  const nameOnly = m.bestBet({ sport:'nfl', predictedMargin: 4, marketSpread: -3,
+                               homeTeam:'Chiefs', awayTeam:'Raiders',
+                               situationFlags: [{ ...real[0], against: null }] });
+  assert.equal(nameOnly.level, 'coinflip');
+});
+
+test('bestBet scales the lean threshold to the sport', () => {
+  // Three points of football is a field goal; three points of basketball is
+  // noise. The same disagreement must not mean the same thing in both.
+  const expected = { nfl: 3, nba: 2.5 };
+  for (const [sport, want] of Object.entries(expected)) {
+    // Just under the threshold: nothing.
+    const under = m.bestBet({ sport, predictedMargin: want - 0.1, marketSpread: 0,
+                              homeTeam:'H', awayTeam:'A' });
+    assert.equal(under.level, 'coinflip', `${sport} under ${want}`);
+    // At it: a lean.
+    const at = m.bestBet({ sport, predictedMargin: want, marketSpread: 0,
+                           homeTeam:'H', awayTeam:'A' });
+    assert.equal(at.level, 'lean', `${sport} at ${want}`);
+  }
+
+  // A 2.6-point disagreement is a lean in basketball and silence in football.
+  assert.equal(m.bestBet({ sport:'nba', predictedMargin: 2.6, marketSpread: 0 }).level, 'lean');
+  assert.equal(m.bestBet({ sport:'nfl', predictedMargin: 2.6, marketSpread: 0 }).level, 'coinflip');
+});
+
+test('bestBet never leans off a run line or a puck line', () => {
+  // Regression, caught by replaying a live MLB card. The run line is 1.5
+  // whoever is playing, so a projected margin of about a run disagrees with it
+  // in the same direction nearly every game, and the verdict came out as "take
+  // the underdog run line" on six of its seven leans. That is the shape of the
+  // market, not a read on the teams.
+  for (const sport of ['mlb', 'nhl']) {
+    for (const pm of [-4, -1, 0, 1, 4]) {
+      for (const sp of [1.5, -1.5]) {
+        const r = m.bestBet({ sport, predictedMargin: pm, marketSpread: sp,
+                              homeTeam: 'H', awayTeam: 'A' });
+        assert.equal(r.level, 'coinflip', `${sport} ${pm} vs ${sp}`);
+        assert.equal(r.pick, null);
+        assert.match(r.reason, /1\.5 whoever is playing/);
+      }
+    }
+  }
+
+  // A situation flag cannot smuggle one back in either, since there is no
+  // direction left for it to corroborate.
+  const flagged = m.bestBet({ sport: 'mlb', predictedMargin: 1, marketSpread: 1.5,
+                              homeTeam: 'H', awayTeam: 'A',
+                              situationFlags: [{ against: 'away' }] });
+  assert.equal(flagged.level, 'coinflip');
+
+  // A price advantage is still a price advantage. That is a fact about the
+  // number on offer and has nothing to do with the projection.
+  assert.equal(m.bestBet({ sport: 'mlb', bookValuePts: 1, bookPick: 'Cubs -1.5' }).level, 'edge');
+});
+
+test('bestBet counts in the units of the sport', () => {
+  assert.match(m.bestBet({ sport:'mlb', bookValuePts:1, bookPick:'Cubs -1.5' }).reason, /1 run better/);
+  assert.match(m.bestBet({ sport:'nhl', bookValuePts:0.5, bookPick:'Kings -1' }).reason, /of a goal better/);
+  assert.match(m.bestBet({ sport:'nfl', bookValuePts:2, bookPick:'Chiefs -3' }).reason, /2 points better/);
+  assert.match(m.bestBet({ sport:'nba', predictedMargin: 4, marketSpread: 0,
+                           homeTeam:'H', awayTeam:'A' }).reason, /4\.0 points off/);
+});
+
+test('bestBet survives a sport it has never heard of', () => {
+  // It is called inline while building the response, so a throw here would
+  // take down the whole slate rather than one verdict.
+  const r = m.bestBet({ sport:'cricket', predictedMargin: 8, marketSpread: -3,
+                        homeTeam:'H', awayTeam:'A' });
+  assert.equal(r.level, 'lean');
+});
+
+test('situationFlags reports which side each flag is against', () => {
+  const qb = m.situationFlags({ qbOut:'Jared Goff', qbOutSide:'home', spreadMovement:0.5 });
+  assert.equal(qb[0].against, 'home');
+
+  // No side supplied means no side claimed.
+  assert.equal(m.situationFlags({ qbOut:'Jared Goff', spreadMovement:0.5 })[0].against, null);
+
+  // Injuries follow whichever side is actually missing people.
+  assert.equal(m.situationFlags({ injuriesOutHome:4, injuriesOutAway:0, spreadMovement:0 })[0].against, 'home');
+  assert.equal(m.situationFlags({ injuriesOutHome:0, injuriesOutAway:3, spreadMovement:0 })[0].against, 'away');
+  // Level, so neither side has the complaint.
+  assert.equal(m.situationFlags({ injuriesOutHome:2, injuriesOutAway:2, spreadMovement:0 })[0].against, null);
+
+  // Weather and unexplained movement are sideless by design.
+  assert.equal(m.situationFlags({ windy:true, windSpeed:22, totalMovement:0.5 })[0].against, null);
+  assert.equal(m.situationFlags({ spreadMovement:-2.5 })[0].against, null);
+});
+
+test('situationFlags counts injuries per side or in total, not both', () => {
+  // Per-side counts are summed for the threshold.
+  assert.equal(m.situationFlags({ injuriesOutHome:2, injuriesOutAway:1, spreadMovement:0 }).length, 1);
+  assert.equal(m.situationFlags({ injuriesOutHome:1, injuriesOutAway:1, spreadMovement:0 }).length, 0);
+  // The old flat count still works for any caller that has not been updated.
+  assert.equal(m.situationFlags({ injuriesOut:4, spreadMovement:0 }).length, 1);
+  assert.equal(m.situationFlags({ injuriesOut:2, spreadMovement:0 }).length, 0);
+  // And a per-side breakdown suppresses the unexplained-move flag the same way
+  // a flat count does, since the injuries now explain it.
+  assert.equal(m.situationFlags({ injuriesOutHome:3, spreadMovement:2.5 })
+    .filter(f => f.type === 'unexplained-move').length, 0);
 });
 
 test('bestBet refuses live games and missing data', () => {
