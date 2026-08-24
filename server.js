@@ -131,52 +131,45 @@ async function savePicksFromGames(sport, games, eventMap) {
   if (!dbReady || !pool) return 0;
   let saved = 0;
 
+  // What gets stored is the app's RECOMMENDATION — the side where the book is
+  // offering a better number than the market — and nothing else.
+  //
+  // It used to store whichever side the model preferred, wherever the invented
+  // edge cleared two points. That model has since been measured against three
+  // separate inputs and does not beat the closing line, and its picks were
+  // removed from the interface. Continuing to record them would fill the table
+  // with the opinions of something nobody is reading.
+  //
+  // Recording the recommendation instead makes the History tab answer the only
+  // question worth asking of it: when this app said bet, was it right? No input
+  // is needed from anyone, which is the point — it grades itself.
   for (const game of games) {
+    const bet = game.recommendedBet;
+    if (!bet) continue;
+
     const espnGameId = eventMap[`${game.homeTeam}|${game.awayTeam}`] || null;
     const gameTime = game.gameTime ? new Date(game.gameTime) : null;
 
-    // Save spread pick if there's an edge
-    if (game.spreadPick && game.spreadPick !== 'No edge' && Math.abs(game.spreadEdge || 0) >= 2) {
-      const id = await savePick({
-        sport,
-        espn_game_id: espnGameId,
-        home_team: game.homeTeam,
-        away_team: game.awayTeam,
-        game_time: gameTime,
-        market: 'spread',
-        pick: game.spreadPick,
-        line: parseFloat(game.spread) || null,
-        edge: parseFloat(game.spreadEdge) || null,
-        confidence: game.confidence,
-        predicted_home: game.predictedScore?.home || null,
-        predicted_away: game.predictedScore?.away || null,
-        line_at_pick: parseFloat(game.spread) || null
-      });
-      if (id) saved++;
-    }
-
-    // Save total pick if there's an edge
-    if (game.totalPick && game.totalPick !== 'No edge' && Math.abs(game.totalEdge || 0) >= 2) {
-      const id = await savePick({
-        sport,
-        espn_game_id: espnGameId,
-        home_team: game.homeTeam,
-        away_team: game.awayTeam,
-        game_time: gameTime,
-        market: 'total',
-        pick: game.totalPick,
-        line: parseFloat(game.total) || null,
-        edge: parseFloat(game.totalEdge) || null,
-        confidence: game.confidence,
-        predicted_home: game.predictedScore?.home || null,
-        predicted_away: game.predictedScore?.away || null,
-        line_at_pick: parseFloat(game.total) || null
-      });
-      if (id) saved++;
-    }
+    const id = await savePick({
+      sport,
+      espn_game_id: espnGameId,
+      home_team: game.homeTeam,
+      away_team: game.awayTeam,
+      game_time: gameTime,
+      market: bet.market,
+      pick: bet.pick,
+      line: bet.line,
+      // Points of advantage over the market, which is what was recommended on.
+      edge: bet.advantagePts,
+      confidence: game.confidence,
+      predicted_home: game.predictedScore ? game.predictedScore.home : null,
+      predicted_away: game.predictedScore ? game.predictedScore.away : null,
+      line_at_pick: bet.line,
+    });
+    if (id) saved++;
   }
 
-  if (saved > 0) console.log(`[DB] Saved ${saved} picks for ${sport}`);
+  if (saved > 0) console.log(`[DB] Saved ${saved} recommendation(s) for ${sport}`);
   return saved;
 }
 
@@ -2545,15 +2538,37 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       ...[mb.homeEdgePts, mb.awayEdgePts, mb.overEdgePts, mb.underEdgePts]
         .filter(v => Number.isFinite(v)), 0) : 0;
 
-    // Which side that advantage is actually on, so the verdict can name it.
-    const bestBookSide = (() => {
-      if (!mb || bookValue <= 0) return null;
-      if (mb.homeEdgePts === bookValue) return `${g.homeTeam} spread`;
-      if (mb.awayEdgePts === bookValue) return `${g.awayTeam} spread`;
-      if (mb.overEdgePts === bookValue) return 'over';
-      if (mb.underEdgePts === bookValue) return 'under';
+    // The actual bet the advantage points at, structured so it can be stored
+    // and graded rather than only displayed. `line` stays in the home-spread
+    // convention for spreads, because that is what gradePick and the closing
+    // line capture both assume.
+    const sign = (n) => `${n > 0 ? '+' : ''}${n}`;
+    const recommendedBet = (() => {
+      if (!mb || bookValue <= 0 || g.inProgress) return null;
+      const base = { book: mb.name, advantagePts: bookValue };
+      if (mb.homeEdgePts === bookValue && Number.isFinite(mb.spread)) {
+        return { ...base, market: 'spread', side: 'home',
+                 pick: `${g.homeTeam} ${sign(mb.spread)}`, line: mb.spread };
+      }
+      if (mb.awayEdgePts === bookValue && Number.isFinite(mb.spread)) {
+        return { ...base, market: 'spread', side: 'away',
+                 pick: `${g.awayTeam} ${sign(-mb.spread)}`, line: mb.spread };
+      }
+      if (mb.overEdgePts === bookValue && Number.isFinite(mb.total)) {
+        return { ...base, market: 'total', side: 'over',
+                 pick: `Over ${mb.total}`, line: mb.total };
+      }
+      if (mb.underEdgePts === bookValue && Number.isFinite(mb.total)) {
+        return { ...base, market: 'total', side: 'under',
+                 pick: `Under ${mb.total}`, line: mb.total };
+      }
       return null;
     })();
+    const bestBookSide = recommendedBet
+      ? (recommendedBet.market === 'spread'
+          ? `${recommendedBet.side === 'home' ? g.homeTeam : g.awayTeam} spread`
+          : recommendedBet.side)
+      : null;
 
     return {
       homeTeam: g.homeTeam,
@@ -2603,6 +2618,7 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       // live input with a measured edge. Line movement is deliberately NOT an
       // input here: at a current price, following it went 48.1% and fading it
       // 51.9% across 269 games, both under break-even.
+      recommendedBet,
       recommendation: model.betRecommendation({
         bookValuePts: bookValue,
         inProgress: !!g.inProgress,
