@@ -268,6 +268,14 @@
     /* Anything that has moved since it opened is the interesting part. */
     .ob-moved .ob-num { color: #58a6ff; }
     input.pool-bothlay { border-color: #d29922; }
+    .weekbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+               margin-bottom: 14px; padding: 10px 12px; background: #10151c;
+               border: 1px solid #21262d; border-radius: 6px; }
+    .weekbar-label { font-size: 11px; color: #6e7681; text-transform: uppercase;
+                     letter-spacing: 0.5px; }
+    .weekbar select { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
+                      border-radius: 4px; padding: 5px 8px; font-size: 13px; }
+    .weekbar-note { font-size: 11px; color: #6e7681; }
     /* Marked, not hidden: these are still enterable and still rankable, they
        just kick off before picks go in. */
     .pool-early { color: #d29922; }
@@ -606,6 +614,16 @@
 
   <script>
     let currentSport = 'nba';
+
+    // Which football week is on screen.
+    //
+    // Football is eighteen fixed weeks, not a rolling date window, and the
+    // whole fixture list exists months ahead with numbers already posted on it.
+    // null means "whatever the server thinks is current" — it resolves that
+    // itself, and gets it right during preseason, when ESPN's own answer is a
+    // preseason week number that shares a name with a real one.
+    let nflWeek = null;
+    let nflWeeks = 18;
     let cache = {};
 
     // Auto-refresh budget. The Odds API free tier is 500 requests/month and each
@@ -688,7 +706,12 @@
         const res = await fetch('/api/predictions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sport: currentSport })
+          body: JSON.stringify({
+            sport: currentSport,
+            // Football is asked for by week; the daily sports have no week to
+            // send and the server ignores the field for them.
+            ...(currentSport === 'nfl' && nflWeek ? { week: nflWeek } : {}),
+          })
         });
         if (!res.ok) throw new Error(`Server error: ${res.status}`);
         const data = await res.json();
@@ -918,6 +941,7 @@
         .sort((a, b) => a.rank - b.rank || a.i - b.i)
         .map(x => x.g);
 
+      if (data.week) { nflWeek = data.week; nflWeeks = data.weeks || nflWeeks; }
       const html = ordered.map(g => {
         const valueBet = hasBookValue(g);
 
@@ -1191,7 +1215,9 @@
           </div>`;
       }).join('');
 
-      document.getElementById('content').innerHTML = `<div class="games-grid">${html}</div>`;
+      document.getElementById('content').innerHTML =
+        (currentSport === 'nfl' ? weekPickerHTML(nflWeek, nflWeeks) : '') +
+        `<div class="games-grid">${html}</div>`;
     }
 
     // ========================================================================
@@ -1267,14 +1293,35 @@
       persistPoolLines();
     }
 
+    function setNflWeek(w) {
+      nflWeek = Number(w) || null;
+      if (currentSport === 'nfl') fetchPredictions();
+      else loadPool();
+    }
+
+    // The picker. Rendered wherever a football week is on screen, so the tab
+    // and the pool cannot end up showing different weeks without saying so.
+    function weekPickerHTML(active, total) {
+      const opts = [];
+      for (let w = 1; w <= (total || 18); w++) {
+        opts.push(`<option value="${w}"${w === active ? ' selected' : ''}>Week ${w}</option>`);
+      }
+      return `<div class="weekbar">
+        <label class="weekbar-label" for="weekpick">NFL schedule</label>
+        <select id="weekpick" onchange="setNflWeek(this.value)">${opts.join('')}</select>
+        <span class="weekbar-note">the full season is here &mdash; numbers appear as the books post them</span>
+      </div>`;
+    }
+
     async function loadPool() {
       const content = document.getElementById('content');
       content.innerHTML = '<div class="loading"><div class="spinner"></div><div>Loading this week&rsquo;s games and market lines...</div></div>';
       try {
-        const res = await fetch('/api/pool/nfl');
+        const res = await fetch('/api/pool/nfl' + (nflWeek ? `?week=${nflWeek}` : ''));
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         poolGames = data.games || [];
+        if (data.week) { nflWeek = data.week; nflWeeks = data.weeks || nflWeeks; }
         renderPool();
       } catch (err) {
         content.innerHTML = `<div class="error">❌ ${err.message}</div>`;
@@ -1316,6 +1363,7 @@
       }).join('');
 
       document.getElementById('content').innerHTML = `
+        ${weekPickerHTML(nflWeek, nflWeeks)}
         <div class="pool-note">
           Enter your pool&rsquo;s lines beside the current number at your book. Each team&rsquo;s
           number goes in its own box, as the pool posts it &mdash; so a normal line is
@@ -1371,7 +1419,7 @@
         const res = await fetch('/api/pool/nfl', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lines, count: 6 }),
+          body: JSON.stringify({ lines, count: 6, ...(nflWeek ? { week: nflWeek } : {}) }),
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);

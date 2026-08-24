@@ -3056,6 +3056,64 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
 // a stale number — no model opinion is used at all, and none should be.
 
 /** Upcoming games for a whole week, with the current market spread and total. */
+// ============================================================================
+// THE FOOTBALL SCHEDULE, BY WEEK
+// ============================================================================
+// Football is not played on a rolling daily schedule and pretending otherwise
+// made the app harder to use than the sport is. The season is eighteen fixed
+// weeks, the pool runs weekly, and the whole fixture list exists months ahead —
+// ESPN serves any week on demand and the books have already posted numbers all
+// the way to week 18.
+//
+// So a week is the unit. Ask for one and get all of it, including the games
+// nobody has priced yet, rather than getting whatever happens to fall inside a
+// date window that slides forward every day.
+//
+// Daily sports keep the daily slate, because for them a day IS the unit.
+
+const NFL_WEEKS = 18;
+
+function nflWeekUrl(week, year) {
+  return `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard` +
+    `?dates=${year}&seasontype=2&week=${week}&limit=100`;
+}
+
+/**
+ * Which regular-season week to show when nobody has asked for one.
+ *
+ * ESPN's own answer cannot be used directly: its default scoreboard reports the
+ * PRESEASON week during August (season.type 1, week 3), and week 3 of the
+ * preseason is not week 3 of anything anybody bets. So the type is checked
+ * first, and preseason resolves to week 1 rather than to a number that happens
+ * to share a name with one.
+ */
+async function currentNflWeek() {
+  try {
+    const sb = await cachedGet(
+      'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard',
+      { timeout: 8000 });
+    const season = (sb.data && sb.data.season) || {};
+    const week = (sb.data && sb.data.week) || {};
+    const type = Number(season.type);
+    if (type === 2 && Number.isFinite(Number(week.number))) {
+      return Math.min(NFL_WEEKS, Math.max(1, Number(week.number)));
+    }
+    // Preseason (1) or anything unrecognised: the next thing that counts is
+    // week 1. Postseason (3): the regular season is done, so show its last week.
+    return type === 3 ? NFL_WEEKS : 1;
+  } catch (e) {
+    return 1;
+  }
+}
+
+/** Every game in one regular-season week, priced or not. */
+async function fetchNflWeekEvents(week, year) {
+  const res = await cachedGet(nflWeekUrl(week, year), { timeout: 12000 });
+  const events = ((res.data && res.data.events) || [])
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  return { events, payload: res.data || {} };
+}
+
 /**
  * Which day a game kicks off on, in the timezone the schedule is written in.
  *
@@ -3089,36 +3147,24 @@ app.get('/api/pool/:sport', async (req, res) => {
   const path = ESPN_SCOREBOARD_PATHS[sport];
   if (!path) return res.status(400).json({ error: `Unsupported sport: ${sport}` });
   try {
-    const [sb, oddsData] = await Promise.all([
-      cachedGet(espnScoreboardUrl(path, 7), { timeout: 10000 }),
+    // The pool runs a week at a time, so the tab does too — and the whole
+    // fixture list exists, so a week can simply be asked for. This replaces a
+    // seven-day window that slid forward daily and had to be patched twice: once
+    // to stop it offering preseason games no pool sets a line on, and once to
+    // make it look further ahead when the near window was empty.
+    const year = new Date().getFullYear();
+    const week = Number.isFinite(Number(req.query.week))
+      ? Math.min(NFL_WEEKS, Math.max(1, Number(req.query.week)))
+      : await currentNflWeek();
+
+    const [wk, oddsData] = await Promise.all([
+      fetchNflWeekEvents(week, year),
       fetchOdds(sport).catch(() => []),
     ]);
-    const pre = (payload) => ((payload && payload.events) || []).filter(e =>
-      e.competitions?.[0]?.status?.type?.state === 'pre');
-    const regularOnly = (list) => list.filter(e => e.season && e.season.type === 2);
-
-    // The pool is a weekly REGULAR-SEASON pick-em, so preseason is not a
-    // fallback here — it is the wrong answer. In late August the seven-day
-    // window contains nothing but preseason, and the tab was offering Steelers
-    // at Bills on 27 August for a pool that will never set a line on it.
-    //
-    // So when the near window has no regular-season game, look further out for
-    // the first week that does, the way the prediction tabs do. Filtering has
-    // to happen per event because seasontype as a query parameter does not
-    // filter a date range.
-    let events = regularOnly(pre(sb.data));
-    if (!events.length) {
-      const far = await cachedGet(espnScoreboardUrl(path, 45), { timeout: 12000 });
-      const upcoming = regularOnly(pre(far.data))
-        .sort((a, b) => new Date(a.date) - new Date(b.date));
-      if (upcoming.length) {
-        // One week of it, not six. Five days from the first game covers a
-        // football week end to end.
-        const cutoff = new Date(upcoming[0].date).getTime() + 5 * 24 * 60 * 60 * 1000;
-        events = upcoming.filter(e => new Date(e.date).getTime() <= cutoff);
-        console.log(`[POOL] ${sport}: no regular-season game this week, showing ${events.length} upcoming`);
-      }
-    }
+    // Every game in the week, played or not. A finished game is left in with
+    // its result rather than vanishing, because a pool entry is made against
+    // the whole week and a card that quietly shrinks is confusing.
+    const events = wk.events;
 
     const games = events.map(event => {
       const comp = event.competitions[0];
@@ -3175,7 +3221,7 @@ app.get('/api/pool/:sport', async (req, res) => {
     });
 
     games.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
-    res.json({ sport: sport.toUpperCase(), games });
+    res.json({ sport: sport.toUpperCase(), week, weeks: NFL_WEEKS, games });
   } catch (err) {
     console.error(`[POOL] ${sport}:`, err.message);
     res.status(500).json({ error: err.message });
@@ -3256,25 +3302,18 @@ app.post('/api/pool/:sport', async (req, res) => {
   const count = Math.min(Math.max(parseInt(req.body && req.body.count, 10) || 6, 1), 20);
 
   try {
-    const [sb, oddsData] = await Promise.all([
-      cachedGet(espnScoreboardUrl(path, 7), { timeout: 10000 }),
-      fetchOdds(sport).catch(() => []),
-    ]);
-    // Same window logic as the GET, so the two halves of the tab cannot
+    // The same week the GET served, so the two halves of the tab cannot
     // disagree about which games are on the card. Scoring a line for a game the
     // table never offered would be worse than showing nothing.
-    const preP = (payload) => ((payload && payload.events) || []).filter(e =>
-      e.competitions?.[0]?.status?.type?.state === 'pre');
-    const regularP = (list) => list.filter(e => e.season && e.season.type === 2);
-    let events = regularP(preP(sb.data));
-    if (!events.length) {
-      const far = await cachedGet(espnScoreboardUrl(path, 45), { timeout: 12000 });
-      const upcoming = regularP(preP(far.data)).sort((a, b) => new Date(a.date) - new Date(b.date));
-      if (upcoming.length) {
-        const cutoff = new Date(upcoming[0].date).getTime() + 5 * 24 * 60 * 60 * 1000;
-        events = upcoming.filter(e => new Date(e.date).getTime() <= cutoff);
-      }
-    }
+    const year = new Date().getFullYear();
+    const week = Number.isFinite(Number(req.body && req.body.week))
+      ? Math.min(NFL_WEEKS, Math.max(1, Number(req.body.week)))
+      : await currentNflWeek();
+    const [wk, oddsData] = await Promise.all([
+      fetchNflWeekEvents(week, year),
+      fetchOdds(sport).catch(() => []),
+    ]);
+    const events = wk.events;
 
     const candidates = [];
     const games = [];
@@ -3366,6 +3405,8 @@ app.post('/api/pool/:sport', async (req, res) => {
 
     res.json({
       sport: sport.toUpperCase(),
+      week,
+      weeks: NFL_WEEKS,
       count,
       best,
       considered: candidates.length,
@@ -3396,11 +3437,11 @@ const PREDICTION_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 // Handlers write straight to res, so intercept .json() to capture the payload.
 // .status() deliberately returns the real res, so error responses pass through
 // uncached.
-function makeCachingRes(res, sport) {
+function makeCachingRes(res, key) {
   return {
     json: (payload) => {
       if (payload && !payload.error) {
-        predictionCache[sport] = { timestamp: Date.now(), data: payload };
+        predictionCache[key] = { timestamp: Date.now(), data: payload };
       }
       return res.json(payload);
     },
@@ -3413,7 +3454,14 @@ app.post('/api/predictions', async (req, res) => {
     const { sport } = req.body;
     if (!sport) return res.status(400).json({ error: 'Sport parameter required' });
 
-    const cached = predictionCache[sport];
+    // Keyed by sport AND week. Football can now be asked for any of eighteen
+    // weeks, and a cache keyed on the sport alone served week 1's card for all
+    // of them — a request for week 5 came back with week 1's games and week 1
+    // stamped on it.
+    const cacheKey = sport === 'nfl' && Number.isFinite(Number(req.body.week))
+      ? `nfl:${Number(req.body.week)}` : sport;
+
+    const cached = predictionCache[cacheKey];
     if (cached && (Date.now() - cached.timestamp) < PREDICTION_CACHE_TTL_MS) {
       const ageSec = Math.round((Date.now() - cached.timestamp) / 1000);
       console.log(`[PREDICTIONS] Cache hit for ${sport} (${ageSec}s old) — no Claude call`);
@@ -3422,12 +3470,12 @@ app.post('/api/predictions', async (req, res) => {
 
     console.log(`\n=== Fetching predictions for ${sport.toUpperCase()} ===`);
     const oddsData = await fetchOdds(sport);
-    const cachingRes = makeCachingRes(res, sport);
+    const cachingRes = makeCachingRes(res, cacheKey);
 
     if (sport === 'nba') return await handleNBAPredictions(cachingRes, oddsData);
     if (sport === 'nhl') return await handleNHLPredictions(cachingRes, oddsData);
     if (sport === 'mlb') return await handleMLBPredictions(cachingRes, oddsData);
-    if (sport === 'nfl') return await handleNFLPredictions(cachingRes, oddsData);
+    if (sport === 'nfl') return await handleNFLPredictions(cachingRes, oddsData, req.body.week);
 
     return res.json({ sport: sport.toUpperCase(), games: [], message: `${sport.toUpperCase()} not supported.` });
   } catch (error) {
@@ -3444,14 +3492,25 @@ app.post('/api/predictions', async (req, res) => {
 // NFL HANDLER
 // ============================================================================
 
-async function handleNFLPredictions(res, oddsData) {
+async function handleNFLPredictions(res, oddsData, requestedWeek) {
   try {
-    const slate = await fetchSlate('football/nfl');
-    const payload = slate.payload;
-    const events = slate.events;
+    // A whole week, not a sliding date window.
+    //
+    // The fixture list is fixed and public months ahead, so there is no reason
+    // to show whatever falls inside the next few days and call it the slate.
+    // Ask for a week and get all sixteen games, including the ones nobody has
+    // priced yet — a game with no number is information too, and hiding it
+    // until a book gets round to it made the card look like the schedule had
+    // changed.
+    const year = new Date().getFullYear();
+    const week = Number.isFinite(Number(requestedWeek))
+      ? Math.min(NFL_WEEKS, Math.max(1, Number(requestedWeek)))
+      : await currentNflWeek();
+    const { events, payload } = await fetchNflWeekEvents(week, year);
 
     if (events.length === 0) {
-      return res.json({ sport: 'NFL', games: [], message: 'No NFL games scheduled' });
+      return res.json({ sport: 'NFL', games: [], week, weeks: NFL_WEEKS,
+                        message: `No NFL games found for week ${week}` });
     }
 
     // ESPN season types: 1 preseason, 2 regular, 3 post.
@@ -3625,6 +3684,8 @@ async function handleNFLPredictions(res, oddsData) {
     await savePicksFromGames('nfl', formattedGames, eventMap);
 
     return res.json({
+      week,
+      weeks: NFL_WEEKS,
       sport: 'NFL',
       games: formattedGames,
       ...(isPreseason ? {
