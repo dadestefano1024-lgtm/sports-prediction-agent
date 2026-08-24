@@ -1274,6 +1274,90 @@ function situationFlags({
   return flags;
 }
 
+// ----------------------------------------------------------------------------
+// Best available bet
+// ----------------------------------------------------------------------------
+
+/**
+ * Which side of a game to take, and how much weight it deserves.
+ *
+ * This answers a different question from betRecommendation, and the difference
+ * matters. betRecommendation answers "is there an edge here" — usually no.
+ * This answers "if betting this game anyway, which side and how strongly",
+ * which always has an answer and is the question actually being asked most of
+ * the time.
+ *
+ * The grades are deliberately separated so a lean can never be mistaken for an
+ * edge:
+ *
+ *   edge     the book's number beats the market by a full point. A price fact.
+ *   slight   half a point better. Still a price fact.
+ *   lean     no price advantage, but the projection and the situation point the
+ *            same way. NOT an edge — the projection has been measured at 0.35
+ *            points per game WORSE than the closing line, so this is a
+ *            tiebreaker for someone already betting, not a reason to bet.
+ *   coinflip nothing points anywhere. The honest answer for most games.
+ *
+ * A lean requires agreement. The projection alone is not enough to lean on,
+ * because it loses to the market on its own; it only earns a mention when a
+ * situation flag points the same way, or when it disagrees with the market by
+ * more than a field goal, which is at least unusual enough to notice.
+ */
+function bestBet({
+  sport, bookValuePts = 0, bookSide = null, bookPick = null,
+  predictedMargin = null, marketSpread = null,
+  situationFlags = [], inProgress = false,
+  homeTeam = 'Home', awayTeam = 'Away',
+} = {}) {
+  if (inProgress) {
+    return { level: 'pass', label: 'In progress', pick: null,
+             reason: 'the book is pricing the rest of the game, not the whole one' };
+  }
+
+  // A price advantage is the only thing here that is an edge.
+  if (bookValuePts >= 1 && bookPick) {
+    return { level: 'edge', label: 'Best bet', pick: bookPick, side: bookSide,
+             reason: `the number is ${bookValuePts} point${bookValuePts === 1 ? '' : 's'} better than the market` };
+  }
+  if (bookValuePts >= 0.5 && bookPick) {
+    return { level: 'slight', label: 'Slight edge', pick: bookPick, side: bookSide,
+             reason: `the number is ${bookValuePts} of a point better than the market` };
+  }
+
+  // No price advantage. Is there anything else pointing one way?
+  if (!Number.isFinite(predictedMargin) || !Number.isFinite(marketSpread)) {
+    return { level: 'coinflip', label: 'No lean', pick: null,
+             reason: 'not enough to separate the two sides' };
+  }
+
+  // Market's own expected margin is -marketSpread.
+  const disagreement = predictedMargin - (-marketSpread);
+  const leansHome = disagreement > 0;
+  const size = Math.abs(disagreement);
+
+  const flagText = (situationFlags || []).map(f => f.note).join(' ');
+  const flagsPointHome = /home/i.test(flagText) && leansHome;
+  const flagsPointAway = /away/i.test(flagText) && !leansHome;
+  const corroborated = (situationFlags || []).length > 0 && (flagsPointHome || flagsPointAway);
+
+  if (size >= 3 || corroborated) {
+    const team = leansHome ? homeTeam : awayTeam;
+    const line = leansHome ? marketSpread : -marketSpread;
+    return {
+      level: 'lean',
+      label: 'Lean',
+      pick: `${team} ${line > 0 ? '+' : ''}${line}`,
+      side: leansHome ? 'home' : 'away',
+      reason: `the projection has this ${size.toFixed(1)} points off the market` +
+              (corroborated ? ', and the situation points the same way' : ''),
+      caveat: 'this is a lean, not an edge — the projection loses to the closing line on its own',
+    };
+  }
+
+  return { level: 'coinflip', label: 'No lean', pick: null,
+           reason: 'the projection agrees with the market, and nothing else separates the sides' };
+}
+
 module.exports = {
   SPORTS,
   sportConfig,
@@ -1305,6 +1389,7 @@ module.exports = {
   poolEdge,
   betRecommendation,
   situationFlags,
+  bestBet,
   poolCandidate,
   rankPoolPicks,
   SPREAD_LIMITS,

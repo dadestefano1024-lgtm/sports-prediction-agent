@@ -187,6 +187,12 @@
     .verdict.strong { border-left-color: #3fb950; background: #0f2a1a; }
     .verdict.lean   { border-left-color: #d29922; }
     .verdict.pass   { border-left-color: #6e7681; opacity: 0.75; }
+    .verdict.lean   { border-left-color: #58a6ff; }
+    .verdict.coinflip { border-left-color: #6e7681; }
+    .verdict.lean .verdict-label { color: #58a6ff; }
+    .verdict.coinflip .verdict-label { color: #8b949e; }
+    .verdict-pick { font-weight: 800; font-size: 15px; color: #c9d1d9; }
+    .verdict-caveat { font-size: 11px; color: #8b949e; font-style: italic; margin-top: 4px; }
     .verdict-label { font-weight: 800; font-size: 14px; }
     .verdict.strong .verdict-label { color: #3fb950; }
     .verdict.lean .verdict-label { color: #d29922; }
@@ -933,7 +939,11 @@
             </div>
             <div class="card-body">
               ${(() => {
-                const r = g.recommendation;
+                // Show the best available side, not just whether an edge
+                // exists. A lean is styled differently from an edge on purpose:
+                // one is a price fact, the other is a tiebreaker for someone
+                // betting regardless, and they must not read alike.
+                const r = g.bestBet || g.recommendation;
                 if (!r) return '';
                 // The pool note sits with the verdict because the two are easy
                 // to confuse and mean opposite things: movement is an edge
@@ -949,7 +959,9 @@
                   `<div class="sit-flag ${f.severity}">${f.note}</div>`).join('');
                 return `<div class="verdict ${r.level}">
                   <span class="verdict-label">${r.label}</span>
+                  ${r.pick ? `<span class="verdict-pick">${r.pick}</span>` : ''}
                   <span class="verdict-reason">${r.reason}</span>
+                  ${r.caveat ? `<div class="verdict-caveat">${r.caveat}</div>` : ''}
                   ${flags}
                   ${pf}
                 </div>`;

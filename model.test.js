@@ -1088,3 +1088,54 @@ test('situationFlags says nothing when there is nothing to say', () => {
   // No movement data means no comparison can be made.
   assert.deepEqual(m.situationFlags({ qbOut: 'Someone', spreadMovement: null }), []);
 });
+
+// ----------------------------------------------------------------------------
+test('bestBet: a price advantage is the only thing called an edge', () => {
+  const e = m.bestBet({ sport:'nfl', bookValuePts:1, bookPick:'Chiefs -2.5', bookSide:'home' });
+  assert.equal(e.level, 'edge');
+  assert.equal(e.pick, 'Chiefs -2.5');
+  assert.equal(e.caveat, undefined, 'a real edge carries no disclaimer');
+
+  const sl = m.bestBet({ sport:'nfl', bookValuePts:0.5, bookPick:'Chiefs -3' });
+  assert.equal(sl.level, 'slight');
+});
+
+test('bestBet: a big projection disagreement is a lean, never an edge', () => {
+  const r = m.bestBet({ sport:'nfl', predictedMargin: 8, marketSpread: -3,
+                        homeTeam:'Chiefs', awayTeam:'Raiders' });
+  assert.equal(r.level, 'lean');
+  assert.equal(r.side, 'home');
+  assert.equal(r.pick, 'Chiefs -3');
+  assert.match(r.caveat, /not an edge/);
+  assert.match(r.reason, /5\.0 points off the market/);
+});
+
+test('bestBet leans away when the projection does', () => {
+  const r = m.bestBet({ sport:'nfl', predictedMargin: -9, marketSpread: -3,
+                        homeTeam:'Chiefs', awayTeam:'Raiders' });
+  assert.equal(r.side, 'away');
+  assert.equal(r.pick, 'Raiders +3');
+});
+
+test('bestBet: a small disagreement alone is not a lean', () => {
+  const r = m.bestBet({ sport:'nfl', predictedMargin: 4, marketSpread: -3 });
+  assert.equal(r.level, 'coinflip');
+  assert.equal(r.pick, null);
+});
+
+test('bestBet: a corroborating flag promotes a small disagreement', () => {
+  const plain = m.bestBet({ sport:'nfl', predictedMargin: 4.5, marketSpread: -3,
+                            homeTeam:'Chiefs', awayTeam:'Raiders' });
+  assert.equal(plain.level, 'coinflip');
+  const flagged = m.bestBet({ sport:'nfl', predictedMargin: 4.5, marketSpread: -3,
+                              homeTeam:'Chiefs', awayTeam:'Raiders',
+                              situationFlags:[{ note:'the home side lost its quarterback and the line has not moved' }] });
+  assert.equal(flagged.level, 'lean');
+  assert.match(flagged.reason, /situation points the same way/);
+});
+
+test('bestBet refuses live games and missing data', () => {
+  assert.equal(m.bestBet({ sport:'nfl', bookValuePts:2, bookPick:'X', inProgress:true }).level, 'pass');
+  assert.equal(m.bestBet({ sport:'nfl' }).level, 'coinflip');
+  assert.equal(m.bestBet({ sport:'nfl', predictedMargin: 5, marketSpread: null }).level, 'coinflip');
+});

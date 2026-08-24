@@ -2619,12 +2619,31 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       // input here: at a current price, following it went 48.1% and fading it
       // 51.9% across 269 games, both under break-even.
       recommendedBet,
+
+      // Two different questions, deliberately kept apart.
+      //
+      // `recommendation` answers "is there an edge here", which is usually no.
+      // `bestBet` answers "if betting this game anyway, which side and how
+      // strongly", which always has an answer — and grades a lean separately
+      // from an edge so the two can never be read as the same thing.
       recommendation: model.betRecommendation({
         bookValuePts: bookValue,
         inProgress: !!g.inProgress,
         hasLine: odds.spread !== null && odds.spread !== undefined,
         bookName: (odds.myBook && odds.myBook.name) || MY_BOOK,
         side: bestBookSide,
+      }),
+      bestBet: model.bestBet({
+        sport,
+        bookValuePts: bookValue,
+        bookSide: recommendedBet ? recommendedBet.side : null,
+        bookPick: recommendedBet ? recommendedBet.pick : null,
+        predictedMargin: projection ? projection.predictedMargin : null,
+        marketSpread: spreadUsable ? rawSpread : null,
+        situationFlags: g.situationFlags || [],
+        inProgress: !!g.inProgress,
+        homeTeam: g.homeTeam,
+        awayTeam: g.awayTeam,
       }),
 
       // Movement is worth money against a line that has NOT moved with the
