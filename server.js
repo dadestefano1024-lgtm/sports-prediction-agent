@@ -2195,38 +2195,6 @@ function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
   };
 }
 
-function findArbitrageOpportunities(oddsData) {
-  if (!oddsData) return [];
-  const opportunities = [];
-  oddsData.forEach(game => {
-    const bookmakers = game.bookmakers || [];
-    let bestHome = -Infinity, bestAway = -Infinity;
-    bookmakers.forEach(book => {
-      const h2h = book.markets?.find(m => m.key === 'h2h');
-      if (h2h && h2h.outcomes) {
-        h2h.outcomes.forEach(outcome => {
-          const odds = outcome.price;
-          if (outcome.name === game.home_team) bestHome = Math.max(bestHome, odds);
-          else bestAway = Math.max(bestAway, odds);
-        });
-      }
-    });
-    if (bestHome !== -Infinity && bestAway !== -Infinity) {
-      const homeImplied = bestHome > 0 ? 100 / (bestHome + 100) : Math.abs(bestHome) / (Math.abs(bestHome) + 100);
-      const awayImplied = bestAway > 0 ? 100 / (bestAway + 100) : Math.abs(bestAway) / (Math.abs(bestAway) + 100);
-      const totalImplied = homeImplied + awayImplied;
-      if (totalImplied < 1) {
-        opportunities.push({
-          homeTeam: game.home_team,
-          awayTeam: game.away_team,
-          profit: ((1 - totalImplied) * 100).toFixed(2),
-          description: `Bet ${game.away_team} at ${bestAway} and ${game.home_team} at ${bestHome}`
-        });
-      }
-    }
-  });
-  return opportunities;
-}
 
 // ============================================================================
 // MAIN PREDICTION ENDPOINT
@@ -2429,6 +2397,10 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       totalLine: priced.total ? priced.total.point : null,
       totalEdge: priced.total ? +(priced.total.edge * 100).toFixed(2) : 0,
       kellyTotal: priced.total ? +(priced.total.stake * 100).toFixed(2) : 0,
+      // Win probability is the honest headline. For a bet priced at the market
+      // this sits near 50% by construction, and seeing that is the point —
+      // there is no such thing as a high-confidence spread bet at a fair price.
+      winProbability: best ? +(best.blendedProb * 100).toFixed(1) : null,
       confidence: best ? best.confidence : 'Low',
 
       keyFactors: commentary[g.homeTeam + '|' + g.awayTeam] || [],
@@ -2630,16 +2602,14 @@ app.post('/api/predictions', async (req, res) => {
 
     console.log(`\n=== Fetching predictions for ${sport.toUpperCase()} ===`);
     const oddsData = await fetchOdds(sport);
-    const arbitrageAlerts = findArbitrageOpportunities(oddsData);
     const cachingRes = makeCachingRes(res, sport);
 
-    if (sport === 'nba') return await handleNBAPredictions(cachingRes, arbitrageAlerts, oddsData);
-    if (sport === 'nhl') return await handleNHLPredictions(cachingRes, arbitrageAlerts, oddsData);
-    if (sport === 'mlb') return await handleMLBPredictions(cachingRes, arbitrageAlerts, oddsData);
-    if (sport === 'cbb') return res.json({ sport: 'CBB', games: [], arbitrageAlerts: [], message: 'Coming soon.' });
-    if (sport === 'nfl') return await handleNFLPredictions(cachingRes, arbitrageAlerts, oddsData);
+    if (sport === 'nba') return await handleNBAPredictions(cachingRes, oddsData);
+    if (sport === 'nhl') return await handleNHLPredictions(cachingRes, oddsData);
+    if (sport === 'mlb') return await handleMLBPredictions(cachingRes, oddsData);
+    if (sport === 'nfl') return await handleNFLPredictions(cachingRes, oddsData);
 
-    return res.json({ sport: sport.toUpperCase(), games: [], arbitrageAlerts: [], message: `${sport.toUpperCase()} not supported.` });
+    return res.json({ sport: sport.toUpperCase(), games: [], message: `${sport.toUpperCase()} not supported.` });
   } catch (error) {
     console.error('Prediction error:', error);
     res.status(500).json({ error: error.message });
@@ -2654,14 +2624,14 @@ app.post('/api/predictions', async (req, res) => {
 // NFL HANDLER
 // ============================================================================
 
-async function handleNFLPredictions(res, arbitrageAlerts, oddsData) {
+async function handleNFLPredictions(res, oddsData) {
   try {
     const scoreboardResponse = await cachedGet(espnScoreboardUrl('football/nfl'), { timeout: 10000 });
     const payload = scoreboardResponse.data || {};
     const events = nextSlate(payload.events);
 
     if (events.length === 0) {
-      return res.json({ sport: 'NFL', games: [], arbitrageAlerts: [], message: 'No NFL games scheduled' });
+      return res.json({ sport: 'NFL', games: [], message: 'No NFL games scheduled' });
     }
 
     // ESPN season types: 1 preseason, 2 regular, 3 post.
@@ -2858,7 +2828,6 @@ Reply with JSON only:
     return res.json({
       sport: 'NFL',
       games: formattedGames,
-      arbitrageAlerts,
       ...(isPreseason ? {
         message: 'Preseason: lines and injuries are shown, but no picks are made. Starters play a quarter and backups decide results, so scoring averages do not describe these teams. Projections resume automatically once regular-season games have been played.',
       } : {}),
@@ -2869,7 +2838,7 @@ Reply with JSON only:
   }
 }
 
-async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
+async function handleNBAPredictions(res, oddsData) {
   try {
     // cachedGet, and the same URL fetchEspnOpeningLines uses, so the slate and
     // its lines come from one request rather than two.
@@ -2877,7 +2846,7 @@ async function handleNBAPredictions(res, arbitrageAlerts, oddsData) {
     const events = nextSlate(scoreboardResponse.data.events);
 
     if (events.length === 0) {
-      return res.json({ sport: 'NBA', games: [], arbitrageAlerts: [], message: 'No NBA games scheduled' });
+      return res.json({ sport: 'NBA', games: [], message: 'No NBA games scheduled' });
     }
 
     // Fetch ESPN opening lines once for all games (cached 5 min)
@@ -2987,7 +2956,7 @@ Respond ONLY with this JSON shape:
     // Save picks to DB for tracking
     await savePicksFromGames('nba', formattedGames, eventMap);
 
-    return res.json({ sport: 'NBA', games: formattedGames, arbitrageAlerts });
+    return res.json({ sport: 'NBA', games: formattedGames });
   } catch (error) {
     console.error('NBA Prediction error:', error);
     return res.status(500).json({ error: error.message });
@@ -2998,7 +2967,7 @@ Respond ONLY with this JSON shape:
 // NHL HANDLER
 // ============================================================================
 
-async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
+async function handleNHLPredictions(res, oddsData) {
   try {
     // cachedGet, and the same URL fetchEspnOpeningLines uses, so the slate and
     // its lines come from one request rather than two.
@@ -3006,7 +2975,7 @@ async function handleNHLPredictions(res, arbitrageAlerts, oddsData) {
     const events = nextSlate(scoreboardResponse.data.events);
 
     if (events.length === 0) {
-      return res.json({ sport: 'NHL', games: [], arbitrageAlerts: [], message: 'No NHL games scheduled' });
+      return res.json({ sport: 'NHL', games: [], message: 'No NHL games scheduled' });
     }
 
     const espnOpeningLines = await fetchEspnOpeningLines('nhl');
@@ -3112,7 +3081,7 @@ Respond ONLY with:
     // Save picks to DB for tracking
     await savePicksFromGames('nhl', formattedGames, eventMap);
 
-    return res.json({ sport: 'NHL', games: formattedGames, arbitrageAlerts });
+    return res.json({ sport: 'NHL', games: formattedGames });
   } catch (error) {
     console.error('NHL Prediction error:', error);
     return res.status(500).json({ error: error.message });
@@ -3123,7 +3092,7 @@ Respond ONLY with:
 // MLB HANDLER
 // ============================================================================
 
-async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
+async function handleMLBPredictions(res, oddsData) {
   try {
     // cachedGet, and the same URL fetchEspnOpeningLines uses, so the slate and
     // its lines come from one request rather than two.
@@ -3131,7 +3100,7 @@ async function handleMLBPredictions(res, arbitrageAlerts, oddsData) {
     const events = nextSlate(scoreboardResponse.data.events);
 
     if (events.length === 0) {
-      return res.json({ sport: 'MLB', games: [], arbitrageAlerts: [], message: 'No MLB games scheduled' });
+      return res.json({ sport: 'MLB', games: [], message: 'No MLB games scheduled' });
     }
 
     const espnOpeningLines = await fetchEspnOpeningLines('mlb');
@@ -3245,7 +3214,7 @@ Respond ONLY with:
     // Save picks to DB for tracking
     await savePicksFromGames('mlb', formattedGames, eventMap);
 
-    return res.json({ sport: 'MLB', games: formattedGames, arbitrageAlerts });
+    return res.json({ sport: 'MLB', games: formattedGames });
   } catch (error) {
     console.error('MLB Prediction error:', error);
     return res.status(500).json({ error: error.message });
