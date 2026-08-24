@@ -1272,7 +1272,7 @@ test('bestBet never leans off a run line or a puck line', () => {
                               homeTeam: 'H', awayTeam: 'A' });
         assert.equal(r.level, 'coinflip', `${sport} ${pm} vs ${sp}`);
         assert.equal(r.pick, null);
-        assert.match(r.reason, /1\.5 whoever is playing/);
+        assert.match(r.reason, /barely moves whoever is playing|agrees with the moneyline/);
       }
     }
   }
@@ -1724,4 +1724,27 @@ test('the lean threshold is stated per sport, not derived from football', () => 
   assert.equal(m.bestBet({ sport: 'nfl', predictedMargin: 3, marketSpread: 0 }).level, 'lean');
   assert.equal(m.bestBet({ sport: 'nba', predictedMargin: 2.4, marketSpread: 0 }).level, 'coinflip');
   assert.equal(m.bestBet({ sport: 'nba', predictedMargin: 2.5, marketSpread: 0 }).level, 'lean');
+});
+
+test('a 2.5 run line prices off the counted table, not the 1.5 conditional', () => {
+  // Rare, but real: books post 2.5 on a bad mismatch. The measured slope was
+  // fitted at 1.5 and must not be extrapolated to a number it never saw, so a
+  // 2.5 falls back to the plain counted distribution.
+  const p = m.deVigTwoWayShin(-260, 215).probA;
+  const at25 = m.coverProbFromWinProb({ sport: 'mlb', winProb: p, line: -2.5 });
+  const expected = p * m.marginAtLeast('mlb', 3);
+  assert.ok(Math.abs(at25 - expected) < 1e-9, `${at25} should equal winProb * P(win by 3+)`);
+
+  // Laying more runs has to be harder, and the whole chain has to survive it.
+  const at15 = m.coverProbFromWinProb({ sport: 'mlb', winProb: p, line: -1.5 });
+  assert.ok(at25 < at15, 'laying 2.5 must be harder than laying 1.5');
+
+  const edge = m.runLineEdge({ sport: 'mlb', homeML: -260, awayML: 215, spread: -2.5,
+                               spreadHomePrice: 135, spreadAwayPrice: -160 });
+  assert.ok(edge, 'a 2.5 run line must still price');
+  assert.ok(Number.isFinite(edge.fairHomePrice) && Number.isFinite(edge.homeEdgePts));
+
+  // And plausibleSpread must not throw the game away for not being 1.5.
+  assert.equal(m.plausibleSpread('mlb', 2.5), true);
+  assert.equal(m.plausibleSpread('nhl', 2.5), true);
 });

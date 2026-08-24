@@ -96,14 +96,20 @@ for (const sport of ['nba', 'nhl', 'mlb', 'nfl']) {
   });
 }
 
-test('run lines and puck lines are always 1.5', () => {
+test('run lines and puck lines are a number a book would post', () => {
   // The single clearest signal the old scraper was broken: it reported 0 and -3
-  // on markets that only ever post 1.5.
+  // on these markets.
+  //
+  // This used to assert exactly 1.5, which was over-fit to the fixtures. Books
+  // do post 2.5 on a bad mismatch, so pinning the fixtures to 1.5 would have
+  // turned a real line into a test failure. What actually matters is that the
+  // value is one of the two, and never a football number.
   for (const sport of ['mlb', 'nhl']) {
     const o = readOdds(fixtures[sport]);
-    assert.equal(Math.abs(o.currentSpread), 1.5,
-      `${sport} current spread should be 1.5, got ${o.currentSpread}`);
-    assert.equal(Math.abs(o.openSpread), 1.5);
+    for (const [label, v] of [['current', o.currentSpread], ['open', o.openSpread]]) {
+      assert.ok([1.5, 2.5].includes(Math.abs(v)),
+        `${sport} ${label} spread should be 1.5 or 2.5, got ${v}`);
+    }
   }
 });
 

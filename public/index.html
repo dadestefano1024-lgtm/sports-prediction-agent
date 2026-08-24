@@ -872,6 +872,15 @@
     }
 
 
+    // Where a game sits in the list. Anything the app will actually stand
+    // behind goes first; everything else keeps its kickoff order underneath.
+    const VERDICT_ORDER = { edge: 0, strong: 0, slight: 1, lean: 2 };
+    function verdictRank(g) {
+      const r = g.bestBet || g.recommendation;
+      const rank = r ? VERDICT_ORDER[r.level] : undefined;
+      return rank === undefined ? 9 : rank;
+    }
+
     function renderGames(data) {
       const games = data.games || [];
 
@@ -880,7 +889,15 @@
         return;
       }
 
-      const html = games.map(g => {
+      // Sorted, not filtered: every game is still here, the ones worth acting
+      // on are just at the top instead of scattered down a fifteen-game card.
+      // Stable within a rank, so kickoff order survives underneath.
+      const ordered = games
+        .map((g, i) => ({ g, i, rank: verdictRank(g) }))
+        .sort((a, b) => a.rank - b.rank || a.i - b.i)
+        .map(x => x.g);
+
+      const html = ordered.map(g => {
         const valueBet = hasBookValue(g);
 
         let weatherBadge = '';
@@ -1074,11 +1091,10 @@
               </div>
               <div class="header-badges">
                 ${weatherBadge}
-                <span class="confidence ${g.confidence}">${
-                  g.inProgress ? 'live'
-                    : (g.bookValuePts > 0
-                        ? `+${g.bookValuePts} pt${g.bookValuePts === 1 ? '' : 's'} at ${(g.myBook && g.myBook.name) || 'your book'}`
-                        : 'market price')}</span>
+                ${g.inProgress ? '<span class="confidence Low">live</span>' : ''}
+                ${g.bookValuePts > 0
+                  ? `<span class="confidence High">+${g.bookValuePts} pt${g.bookValuePts === 1 ? '' : 's'} at ${(g.myBook && g.myBook.name) || 'your book'}</span>`
+                  : ''}
               </div>
             </div>
             <div class="card-body">
@@ -1089,6 +1105,13 @@
                 // betting regardless, and they must not read alike.
                 const r = g.bestBet || g.recommendation;
                 if (!r) return '';
+                // No verdict, no box. "No lean" is an honest answer and it is
+                // also the answer on most games, so printing it on every card
+                // spends a block of space to say nothing. The flags and pool
+                // note below still render on their own when they have
+                // something to say; an in-progress game keeps its box, because
+                // there it is explaining why the rest of the card is empty.
+                const silent = r.level === 'coinflip' || r.level === 'none';
                 // The pool note sits with the verdict because the two are easy
                 // to confuse and mean opposite things: movement is an edge
                 // against a frozen line and nothing against a live one.
@@ -1101,6 +1124,7 @@
                 // the price may not have caught up with what is known.
                 const flags = (g.situationFlags || []).map(f =>
                   `<div class="sit-flag ${f.severity}">${f.note}</div>`).join('');
+                if (silent) return `${pf}${flags}`;
                 return `<div class="verdict ${r.level}">
                   <span class="verdict-label">${r.label}</span>
                   ${r.pick ? `<span class="verdict-pick">${r.pick}</span>` : ''}

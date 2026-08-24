@@ -58,11 +58,20 @@
 // hfa         — home field advantage, same units
 // eloPerPoint — Elo rating difference worth one point of margin
 // k           — Elo update rate
-// fixedSpread — the spread is 1.5 by convention no matter who is playing,
-//               so the NUMBER carries no information about expected margin and
-//               the price alongside it carries all of it. Run lines and puck
-//               lines are the two. Anything that reads a spread as the market's
-//               estimate of the result has to skip these.
+// fixedSpread — the spread is 1.5 nearly always, whoever is playing, so the
+//               NUMBER carries almost no information about expected margin and
+//               the price alongside it carries essentially all of it. Run lines
+//               and puck lines are the two. Anything that reads a spread as the
+//               market's estimate of the result has to skip these.
+//
+//               "Nearly" is doing real work there. A sample of 112 quotes
+//               across nine books came back 1.5 every time, and that was one
+//               day's card — far too small to see a rare event. Books do post
+//               2.5 on a bad mismatch. Everything here prices whatever line it
+//               is handed: the measured conditional applies at 1.5, where it
+//               was measured, and any other number falls back to the plain
+//               counted table rather than extrapolating a relationship that was
+//               never checked there.
 //
 // TREAT THESE AS PLACEHOLDERS. They are widely cited approximations, good
 // enough to produce sane output and to test against, and not good enough to bet
@@ -424,9 +433,11 @@ function marginAtLeast(sport, n) {
  * the headline answer on a live game by six percentage points — from no edge to
  * a five-point edge. Prices are not evidence about how baseball behaves.
  *
- * Only the 1.5 line gets the conditional treatment, because 1.5 is the only
- * line these sports post — 112 quotes checked across nine books, all of them
- * 1.5. Any other line falls back to the unconditional table and says so.
+ * Only the 1.5 line gets the conditional treatment, because 1.5 is where it was
+ * measured — and 1.5 is what these sports post on all but the odd mismatch,
+ * where a book may go to 2.5. Any other line falls back to the unconditional
+ * counted table rather than running the measured slope out to a number the
+ * measurement never covered.
  */
 function coverProbFromWinProb({ sport, winProb, line = 1.5, mismatch = null } = {}) {
   if (!Number.isFinite(winProb) || winProb <= 0 || winProb >= 1) {
@@ -1989,8 +2000,8 @@ function bestBet({
 
     if (!Number.isFinite(marketSpread)) return no(`there is no ${noun} line here to price`);
     if (!runLine || !table) {
-      return no(`the ${noun} line is 1.5 whoever is playing, and there is no ` +
-                'moneyline here to price it against');
+      return no(`the ${noun} line barely moves whoever is playing, and there is ` +
+                'no moneyline here to price it against');
     }
     if (!table.verdict) return no(`priced but not trusted yet — ${table.verdictNote}`);
 
@@ -2016,7 +2027,8 @@ function bestBet({
                reason: `a little better than this game's own moneyline says it is worth ` +
                        `(fair ${show(fair)}, offered ${show(offered)}), ${pts} points` };
     }
-    return no(`the ${noun} line agrees with the moneyline on this game, so neither side is mispriced`);
+    return no(`${marketSpread === -1.5 || marketSpread === 1.5 ? 'the ' + noun + ' line' : `the ${Math.abs(marketSpread)} line`} ` +
+              'agrees with the moneyline on this game, so neither side is mispriced');
   }
 
   // --------------------------------------------------------------------
