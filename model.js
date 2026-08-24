@@ -100,6 +100,9 @@ const SPORTS = {
   // used to be a fraction of it, which meant correcting a MEASURED football
   // number silently moved basketball's behaviour — and basketball's sigma is
   // still an unmeasured placeholder, so the ratio meant nothing.
+  // nfl totalSigma is no longer consulted: totals read NFL_TOTAL_RESIDUALS,
+  // which is counted. It is left here because the other sports share the
+  // config shape and removing it would make football the odd one out.
   nfl: { sigma: 10.82, totalSigma: 10.5, hfa: 1.8,  eloPerPoint: 25, k: 20, leanThreshold: 3 },
   nba: { sigma: 11.5, totalSigma: 15.0, hfa: 2.5,  eloPerPoint: 28, k: 20, leanThreshold: 2.5 },
   mlb: { sigma: 4.4,  totalSigma: 4.4,  hfa: 0.20, eloPerPoint: 4,  k: 4,  fixedSpread: true },
@@ -1099,7 +1102,7 @@ function priceGame({
       trust,
       kellyFraction,
       probFor: (pt) => {
-        const o = totalOutcomes({ predictedTotal, line: pt, sigma: cfg.totalSigma });
+        const o = totalOutcomes({ predictedTotal, line: pt, sigma: cfg.totalSigma, sport });
         return which === 'over'
           ? { win: o.over, push: o.push, loss: o.under }
           : { win: o.under, push: o.push, loss: o.over };
@@ -1333,9 +1336,34 @@ function coverOutcomes({ predictedMargin, spread, sigma, sport }) {
  * Half-point lines cannot push and fall out of the arithmetic at zero without
  * needing a special case.
  */
-function totalOutcomes({ predictedTotal, line, sigma }) {
+/** P(total residual > offset), read off the counted table. */
+function totalResidualSurvival(offset) {
+  const { from, step, survival } = NFL_TOTAL_RESIDUALS;
+  const idx = (offset - from) / step;
+  if (idx < 0) return 1;
+  if (idx > survival.length - 1) return 0;
+  const lo = Math.floor(idx);
+  if (lo === idx) return survival[lo];
+  const frac = idx - lo;
+  return survival[lo] * (1 - frac) + survival[lo + 1] * frac;
+}
+
+function totalOutcomes({ predictedTotal, line, sigma, sport } = {}) {
   if (!Number.isFinite(predictedTotal)) throw new Error('predictedTotal must be finite');
   if (!Number.isFinite(line)) throw new Error('line must be finite');
+
+  // Football reads the counted table. Everything else keeps the normal, because
+  // nothing else has been measured and a curve is honest about being a guess.
+  if (String(sport || '').toLowerCase() === 'nfl') {
+    const offset = line - predictedTotal;
+    const over = totalResidualSurvival(offset);
+    // A whole number can land on itself. 3,549 games closed on one and 2.8% of
+    // them finished exactly there, which the normal at 10.5 called 3.8%.
+    const push = Number.isInteger(offset)
+      ? (NFL_TOTAL_RESIDUALS.exact[offset] || 0) : 0;
+    return { over, push, under: Math.max(0, 1 - over - push) };
+  }
+
   const pmf = totalPmf({ mean: predictedTotal, sigma });
   let over = 0, push = 0;
   for (const [v, p] of pmf) {
@@ -1644,6 +1672,38 @@ function bestOffer({ quotes, probFor, trust = 0.25, kellyFraction = 0.25 }) {
  * the curve; baseball and hockey never used this path at all, since their
  * spread is fixed and priced through the moneyline instead.
  */
+// Counted, not fitted, for the same reason the margin table is.
+//
+// A normal cannot describe this: fitting the tails wants a sigma near 12.6 and
+// fitting the middle wants one near 14.7, because the total residual is flatter
+// in the centre than any normal with the same spread. The app was pricing at
+// 10.5, which put 3.8% on every single point of total — and it showed, because
+// every total verdict on the card printed the identical 3.8% whether the number
+// was 38.5 or 49.5. Measured, a point of total buys 2.76%.
+//
+const NFL_TOTAL_RESIDUALS = {
+  games: 6967,
+  from: -30, step: 0.5,
+  survival: [
+    0.99397, 0.99368, 0.99282, 0.99182, 0.99067, 0.9888, 0.98794, 0.98737, 0.98579, 0.98378,
+    0.9812, 0.97904, 0.97646, 0.9733, 0.97072, 0.96785, 0.96426, 0.96067, 0.9568, 0.95206,
+    0.94818, 0.94244, 0.93842, 0.93297, 0.92752, 0.92177, 0.91503, 0.90656, 0.89996, 0.8935,
+    0.88618, 0.8767, 0.86493, 0.85517, 0.84656, 0.83494, 0.82331, 0.81369, 0.80365, 0.79274,
+    0.78097, 0.76604, 0.75226, 0.74264, 0.727, 0.7115, 0.69686, 0.68423, 0.66772, 0.65609,
+    0.64059, 0.62696, 0.61059, 0.59567, 0.57873, 0.56437, 0.54873, 0.53323, 0.51543, 0.50208,
+    0.48787, 0.47309, 0.45802, 0.4428, 0.42874, 0.41567, 0.40046, 0.38582, 0.37089, 0.35869,
+    0.34592, 0.334, 0.32123, 0.30659, 0.29453, 0.28291, 0.27228, 0.26181, 0.25004, 0.23927,
+    0.2308, 0.22061, 0.21056, 0.20066, 0.19018, 0.17985, 0.16994, 0.16061, 0.15229, 0.14483,
+    0.13779, 0.13162, 0.12286, 0.11727, 0.11095, 0.10564, 0.09933, 0.0943, 0.08913, 0.08468,
+    0.07909, 0.07421, 0.07019, 0.06717, 0.06301, 0.05957, 0.05655, 0.05225, 0.04923, 0.04722,
+    0.04392, 0.04005, 0.03746, 0.03488, 0.03215, 0.03014, 0.02785, 0.02426, 0.0234, 0.02225,
+    0.02124,
+  ],
+  // 3549 games closed on a whole number; how often the
+  // final total lands exactly k points off it.
+  exact: {"0":0.0279,"1":0.02959,"2":0.02761,"3":0.02987,"4":0.0293,"5":0.02508,"6":0.02508,"7":0.02367,"8":0.02085,"9":0.02311,"10":0.01662,"11":0.01972,"12":0.02057,"-12":0.02282,"-11":0.01972,"-10":0.02311,"-9":0.02705,"-8":0.03071,"-7":0.02874,"-6":0.0324,"-5":0.03043,"-4":0.03212,"-3":0.03325,"-2":0.03071,"-1":0.03494},
+};
+
 const NFL_RESIDUALS = {
   games: 7239,
   from: -28, step: 0.5,
@@ -1821,7 +1881,7 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
 
   if (Number.isFinite(poolTotal) && Number.isFinite(marketTotal)) {
     const o = totalOutcomes({
-      predictedTotal: marketTotal, line: poolTotal, sigma: cfg.totalSigma,
+      predictedTotal: marketTotal, line: poolTotal, sigma: cfg.totalSigma, sport,
     });
     // Unconditional, to match the spread. This used to be over/(over+under),
     // which refunds a push — so a stale total was quoted two to three points
@@ -2172,7 +2232,7 @@ function lineValueProb({ sport, market = 'spread', side, marketNumber, bookNumbe
   if (market === 'total') {
     if (side !== 'over' && side !== 'under') return null;
     const at = (line) => {
-      const o = totalOutcomes({ predictedTotal: marketNumber, line, sigma: cfg.totalSigma });
+      const o = totalOutcomes({ predictedTotal: marketNumber, line, sigma: cfg.totalSigma, sport });
       return { p: side === 'over' ? o.over : o.under, push: o.push };
     };
     const book = at(bookNumber), mkt = at(marketNumber);
@@ -2563,6 +2623,8 @@ module.exports = {
   totalPmf,
   coverOutcomes,
   lineValueProb,
+  NFL_TOTAL_RESIDUALS,
+  totalResidualSurvival,
   totalOutcomes,
   opponentAdjustedRatings,
   projectFromRatings,

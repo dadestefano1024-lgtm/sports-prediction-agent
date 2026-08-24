@@ -2009,3 +2009,43 @@ test('a half point that buys real wins still reports them', () => {
   assert.ok(!r.basis.some(b => b.label === 'in the Pick 6'),
     'a genuinely valuable number must not be labelled worthless in the pool');
 });
+
+// ---------------------------------------------------------------------------
+// Totals are counted, not curve-fitted
+// ---------------------------------------------------------------------------
+test('a point of total buys what games say it buys, not what a curve says', () => {
+  // 6,967 games: 2.76% of finals land in the one-point window below the line.
+  // The normal at totalSigma 10.5 said 3.80% — a third too much — and printed
+  // that identical figure on every total verdict on the card.
+  for (const t of [38.5, 44.5, 48.5, 52.5]) {
+    const at = m.totalOutcomes({ predictedTotal: t, line: t, sport: 'nfl' });
+    const one = m.totalOutcomes({ predictedTotal: t, line: t - 1, sport: 'nfl' });
+    const buys = one.over - at.over;
+    assert.ok(Math.abs(buys - 0.0276) < 0.004,
+      `a point at ${t} should buy ~2.8%, got ${(buys * 100).toFixed(2)}%`);
+  }
+});
+
+test('a whole-number total can land on itself', () => {
+  const o = m.totalOutcomes({ predictedTotal: 45, line: 45, sport: 'nfl' });
+  assert.ok(Math.abs(o.push - 0.028) < 0.005,
+    `whole totals push 2.8% of the time, got ${(o.push * 100).toFixed(2)}%`);
+  const half = m.totalOutcomes({ predictedTotal: 45, line: 45.5, sport: 'nfl' });
+  assert.equal(half.push, 0, 'a half point cannot push');
+});
+
+test('total outcomes always sum to one', () => {
+  for (const [p, l] of [[45, 45], [45, 47.5], [51, 44], [38, 41.5]]) {
+    const o = m.totalOutcomes({ predictedTotal: p, line: l, sport: 'nfl' });
+    assert.ok(Math.abs(o.over + o.push + o.under - 1) < 1e-9,
+      `over/push/under must sum to 1 at ${p}/${l}`);
+    assert.ok(o.over >= 0 && o.push >= 0 && o.under >= 0, 'no negative probabilities');
+  }
+});
+
+test('sports without a measured total table keep the curve', () => {
+  // Only football has been counted. The others should not silently borrow it.
+  const nba = m.totalOutcomes({ predictedTotal: 225, line: 225, sigma: 15 });
+  assert.ok(nba.over > 0 && nba.under > 0, 'the normal path still works');
+  assert.ok(Math.abs(nba.over + nba.push + nba.under - 1) < 1e-6);
+});
