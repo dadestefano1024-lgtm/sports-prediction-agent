@@ -4080,9 +4080,46 @@ app.get('/api/debug/odds/:sport', async (req, res) => {
  * a key and the key working are not the same thing — the invalid Anthropic key
  * was set the whole time it was failing.
  */
+// Liveness. Answers one question — is this process up — and does no I/O to
+// answer it, so it cannot fail for any reason short of the process being gone.
+//
+// This exists because the rich endpoint below was almost certainly wired up as
+// the platform health check, and it returns 503 the moment ANY dependency is
+// unhappy. A rate-limited Anthropic key or a 403 from ESPN made the instance
+// look dead, the platform restarted it, the restart came up with cold caches
+// and failed the probe again, and the whole service sat in a restart loop
+// serving 502 while every part of it that mattered was working fine.
+//
+// A liveness probe must never depend on somebody else's uptime. Point the
+// platform at this one.
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ ok: true, uptimeSec: Math.round(process.uptime()) });
+});
+
+// Deep probe results, so being polled cannot turn into hammering upstreams.
+// Nothing here changes second to second, and the endpoint was being called
+// every ten seconds.
+const HEALTH_CACHE_MS = 60 * 1000;
+let healthCache = { at: 0, key: '', body: null };
+
 app.get('/api/health', async (req, res) => {
   const started = Date.now();
   const sport = String(req.query.sport || 'nfl').toLowerCase();
+  // Costs money and takes the better part of a second, so it is asked for
+  // rather than run on every poll.
+  const deep = req.query.deep === '1';
+  // Opt back in to a failing status code, for an external monitor that wants
+  // one. Never the default — see /healthz above for why.
+  const strict = req.query.strict === '1';
+
+  const cacheKey = `${sport}|${deep}`;
+  if (healthCache.body && healthCache.key === cacheKey &&
+      Date.now() - healthCache.at < HEALTH_CACHE_MS) {
+    const body = { ...healthCache.body, cached: true,
+                   ageMs: Date.now() - healthCache.at };
+    return res.status(strict && body.failing.length ? 503 : 200).json(body);
+  }
+
   const checks = {};
 
   const probe = async (name, fn) => {
@@ -4137,7 +4174,7 @@ app.get('/api/health', async (req, res) => {
 
   // 5. Claude, which writes the notes. Probed with the smallest call that
   //    proves the key works rather than by checking the key exists.
-  await probe('anthropic', async () => {
+  if (deep) await probe('anthropic', async () => {
     if (!process.env.ANTHROPIC_API_KEY) throw new Error('no key configured');
     const r = await axios.post('https://api.anthropic.com/v1/messages', {
       model: 'claude-sonnet-4-5', max_tokens: 4,
@@ -4162,11 +4199,15 @@ app.get('/api/health', async (req, res) => {
   });
 
   const failing = Object.entries(checks).filter(([, c]) => !c.ok).map(([k]) => k);
-  res.status(failing.length ? 503 : 200).json({
+  const body = {
     status: failing.length ? 'degraded' : 'ok',
     sport,
     failing,
     checks,
+    // Says what it did NOT check, so a clean bill of health cannot be read as
+    // covering more than it does.
+    ...(deep ? {} : { skipped: ['anthropic'],
+                      note: 'add ?deep=1 to probe Anthropic — it is a paid call' }),
     // Present is not the same as working — see the Anthropic key, which was set
     // throughout the period it was being rejected.
     configured: {
@@ -4177,7 +4218,12 @@ app.get('/api/health', async (req, res) => {
     },
     tookMs: Date.now() - started,
     timestamp: new Date().toISOString(),
-  });
+  };
+  healthCache = { at: Date.now(), key: cacheKey, body };
+  // 200 unless a caller explicitly asked to be told otherwise. A diagnostic
+  // endpoint that reports upstream trouble with a failing status code will,
+  // sooner or later, be read by something that restarts the service over it.
+  res.status(strict && failing.length ? 503 : 200).json(body);
 });
 
 // History endpoint — returns picks history and W/L stats
