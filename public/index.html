@@ -1283,6 +1283,10 @@
           `&mdash; ${who} lands exactly on its number ${(card.pushiest.pushProb * 100).toFixed(1)}% of the time, ` +
           `and a push loses here</span>`);
       }
+      if (card.unsupported) {
+        bits.push(`<span class="card-warn">${card.unsupported} of these rest on a market move under 2 points.
+          Moves that small did not improve the number (50.5% over 190 games), so treat this figure as optimistic.</span>`);
+      }
       if (card.weakest && card.weakest.pick) {
         bits.push(`weakest link: ${card.weakest.pick} at ${(card.weakest.winProb * 100).toFixed(1)}%`);
       }

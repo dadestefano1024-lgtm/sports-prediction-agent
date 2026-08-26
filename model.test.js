@@ -2264,3 +2264,46 @@ test('the stale-line rule still lands near what was measured', () => {
   assert.ok(conditional(7) > conditional(5) && conditional(5) > conditional(2),
     'and still monotonic in the gap');
 });
+
+// ---------------------------------------------------------------------------
+// Measured support for a stale line, kept separate from the probability
+// ---------------------------------------------------------------------------
+test('support tracks what the improvement data measured', () => {
+  assert.ok(m.staleSupport(0.5) < 0.2, 'a half-point move improved nothing');
+  assert.ok(m.staleSupport(1.5) < 0.3, 'a 1-1.5 point move measured 50.5% on 190 games');
+  assert.equal(m.staleSupport(2), 1, 'two points is where the model and the data agree');
+  assert.equal(m.staleSupport(5), 1);
+  assert.equal(m.staleSupport(-3), 1, 'direction is irrelevant, only distance');
+});
+
+test('support never distorts the probability itself', () => {
+  // Shrinking winProb was tried and is incoherent: -3 and -3.5 against a market
+  // of -5 are the same bet, both needing a four-point win, but arise from moves
+  // of different size. The physics cannot depend on how the line got there.
+  const a = m.poolEdge({ sport: 'nfl', poolSpread: -3, marketSpread: -5,
+                         homeTeam: 'H', awayTeam: 'A' }).spread;
+  const b = m.poolEdge({ sport: 'nfl', poolSpread: -3.5, marketSpread: -5,
+                         homeTeam: 'H', awayTeam: 'A' }).spread;
+  assert.ok(Math.abs(a.winProb - b.winProb) < 0.002,
+    'identical bets must price identically whatever the move was');
+  assert.ok(a.support > b.support, 'but the bigger move is better supported');
+  assert.ok(Math.abs(a.winProb + a.pushProb + a.otherSideProb - 1) < 0.002,
+    'and the accounting must still close');
+});
+
+test('a well-supported pick outranks a better-looking unsupported one', () => {
+  const barelyMoved = { winProb: 0.58, support: 0.15, rankScore: 0.512, gap: 1, tested: true };
+  const properMove = { winProb: 0.555, support: 1, rankScore: 0.555, gap: 3, tested: true };
+  const [first] = m.rankPoolPicks([barelyMoved, properMove], 2);
+  assert.equal(first.gap, 3, 'the 3-point move should win despite the lower raw probability');
+});
+
+test('the card says when it is leaning on unsupported picks', () => {
+  const c = m.cardOdds([
+    { winProb: 0.58, support: 1 }, { winProb: 0.58, support: 1 },
+    { winProb: 0.55, support: 0.15 }, { winProb: 0.55, support: 0.15 },
+    { winProb: 0.57, support: 1 }, { winProb: 0.56, support: 1 },
+  ], { target: 6 });
+  assert.equal(c.unsupported, 2);
+  assert.equal(c.complete, true);
+});

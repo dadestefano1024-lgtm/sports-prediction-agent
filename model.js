@@ -1813,6 +1813,39 @@ function nflResidualAbove(offset) {
  * When the away number is the mirror of the home one, or is not supplied, this
  * reduces exactly to the two-sided case.
  */
+/**
+ * How much of a stale line's apparent edge the data actually supports.
+ *
+ * poolEdge prices a frozen line by treating the CURRENT market number as the
+ * truth. That is only justified when the market genuinely improved the number,
+ * and how often it did is measurable rather than assumed. Across 543 games with
+ * both an opening and a closing spread, mean absolute error of the two numbers
+ * against the real margin, alongside the rule's own win rate:
+ *
+ *   move          n    err@open  err@close  improvement   rule wins
+ *   half point    60     9.025     9.125      -0.100        40.0%
+ *   1 to 1.5     190     9.403     9.432      -0.029        50.5%
+ *   2 to 2.5      64     9.977     9.734      +0.242        57.8%
+ *   3 or more     77    11.617    11.000      +0.617        61.0%
+ *
+ * Two independent measurements — one from scoring margins, one from bet
+ * outcomes — agreeing at every bucket. Below two points the market did not
+ * improve anything, so the old number was as good as the new one and there is
+ * nothing to be behind. The model was still pricing a one-point gap near 55%
+ * against a measured 50.5%, which overstated a real six-pick card by 21%.
+ *
+ * So the edge above even money is scaled by what the bucket supports. Small
+ * moves are shrunk to almost nothing rather than inverted: the 40% bucket is 60
+ * games and betting against it would be fitting noise. Two points and up is
+ * left alone, where the model already agrees with the measurement.
+ */
+function staleSupport(gap) {
+  const g = Math.abs(Number(gap) || 0);
+  if (g < 1) return 0.05;    // measured 40% on 60 games; treat as no edge, not a reverse
+  if (g < 2) return 0.15;    // measured 50.5% on 190 games against a model saying ~54.5%
+  return 1;                  // 57.8% and 61.0%, where the model is already calibrated
+}
+
 function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
                     poolTotal, marketTotal,
                     homeTeam = 'Home', awayTeam = 'Away' }) {
@@ -1889,6 +1922,19 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
     const overlap = shape === 'overlap' ? Math.max(0, -leftover) : 0;
 
     const backHome = homeProb >= awayProb;
+    const rawWin = backHome ? homeProb : awayProb;
+    // How far the market moved, which is the evidence that it improved the
+    // number — NOT an adjustment to the probability itself. Shrinking winProb
+    // was tried and is incoherent: a pool line of -3 and one of -3.5 against a
+    // market of -5 are the same bet, both needing a four-point win, but they
+    // arise from moves of different size and would be shrunk differently. The
+    // physics cannot depend on how the line got there.
+    //
+    // So winProb stays physical and the support rides alongside it, used for
+    // ranking and for saying out loud when a card is leaning on moves the data
+    // does not back.
+    const support = staleSupport(Math.abs((backHome ? poolSpread : awayLine) -
+                                          (backHome ? marketSpread : -marketSpread)));
     out.spread = {
       side: backHome ? 'home' : 'away',
       pick: backHome ? `${homeTeam} ${sign(poolSpread)}` : `${awayTeam} ${sign(awayLine)}`,
@@ -1898,7 +1944,12 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
                      (backHome ? marketSpread : -marketSpread)).toFixed(2),
       // Unconditional. A push is a loss in this pool, confirmed by the person
       // who plays in it, so nothing is divided out of the denominator.
-      winProb: +(backHome ? homeProb : awayProb).toFixed(4),
+      winProb: +rawWin.toFixed(4),
+      // 1 where the measurement backs the pricing, near zero where the market
+      // moved too little to have improved anything. Ranking leans on it; the
+      // probability does not.
+      support: +support.toFixed(2),
+      rankScore: +(0.5 + (rawWin - 0.5) * support).toFixed(4),
       otherSideProb: +(backHome ? awayProb : homeProb).toFixed(4),
       // Kept distinct, because they are different things that were being
       // reported under one name: a push lands exactly on the number, a dead
@@ -2007,6 +2058,10 @@ function cardOdds(picks, { target = 6 } = {}) {
     // Fraction of the card's value that pushes are eating.
     pushCost: refunded > 0 ? +(1 - perfect / refunded).toFixed(4) : 0,
     weakest: byWin[0] || null,
+    // Picks whose edge rests on a market move too small to have improved the
+    // number. Counted rather than folded into the probability: the discount is
+    // about how much to trust the model, not about the game.
+    unsupported: usable.filter(p => Number.isFinite(p.support) && p.support < 1).length,
     pushiest: (byPush[0] && (byPush[0].pushProb || 0) > 0) ? byPush[0] : null,
   };
 }
@@ -2026,7 +2081,12 @@ function rankPoolPicks(candidates, count = 6) {
       const at = a.tested === false ? 1 : 0;
       const bt = b.tested === false ? 1 : 0;
       if (at !== bt) return at - bt;
-      return (b.winProb - a.winProb) || (b.gap - a.gap);
+      // rankScore, not winProb. Both describe the same pick; the score discounts
+      // the ones whose edge rests on a market move too small to have improved
+      // anything — measured at 50.5% over 190 games against a model saying ~54%.
+      const as = Number.isFinite(a.rankScore) ? a.rankScore : a.winProb;
+      const bs = Number.isFinite(b.rankScore) ? b.rankScore : b.winProb;
+      return (bs - as) || (b.winProb - a.winProb) || (b.gap - a.gap);
     })
     .slice(0, count);
 }
@@ -2742,6 +2802,7 @@ module.exports = {
   lineValueProb,
   favouredSide,
   cardOdds,
+  staleSupport,
   NFL_TOTAL_PMF,
   totalResidualSurvival,
   totalResidualProb,
