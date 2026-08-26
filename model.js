@@ -1820,20 +1820,35 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
   const out = { spread: null, total: null };
   const sign = (n) => `${n > 0 ? '+' : ''}${n}`;
 
-  // P(margin + offset > 0) for a line sitting `offset` from the market's.
+  // P(margin > threshold) for a line sitting away from the market's.
   //
-  // Football reads it off 7,239 counted games; anything else falls back to the
-  // curve. The counted version matters because a normal overstates a stale line
-  // by up to 2.4 points at the offsets a pool actually produces, and it
-  // overstates in the direction that flatters the bet.
-  const above = (threshold, expected) => {
-    if (sport === 'nfl') {
-      const counted = nflResidualAbove(threshold - expected);
-      if (counted !== null) return counted;
-    }
-    return coverOutcomes({ predictedMargin: expected, spread: -threshold,
-                           sigma: cfg.sigma, sport }).win;
-  };
+  // This used to read off NFL_RESIDUALS, a survival curve counted over 7,239
+  // games, on the grounds that a normal overstated a stale line. That was true
+  // when coverOutcomes was a plain normal. It stopped being true once the
+  // key-number weights were fitted to counted conditional rates, and nothing
+  // re-checked which source the pool should use. Measured against the same
+  // stale-line reality both were meant to reproduce:
+  //
+  //   stale by   real    survival   coverOutcomes
+  //     1 pt     53.5%    53.0%       54.3%
+  //     2 pt     58.3%    56.5%       57.8%
+  //     3 pt     63.3%    59.7%       61.2%
+  //     5 pt     68.6%    65.8%       67.9%
+  //     7 pt     74.1%    71.7%       74.0%
+  //
+  // coverOutcomes is closer at every offset. It is also the only one that can
+  // be right about key numbers, because the survival curve pools whole-number
+  // spreads with half-point ones and averages the spike away against games that
+  // structurally cannot land on their own number. That mismatch was visible in
+  // the output: the push said 9.2% of games lined at 3 finish on 3, while the
+  // win curve implied 1.8%, so moving a frozen line from -3 to -2.5 was priced
+  // at a fifth of what it is worth.
+  //
+  // Using one source for both means win, push and the other side come off the
+  // same grid and sum to one by construction.
+  const above = (threshold, expected) =>
+    coverOutcomes({ predictedMargin: expected, spread: -threshold,
+                    sigma: cfg.sigma, sport }).win;
   // Push probability stays on the discrete margin PMF rather than the counted
   // table. The two are good at different things: the table is measured, but it
   // pools whole-number and half-point spreads together, so a residual of

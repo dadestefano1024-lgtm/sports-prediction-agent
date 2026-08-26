@@ -2189,3 +2189,78 @@ test('a short card never reports odds a full card can be compared against', () =
   assert.equal(full.shortBy, 0);
   assert.ok(full.oneIn > 0);
 });
+
+// ---------------------------------------------------------------------------
+// The pool's win and push must come off one grid
+// ---------------------------------------------------------------------------
+test('a half point across a key number is worth exactly the push it absorbs', () => {
+  // poolEdge read its win off a counted survival curve and its push off the
+  // discrete PMF. They disagreed: the push said 9.2% of games lined at 3 finish
+  // on 3, the win curve implied 1.8%, so moving a frozen -3 to -2.5 was priced
+  // at a fifth of its value.
+  const at = (pool) => m.poolEdge({ sport: 'nfl', poolSpread: pool, marketSpread: -5,
+                                    homeTeam: 'H', awayTeam: 'A' }).spread;
+  const on3 = at(-3), half = at(-2.5);
+  assert.ok(on3.pushProb > 0.05, 'a frozen -3 must be able to land on its own number');
+  assert.ok(Math.abs((half.winProb - on3.winProb) - on3.pushProb) < 0.002,
+    `crossing the 3 should gain the push (${(on3.pushProb*100).toFixed(2)}), ` +
+    `gained ${((half.winProb - on3.winProb)*100).toFixed(2)}`);
+});
+
+test('a whole number and the half point behind it win equally often', () => {
+  // -3 and -3.5 both need the favourite to win by 4. The difference is only
+  // whether a 3-point win pushes or loses, and in this pool both lose.
+  const at = (pool) => m.poolEdge({ sport: 'nfl', poolSpread: pool, marketSpread: -5,
+                                    homeTeam: 'H', awayTeam: 'A' }).spread;
+  assert.ok(Math.abs(at(-3).winProb - at(-3.5).winProb) < 0.002,
+    'a push is a loss here, so -3 and -3.5 must be worth the same to the favourite');
+});
+
+test('win, push and the other side always sum to one', () => {
+  for (const [pool, mkt] of [[-3, -5], [-3.5, -5.5], [-7, -9], [2.5, 1], [-10, -13]]) {
+    const r = m.poolEdge({ sport: 'nfl', poolSpread: pool, marketSpread: mkt,
+                           homeTeam: 'H', awayTeam: 'A' }).spread;
+    const sum = r.winProb + r.pushProb + r.otherSideProb;
+    assert.ok(Math.abs(sum - 1) < 0.002,
+      `pool ${pool} vs market ${mkt} sums to ${sum.toFixed(4)}, not 1`);
+  }
+});
+
+test('a staler line still wins more often — the fix must not break the main signal', () => {
+  // Monotonic in the gap, from several starting lines. Deliberately NOT
+  // asserting that a given offset produces a fixed number: once key-number
+  // weights are in play the answer depends on WHICH margins the line demands,
+  // not just how far it sits from the market. A frozen -3.5 one point stale
+  // needs a 4-point win, and 4 is a weak number, so it is worth less than the
+  // same offset somewhere flat. That is the model working, not drifting.
+  for (const from of [-3.5, -6.5, -8.5, 2.5]) {
+    let last = 0;
+    for (const gap of [1, 2, 3, 5, 7]) {
+      const p = m.poolEdge({ sport: 'nfl', poolSpread: from, marketSpread: from - gap,
+                             homeTeam: 'H', awayTeam: 'A' }).spread.winProb;
+      assert.ok(p > last, `from ${from}: ${gap} pts stale (${(p*100).toFixed(1)}%) must beat ${gap - 1}`);
+      assert.ok(p > 0.45 && p < 0.85, `from ${from} at ${gap} pts: ${(p*100).toFixed(1)}% is not credible`);
+      last = p;
+    }
+  }
+});
+
+test('the stale-line rule still lands near what was measured', () => {
+  // Compared like with like. The backtest DROPPED pushes rather than counting
+  // them as losses, so its figures are conditional — win / (win + loss) — and
+  // the model has to be read the same way or it looks a point and a half worse
+  // than it is. Tolerance is wide on purpose: the measured numbers come from
+  // 140-330 bets across two seasons and carry their own error bars, so this
+  // guards against drift, not against being off by two points.
+  const conditional = (gap) => {
+    const o = m.coverOutcomes({ predictedMargin: gap, spread: 0, sigma: 10.82, sport: 'nfl' });
+    return o.win / (o.win + o.loss);
+  };
+  for (const [gap, measured] of [[1, 0.535], [2, 0.583], [5, 0.686], [7, 0.741]]) {
+    const got = conditional(gap);
+    assert.ok(Math.abs(got - measured) < 0.04,
+      `${gap} pts stale: model ${(got*100).toFixed(1)}%, backtest ${(measured*100).toFixed(1)}%`);
+  }
+  assert.ok(conditional(7) > conditional(5) && conditional(5) > conditional(2),
+    'and still monotonic in the gap');
+});
