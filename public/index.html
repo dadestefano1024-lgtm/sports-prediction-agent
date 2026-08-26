@@ -167,6 +167,10 @@
     .pool-pick.strong { border-left-color: #3fb950; }
     .pool-pick .headline { font-weight: 700; font-size: 15px; }
     .pool-pick .detail { color: #8b949e; font-size: 12px; margin-top: 3px; }
+    .unsupported { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+                   color: #d29922; border: 1px solid #4a3a12; border-radius: 3px;
+                   padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
+    .unsupported-note { color: #d29922; }
     .card-odds { background: #10151c; border: 1px solid #21262d; border-left: 3px solid #58a6ff;
                  border-radius: 6px; padding: 10px 12px; margin-bottom: 12px; }
     .card-headline { font-size: 14px; color: #c9d1d9; }
@@ -1403,11 +1407,19 @@
           ${data.best.map(b => `
             <div class="pool-pick ${b.gap >= 2 ? 'strong' : ''}">
               <div class="headline">${b.pick}
-                <span style="color:#8b949e;font-weight:400"> — ${(b.winProb * 100).toFixed(1)}%</span></div>
+                <span style="color:#8b949e;font-weight:400"> — ${(b.winProb * 100).toFixed(1)}%</span>
+                ${b.support < 1 ? '<span class="unsupported">not backed</span>' : ''}</div>
               <div class="detail">${b.matchup}</div>
               <div class="detail">
                 your line ${b.poolLine} &middot; market ${b.marketLine} &middot;
-                ${b.gap} pt${b.gap === 1 ? '' : 's'} stale${(() => {
+                ${b.gap} pt${b.gap === 1 ? '' : 's'} stale${b.support < 1
+                  // The probability above assumes the market's current number is the
+                  // truth. That is only earned when the market improved it, and under
+                  // two points it measurably did not. So the figure is still shown,
+                  // and shown as unearned.
+                  ? ' &middot; <span class="unsupported-note">a move this small did not improve the number '
+                    + '(50.5% over 190 games), so the percentage above is unearned</span>'
+                  : ''}${(() => {
                   // Three different things were all being printed as "push
                   // risk". A push lands exactly on the number and, in this
                   // pool, loses. A dead zone is a range where NEITHER side
