@@ -1944,6 +1944,51 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
  * space — the whole reason the discrete margin distribution exists. Ties break
  * on the gap, which is the more legible number of the two.
  */
+/**
+ * What a whole card is worth, in a pool that pays only for a perfect week.
+ *
+ * Every number the Pick 6 tab shows is per-pick, and in this format that is the
+ * wrong altitude. Six picks at 58% is a 3.8% week; six at 60% is 4.7%. The
+ * difference between those two cards is nearly a third of the equity and
+ * nothing on screen said so, because a card is a product and the interface only
+ * ever showed the factors.
+ *
+ * Pushes are the reason this matters most. A push is a loss here, so it does not
+ * cost one pick, it ends the week — and a game sitting on 3 pushes 9.3% of the
+ * time, taking about 8% off the whole card by itself. `pushCost` prices exactly
+ * that: what the card would be worth if every push were a refund, against what
+ * it is worth when they are not.
+ */
+function cardOdds(picks, { target = 6 } = {}) {
+  const usable = (picks || []).filter(p => p && Number.isFinite(p.winProb) &&
+                                            p.winProb > 0 && p.winProb <= 1);
+  if (!usable.length) return null;
+
+  const perfect = usable.reduce((acc, p) => acc * p.winProb, 1);
+  // The same card if a push refunded instead of losing — the counterfactual
+  // that isolates what the whole numbers are costing.
+  const refunded = usable.reduce((acc, p) =>
+    acc * Math.min(1, p.winProb + (Number.isFinite(p.pushProb) ? p.pushProb : 0)), 1);
+
+  const byWin = usable.slice().sort((a, b) => a.winProb - b.winProb);
+  const byPush = usable.slice().sort((a, b) =>
+    ((b.pushProb || 0) - (a.pushProb || 0)));
+
+  return {
+    picks: usable.length,
+    complete: usable.length === target,
+    // Six decimals, not five. A full card sits around 0.03 and rounding to
+    // five leaves barely three significant figures on the number the whole
+    // format turns on.
+    perfect: +perfect.toFixed(6),
+    oneIn: perfect > 0 ? Math.round(1 / perfect) : null,
+    // Fraction of the card's value that pushes are eating.
+    pushCost: refunded > 0 ? +(1 - perfect / refunded).toFixed(4) : 0,
+    weakest: byWin[0] || null,
+    pushiest: (byPush[0] && (byPush[0].pushProb || 0) > 0) ? byPush[0] : null,
+  };
+}
+
 function rankPoolPicks(candidates, count = 6) {
   return (candidates || [])
     // A candidate with no usable probability is dropped rather than sorted to
@@ -2674,6 +2719,7 @@ module.exports = {
   coverOutcomes,
   lineValueProb,
   favouredSide,
+  cardOdds,
   NFL_TOTAL_PMF,
   totalResidualSurvival,
   totalResidualProb,

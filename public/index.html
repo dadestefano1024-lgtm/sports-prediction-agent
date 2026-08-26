@@ -167,6 +167,13 @@
     .pool-pick.strong { border-left-color: #3fb950; }
     .pool-pick .headline { font-weight: 700; font-size: 15px; }
     .pool-pick .detail { color: #8b949e; font-size: 12px; margin-top: 3px; }
+    .card-odds { background: #10151c; border: 1px solid #21262d; border-left: 3px solid #58a6ff;
+                 border-radius: 6px; padding: 10px 12px; margin-bottom: 12px; }
+    .card-headline { font-size: 14px; color: #c9d1d9; }
+    .card-headline strong { color: #58a6ff; }
+    .card-sub { color: #6e7681; font-size: 12px; }
+    .card-line { font-size: 11px; color: #8b949e; margin-top: 4px; }
+    .card-warn { color: #d29922; }
     .pool-note {
       background: #161b22; border: 1px solid #30363d; border-radius: 6px;
       padding: 12px 14px; margin-bottom: 14px; color: #8b949e; font-size: 12px; line-height: 1.5;
@@ -1256,6 +1263,37 @@
       }
     }
 
+    // The card, not the picks.
+    //
+    // Every number on this tab was per-pick, which is the wrong altitude for a
+    // pool that pays only on a perfect week. Six picks at 58% is a 3.8% week and
+    // six at 60% is 4.7% — the better card is worth nearly a quarter more, and
+    // nothing on screen said so, because a card is a product and the interface
+    // only ever showed the factors.
+    function cardOddsHTML(card) {
+      if (!card || !card.picks) return '';
+      const pct = (x) => (x * 100).toFixed(2) + '%';
+      const bits = [];
+      if (!card.complete) {
+        bits.push(`<span class="card-warn">only ${card.picks} pick${card.picks === 1 ? '' : 's'} &mdash; a short card cannot win a perfect-week pool</span>`);
+      }
+      if (card.pushCost > 0.02) {
+        const who = card.pushiest ? card.pushiest.pick : 'a whole number';
+        bits.push(`<span class="card-warn">pushes are costing this card ${(card.pushCost * 100).toFixed(0)}% ` +
+          `&mdash; ${who} lands exactly on its number ${(card.pushiest.pushProb * 100).toFixed(1)}% of the time, ` +
+          `and a push loses here</span>`);
+      }
+      if (card.weakest && card.weakest.pick) {
+        bits.push(`weakest link: ${card.weakest.pick} at ${(card.weakest.winProb * 100).toFixed(1)}%`);
+      }
+      return `<div class="card-odds">
+        <div class="card-headline">This card goes ${card.picks}-0 about
+          <strong>1 week in ${card.oneIn}</strong>
+          <span class="card-sub">(${pct(card.perfect)})</span></div>
+        ${bits.map(b => `<div class="card-line">${b}</div>`).join('')}
+      </div>`;
+    }
+
     function renderPool() {
       const saved = savedPoolLines();
       if (!poolGames.length) {
@@ -1357,6 +1395,7 @@
         }
         target.innerHTML = `
           <h3 style="margin:0 0 10px">Best ${data.best.length} of ${data.considered}</h3>
+          ${cardOddsHTML(data.card)}
           ${data.best.map(b => `
             <div class="pool-pick ${b.gap >= 2 ? 'strong' : ''}">
               <div class="headline">${b.pick}

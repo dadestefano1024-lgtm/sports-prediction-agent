@@ -2124,3 +2124,51 @@ test('a book level with the market favours nobody', () => {
   assert.equal(m.favouredSide({}).side, null, 'missing fields must not throw');
   assert.equal(m.favouredSide().side, null, 'no argument at all must not throw');
 });
+
+// ---------------------------------------------------------------------------
+// A card is a product, not a list of factors
+// ---------------------------------------------------------------------------
+test('a perfect-week card multiplies its picks', () => {
+  const picks = Array.from({ length: 6 }, () => ({ winProb: 0.58, pushProb: 0 }));
+  const r = m.cardOdds(picks);
+  assert.ok(Math.abs(r.perfect - Math.pow(0.58, 6)) < 1e-6);
+  assert.equal(r.oneIn, 26);
+  assert.equal(r.complete, true);
+  assert.equal(r.pushCost, 0, 'clean half points cost nothing');
+});
+
+test('a push is priced as the card-killer it is in this pool', () => {
+  // A game on the 3 pushes 9.3% of the time and a push loses here, so it does
+  // not cost one pick — it ends the week.
+  const clean = m.cardOdds(Array.from({ length: 6 }, () => ({ winProb: 0.58, pushProb: 0 })));
+  const withThree = m.cardOdds([
+    { winProb: 0.534, pushProb: 0.093 },
+    ...Array.from({ length: 5 }, () => ({ winProb: 0.58, pushProb: 0 })),
+  ]);
+  assert.ok(withThree.perfect < clean.perfect, 'the whole number must cost the card');
+  assert.ok(withThree.pushCost > 0.10,
+    `pushes should eat a tenth of the card, got ${(withThree.pushCost * 100).toFixed(1)}%`);
+  assert.ok(withThree.pushiest, 'the drag should be identified');
+  assert.ok(Math.abs(withThree.pushiest.pushProb - 0.093) < 1e-9);
+});
+
+test('the card names its weakest pick', () => {
+  const r = m.cardOdds([
+    { winProb: 0.62, pushProb: 0, label: 'strong' },
+    { winProb: 0.51, pushProb: 0, label: 'weak' },
+    { winProb: 0.58, pushProb: 0, label: 'middling' },
+  ]);
+  assert.equal(r.weakest.label, 'weak');
+  assert.equal(r.complete, false, 'three picks is not a full card');
+  assert.equal(r.picks, 3);
+});
+
+test('cardOdds ignores unusable picks rather than poisoning the product', () => {
+  const r = m.cardOdds([
+    { winProb: 0.58 }, { winProb: null }, { winProb: 0 }, { winProb: 0.58 }, null,
+  ]);
+  assert.equal(r.picks, 2, 'a missing or zero probability is not a pick');
+  assert.ok(Math.abs(r.perfect - 0.58 * 0.58) < 1e-9);
+  assert.equal(m.cardOdds([]), null);
+  assert.equal(m.cardOdds(null), null);
+});

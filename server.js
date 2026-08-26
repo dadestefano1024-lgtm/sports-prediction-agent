@@ -3435,6 +3435,10 @@ app.post('/api/pool/:sport', async (req, res) => {
       weeks: NFL_WEEKS,
       count,
       best,
+      // What the CARD is worth, not just each pick. In a pool that pays only
+      // for a perfect week the product is the only number that decides
+      // anything, and every figure on this tab was a factor of it.
+      card: model.cardOdds(best, { target: count }),
       considered: candidates.length,
       recorded,
       games,
