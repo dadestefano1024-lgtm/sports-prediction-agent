@@ -3429,6 +3429,7 @@ app.post('/api/pool/:sport', async (req, res) => {
     for (const g of games) gamesById[g.id] = g;
     const recorded = await savePoolPicks(sport, best, gamesById);
 
+
     res.json({
       sport: sport.toUpperCase(),
       week,

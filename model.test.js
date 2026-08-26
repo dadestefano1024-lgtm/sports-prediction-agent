@@ -2172,3 +2172,20 @@ test('cardOdds ignores unusable picks rather than poisoning the product', () => 
   assert.equal(m.cardOdds([]), null);
   assert.equal(m.cardOdds(null), null);
 });
+
+// ---------------------------------------------------------------------------
+// A short card must not look better than a full one
+// ---------------------------------------------------------------------------
+test('a short card never reports odds a full card can be compared against', () => {
+  // Four picks multiply to a BIGGER number than six, so the raw product would
+  // make a half-filled card read "1 in 10" against a full card's "1 in 32".
+  const short = m.cardOdds([{ winProb: 0.55 }, { winProb: 0.55 }], { target: 6 });
+  assert.equal(short.complete, false);
+  assert.equal(short.shortBy, 4);
+  assert.equal(short.oneIn, null, 'a short card must not publish a comparable figure');
+
+  const full = m.cardOdds(Array.from({ length: 6 }, () => ({ winProb: 0.55 })), { target: 6 });
+  assert.equal(full.complete, true);
+  assert.equal(full.shortBy, 0);
+  assert.ok(full.oneIn > 0);
+});

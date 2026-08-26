@@ -1974,14 +1974,21 @@ function cardOdds(picks, { target = 6 } = {}) {
   const byPush = usable.slice().sort((a, b) =>
     ((b.pushProb || 0) - (a.pushProb || 0)));
 
+  const short = Math.max(0, target - usable.length);
   return {
     picks: usable.length,
-    complete: usable.length === target,
+    complete: short === 0,
+    // How many picks are missing. A short card is not a better card, and the
+    // raw product says otherwise: four picks multiply to a bigger number than
+    // six do, so a half-filled contrarian card reported "1 in 10" against a
+    // full card's "1 in 32". oneIn is withheld unless the card is complete, so
+    // nothing downstream can print that comparison.
+    shortBy: short,
     // Six decimals, not five. A full card sits around 0.03 and rounding to
     // five leaves barely three significant figures on the number the whole
     // format turns on.
     perfect: +perfect.toFixed(6),
-    oneIn: perfect > 0 ? Math.round(1 / perfect) : null,
+    oneIn: (short === 0 && perfect > 0) ? Math.round(1 / perfect) : null,
     // Fraction of the card's value that pushes are eating.
     pushCost: refunded > 0 ? +(1 - perfect / refunded).toFixed(4) : 0,
     weakest: byWin[0] || null,
