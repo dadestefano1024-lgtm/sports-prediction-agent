@@ -171,6 +171,9 @@
                    color: #d29922; border: 1px solid #4a3a12; border-radius: 3px;
                    padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
     .unsupported-note { color: #d29922; }
+    .share-state { margin-top: 8px; font-size: 11px; }
+    .share-on { color: #3fb950; }
+    .share-off { color: #d29922; }
     .card-odds { background: #10151c; border: 1px solid #21262d; border-left: 3px solid #58a6ff;
                  border-radius: 6px; padding: 10px 12px; margin-bottom: 12px; }
     .card-headline { font-size: 14px; color: #c9d1d9; }
@@ -1163,6 +1166,15 @@
     let poolGames = [];
     const POOL_KEY = 'poolLines:nfl';
 
+    // The week's card as the SERVER has it, which is the copy both players see.
+    // localStorage stays as a fallback for when the database is unreachable and
+    // as the thing that makes typing feel instant, but it is no longer the
+    // source of truth — it could not be, because it only ever existed on one
+    // device and two people play this pool off one sheet.
+    let sharedLines = null;
+    let sharedAt = null;
+    let sharedOk = false;
+
     const savedPoolLines = () => {
       try { return JSON.parse(localStorage.getItem(POOL_KEY) || '{}'); } catch (e) { return {}; }
     };
@@ -1188,29 +1200,34 @@
           // poolEdge then reads as a both-lay line the pool never posted and
           // recommends the wrong side of.
           out[g.id] = { spread, awaySpread, total,
-                        awayTouched: !!(ap && ap.dataset.touched === '1') };
+                        mirrorTouched: !!(sp && sp.dataset.touched === '1') };
         }
       }
       try { localStorage.setItem(POOL_KEY, JSON.stringify(out)); } catch (e) { /* ignore */ }
+      sharePoolLines(out);
       return out;
     }
 
-    // Most pool lines are two-sided, so the away number mirrors the home one and
-    // typing it twice would be busywork. It auto-fills until it is edited by
-    // hand, and then it is left alone — which is the case that matters, because
-    // a tight game gets -2 against -2 with no plus money on either side.
-    function mirrorAway(id) {
-      const home = document.getElementById('ps-' + id);
+    // Most pool lines are two-sided, so one number mirrors the other and typing
+    // it twice would be busywork. It auto-fills until it is edited by hand, and
+    // then it is left alone — which is the case that matters, because a tight
+    // game gets -2 against -2 with no plus money on either side.
+    //
+    // The AWAY box drives it now. The pool posts its card the way the matchup
+    // reads, away team first, so that is the number being copied off the sheet
+    // and it should be the first box under the cursor.
+    function mirrorHome(id) {
       const away = document.getElementById('pa-' + id);
+      const home = document.getElementById('ps-' + id);
       if (!home || !away) return;
-      if (away.dataset.touched !== '1') {
-        away.value = home.value === '' ? '' : String(-Number(home.value));
+      if (home.dataset.touched !== '1') {
+        home.value = away.value === '' ? '' : String(-Number(away.value));
       }
       persistPoolLines();
     }
-    function markAwayTouched(id) {
-      const away = document.getElementById('pa-' + id);
-      if (away) away.dataset.touched = '1';
+    function markHomeTouched(id) {
+      const home = document.getElementById('ps-' + id);
+      if (home) home.dataset.touched = '1';
       persistPoolLines();
     }
 
@@ -1252,6 +1269,58 @@
       </div>`;
     }
 
+    async function loadSharedLines() {
+      try {
+        const r = await fetch(`/api/pool/nfl/lines?week=${nflWeek || ''}`);
+        const d = await r.json();
+        sharedOk = !!d.shared;
+        sharedLines = d.lines || {};
+        sharedAt = d.updatedAt || null;
+      } catch (e) {
+        // No shared copy available; the local one still works on this device.
+        sharedOk = false; sharedLines = null; sharedAt = null;
+      }
+    }
+
+    // Written back on a timer rather than on every keystroke, so typing a
+    // two-digit number is one round trip instead of two.
+    let shareTimer = null;
+    function sharePoolLines(lines) {
+      clearTimeout(shareTimer);
+      shareTimer = setTimeout(async () => {
+        try {
+          const r = await fetch('/api/pool/nfl/lines', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ week: nflWeek, lines }),
+          });
+          const d = await r.json();
+          sharedOk = !!d.shared;
+          sharedLines = lines;
+          sharedAt = new Date().toISOString();
+          const el = document.getElementById('share-state');
+          if (el) el.innerHTML = shareStateHTML();
+        } catch (e) { /* the local copy still holds */ }
+      }, 700);
+    }
+
+    function shareStateHTML() {
+      if (!sharedOk) {
+        return '<span class="share-off">Saved on this device only &mdash; the shared copy is unavailable, ' +
+               'so nobody else can see these yet.</span>';
+      }
+      const when = sharedAt ? new Date(sharedAt) : null;
+      const ago = when ? (() => {
+        const mins = Math.round((Date.now() - when.getTime()) / 60000);
+        if (mins < 1) return 'just now';
+        if (mins < 60) return mins + ' min ago';
+        const hrs = Math.round(mins / 60);
+        if (hrs < 24) return hrs + (hrs === 1 ? ' hour ago' : ' hours ago');
+        return Math.round(hrs / 24) + ' days ago';
+      })() : null;
+      return '<span class="share-on">Shared &mdash; whoever enters these, everyone playing sees them.' +
+             (ago ? ' Last change ' + ago + '.' : ' Nothing entered yet.') + '</span>';
+    }
+
     async function loadPool() {
       const content = document.getElementById('content');
       content.innerHTML = '<div class="loading"><div class="spinner"></div><div>Loading this week&rsquo;s games and market lines...</div></div>';
@@ -1261,6 +1330,9 @@
         if (data.error) throw new Error(data.error);
         poolGames = data.games || [];
         if (data.week) { nflWeek = data.week; nflWeeks = data.weeks || nflWeeks; }
+        // Asked for AFTER the games, because it is keyed by the week the server
+        // resolved rather than whatever this tab thought the week was.
+        await loadSharedLines();
         renderPool();
       } catch (err) {
         content.innerHTML = `<div class="error">❌ ${err.message}</div>`;
@@ -1303,7 +1375,11 @@
     }
 
     function renderPool() {
-      const saved = savedPoolLines();
+      // Shared first. A row the server has beats the local copy, because the
+      // local copy is whatever THIS browser last typed and the server's is what
+      // the pool actually posted.
+      const local = savedPoolLines();
+      const saved = sharedOk ? { ...local, ...(sharedLines || {}) } : local;
       if (!poolGames.length) {
         document.getElementById('content').innerHTML =
           '<div class="no-games">No upcoming NFL games in the next week.</div>';
@@ -1323,13 +1399,13 @@
               g.earlyWeek ? ` &middot; <span class="pool-early">${g.kickoffDay || 'early'} &mdash; played before you pick</span>` : ''
             }</div></td>
             <td class="pool-market">${ms}</td>
-            <td><input id="ps-${g.id}" type="number" step="0.5" placeholder="—"
-                       value="${v.spread ?? ''}" oninput="mirrorAway('${g.id}')"></td>
             <td><input id="pa-${g.id}" type="number" step="0.5" placeholder="—"
+                       value="${v.awaySpread ?? ''}" oninput="mirrorHome('${g.id}')"></td>
+            <td><input id="ps-${g.id}" type="number" step="0.5" placeholder="—"
                        class="${bothLay ? 'pool-bothlay' : ''}"
-                       data-touched="${v.awayTouched ? '1' : '0'}"
-                       value="${v.awaySpread ?? (v.spread !== null && v.spread !== undefined ? -v.spread : '')}"
-                       oninput="markAwayTouched('${g.id}')"></td>
+                       data-touched="${v.mirrorTouched ? '1' : '0'}"
+                       value="${v.spread ?? (v.awaySpread !== null && v.awaySpread !== undefined ? -v.awaySpread : '')}"
+                       oninput="markHomeTouched('${g.id}')"></td>
             <td class="pool-market">${mt}</td>
             <td><input id="pt-${g.id}" type="number" step="0.5" placeholder="—"
                        value="${v.total ?? ''}" oninput="persistPoolLines()"></td>
@@ -1340,9 +1416,10 @@
         ${weekPickerHTML(nflWeek, nflWeeks)}
         <div class="pool-note">
           Enter your pool&rsquo;s lines beside the current number at your book. Each team&rsquo;s
-          number goes in its own box, as the pool posts it &mdash; so a normal line is
-          <strong>-3</strong> and <strong>+3</strong>, and the away box fills itself in until you
-          change it. Your entries are saved in this browser, so you only type them once a week.
+          number goes in its own box, in the order the matchup reads &mdash; away team first,
+          the way the pool posts it. So a normal line is <strong>+3</strong> away and
+          <strong>-3</strong> home, and the home box fills itself in until you change it.
+          <div id="share-state" class="share-state">${shareStateHTML()}</div>
           <br><br>
           Where the pool lays points BOTH ways &mdash; <strong>-2</strong> against
           <strong>-2</strong> on a tight game, no plus money anywhere &mdash; type both numbers.
@@ -1374,7 +1451,7 @@
               // changed: it is the book being bet at, not a consensus.
               const froms = [...new Set(poolGames.map(g => g.marketFrom).filter(Boolean))];
               return froms.length === 1 ? froms[0] : 'Market';
-            })()} spread</th><th>Home line</th><th>Away line</th>
+            })()} spread</th><th>Away line</th><th>Home line</th>
             <th>Market total</th><th>Your total</th>
           </tr></thead>
           <tbody>${rows}</tbody>

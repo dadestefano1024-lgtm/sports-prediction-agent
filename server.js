@@ -60,6 +60,30 @@ if (process.env.DATABASE_URL) {
       // number and must not be averaged in with the others.
       await pool.query(
         `ALTER TABLE picks ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'recommendation'`);
+      // The pool's OWN lines, shared rather than per-browser.
+      //
+      // These lived in localStorage, which meant they lived on one device. Two
+      // people play this pool off one card: whoever types the numbers in on
+      // Wednesday is the only one who can see them, and the other is looking at
+      // an empty table wondering if the app is broken. The lines are not a
+      // personal preference, they are a fact about the week that both players
+      // need, so they belong on the server keyed by week.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS pool_lines (
+          sport TEXT NOT NULL,
+          week INTEGER NOT NULL,
+          game_id TEXT NOT NULL,
+          home_spread NUMERIC,
+          away_spread NUMERIC,
+          total NUMERIC,
+          -- Whether the AUTO-FILLED box was typed in by hand. Deliberately
+          -- not named for a side: which box mirrors which depends on column
+          -- order, and that just changed once.
+          mirror_touched BOOLEAN DEFAULT FALSE,
+          updated_at TIMESTAMPTZ DEFAULT NOW(),
+          PRIMARY KEY (sport, week, game_id)
+        );
+      `);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_picks_game ON picks(espn_game_id);`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_picks_ungraded ON picks(result) WHERE result IS NULL;`);
       dbReady = true;
@@ -71,6 +95,69 @@ if (process.env.DATABASE_URL) {
   })();
 } else {
   console.log('[DB] DATABASE_URL not set — pick tracking disabled');
+}
+
+// ============================================================================
+// SHARED POOL LINES — one card per week, visible to everyone who plays it
+// ============================================================================
+
+/** Everything entered for one week, shaped the way the interface stores it. */
+async function getSharedPoolLines(sport, week) {
+  if (!dbReady || !pool) return { lines: {}, updatedAt: null, shared: false };
+  try {
+    const { rows } = await pool.query(
+      `SELECT game_id, home_spread, away_spread, total, mirror_touched, updated_at
+         FROM pool_lines WHERE sport = $1 AND week = $2`, [sport, week]);
+    const lines = {};
+    let newest = null;
+    const num = (v) => (v === null || v === undefined) ? null : Number(v);
+    for (const r of rows) {
+      lines[r.game_id] = { spread: num(r.home_spread), awaySpread: num(r.away_spread),
+                           total: num(r.total), mirrorTouched: !!r.mirror_touched };
+      if (!newest || r.updated_at > newest) newest = r.updated_at;
+    }
+    return { lines, updatedAt: newest, shared: true };
+  } catch (err) {
+    console.error('[POOL_LINES] read:', err.message);
+    return { lines: {}, updatedAt: null, shared: false };
+  }
+}
+
+/**
+ * Replace the week's card. A row with nothing in it is deleted rather than
+ * stored as three nulls, so clearing a box on one device clears it on the other
+ * instead of leaving a ghost the next reader cannot get rid of.
+ */
+async function saveSharedPoolLines(sport, week, lines) {
+  if (!dbReady || !pool) return { saved: 0, shared: false };
+  const entries = Object.entries(lines || {});
+  let saved = 0;
+  try {
+    for (const [gameId, v] of entries) {
+      const clean = (x) => (x === null || x === undefined || x === '' ||
+                            !Number.isFinite(Number(x))) ? null : Number(x);
+      const hs = clean(v && v.spread), as = clean(v && v.awaySpread), tt = clean(v && v.total);
+      if (hs === null && as === null && tt === null) {
+        await pool.query(
+          `DELETE FROM pool_lines WHERE sport = $1 AND week = $2 AND game_id = $3`,
+          [sport, week, gameId]);
+        continue;
+      }
+      await pool.query(
+        `INSERT INTO pool_lines (sport, week, game_id, home_spread, away_spread, total, mirror_touched, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         ON CONFLICT (sport, week, game_id) DO UPDATE SET
+           home_spread = EXCLUDED.home_spread, away_spread = EXCLUDED.away_spread,
+           total = EXCLUDED.total, mirror_touched = EXCLUDED.mirror_touched,
+           updated_at = NOW()`,
+        [sport, week, gameId, hs, as, tt, !!(v && v.mirrorTouched)]);
+      saved++;
+    }
+    return { saved, shared: true };
+  } catch (err) {
+    console.error('[POOL_LINES] write:', err.message);
+    return { saved, shared: false, error: err.message };
+  }
 }
 
 // ============================================================================
@@ -3167,6 +3254,37 @@ function kicksOffBeforeSunday(iso) {
   const day = easternWeekday(iso);
   return day === 'Wed' || day === 'Thu' || day === 'Fri' || day === 'Sat';
 }
+
+// The week's shared card. Both routes sit above /api/pool/:sport, which only
+// matches a single segment, so there is no shadowing — they are here because
+// they belong beside it, not because order matters.
+app.get('/api/pool/:sport/lines', async (req, res) => {
+  const sport = String(req.params.sport || '').toLowerCase();
+  if (!ESPN_SCOREBOARD_PATHS[sport]) {
+    return res.status(400).json({ error: `Unsupported sport: ${sport}` });
+  }
+  const week = Number.isFinite(Number(req.query.week))
+    ? Math.min(NFL_WEEKS, Math.max(1, Number(req.query.week)))
+    : await currentNflWeek();
+  const out = await getSharedPoolLines(sport, week);
+  res.json({ sport: sport.toUpperCase(), week, ...out });
+});
+
+app.put('/api/pool/:sport/lines', async (req, res) => {
+  const sport = String(req.params.sport || '').toLowerCase();
+  if (!ESPN_SCOREBOARD_PATHS[sport]) {
+    return res.status(400).json({ error: `Unsupported sport: ${sport}` });
+  }
+  const week = Number.isFinite(Number(req.body && req.body.week))
+    ? Math.min(NFL_WEEKS, Math.max(1, Number(req.body.week)))
+    : await currentNflWeek();
+  const result = await saveSharedPoolLines(sport, week, (req.body && req.body.lines) || {});
+  // 200 even when the database is down. The interface keeps its own copy and
+  // the card still works on this device; telling it the save failed would be
+  // accurate but the only useful thing it could do with that is what it
+  // already does.
+  res.json({ sport: sport.toUpperCase(), week, ...result });
+});
 
 app.get('/api/pool/:sport', async (req, res) => {
   const sport = String(req.params.sport || '').toLowerCase();
