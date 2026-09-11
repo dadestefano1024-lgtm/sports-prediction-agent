@@ -1216,12 +1216,21 @@
     // The AWAY box drives it now. The pool posts its card the way the matchup
     // reads, away team first, so that is the number being copied off the sheet
     // and it should be the first box under the cursor.
+    // The pool's tight-game format is BOTH sides laying two, and it never posts
+    // -1/+1, so a -2 is not a two-point favourite — it is that format. Mirroring
+    // it to +2 was wrong every single time and had to be corrected by hand on
+    // every tight game.
+    const BOTH_LAY = -2;
     function mirrorHome(id) {
       const away = document.getElementById('pa-' + id);
       const home = document.getElementById('ps-' + id);
       if (!home || !away) return;
       if (home.dataset.touched !== '1') {
-        home.value = away.value === '' ? '' : String(-Number(away.value));
+        if (away.value === '') home.value = '';
+        else {
+          const n = Number(away.value);
+          home.value = String(n === BOTH_LAY ? BOTH_LAY : -n);
+        }
       }
       persistPoolLines();
     }
@@ -1391,7 +1400,16 @@
         // and it is worth marking because those are the worst picks available.
         const bothLay = Number.isFinite(v.spread) && Number.isFinite(v.awaySpread) &&
                         Math.abs(v.spread + v.awaySpread) > 1e-9;
-        const ms = g.marketSpread === null ? '—' : (g.marketSpread > 0 ? '+' + g.marketSpread : g.marketSpread);
+        // A bare number here said nothing about WHOSE it was. The same game can
+        // read Baltimore -3 one day and Baltimore +1 the next, and the column
+        // showed only the digits, so there was no way to tell which side the
+        // market had moved to. Always name the side LAYING the points.
+        const shortName = (full) => String(full || '').split(' ').pop();
+        const ms = g.marketSpread === null ? '—'
+          : g.marketSpread === 0 ? 'pick &rsquo;em'
+          : g.marketSpread < 0
+            ? `${shortName(g.homeTeam)} ${g.marketSpread}`
+            : `${shortName(g.awayTeam)} ${-g.marketSpread}`;
         const mt = g.marketTotal === null ? '—' : g.marketTotal;
         return `
           <tr>
