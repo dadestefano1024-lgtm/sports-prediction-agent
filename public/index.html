@@ -1422,22 +1422,19 @@
         return `
           <tr>
             <td>${g.awayTeam} @ <strong>${g.homeTeam}</strong>${(() => {
-              // Who is out, beside the matchup. A count, not a verdict — this
-              // tab has no measured injury effect and will not invent one, but
-              // a side missing four starters against a league median of one is
-              // the reason a number moves on a Thursday, and it was the single
-              // biggest thing the prediction cards had that this tab did not.
+              // Only when it is worth a line. The first version printed both
+              // teams' counts and the league median on all sixteen games, which
+              // is three numbers per row to say "normal" fifteen times. A side
+              // three or more above the median is the case that moves a price;
+              // everything else is the ordinary attrition of a season and does
+              // not need saying.
               const inj = g.injuriesOut;
-              if (!inj) return '';
-              const base = Number.isFinite(inj.baseline) ? inj.baseline : null;
-              const heavy = (n) => base !== null && Number.isFinite(n) && n >= base + 3;
-              const side = (label, n) => !Number.isFinite(n) ? ''
-                : `<span class="${heavy(n) ? 'inj-heavy' : 'inj-plain'}">${label} ${n} out</span>`;
-              const bits = [side(shortName(g.awayTeam), inj.away), side(shortName(g.homeTeam), inj.home)]
-                .filter(Boolean);
-              if (!bits.length) return '';
-              return `<div class="pool-inj">${bits.join(' &middot; ')}${
-                base !== null ? ` <span class="inj-base">(league median ${base})</span>` : ''}</div>`;
+              if (!inj || !Number.isFinite(inj.baseline)) return '';
+              const notable = [[shortName(g.awayTeam), inj.away], [shortName(g.homeTeam), inj.home]]
+                .filter(([, n]) => Number.isFinite(n) && n >= inj.baseline + 3);
+              if (!notable.length) return '';
+              return `<div class="pool-inj">${notable
+                .map(([t, n]) => `${t} missing ${n}`).join(' &middot; ')}</div>`;
             })()}<div class="pool-market">${g.gameTime}${
               g.earlyWeek ? ` &middot; <span class="pool-early">${g.kickoffDay || 'early'} &mdash; played before you pick</span>` : ''
             }</div></td>
@@ -1448,32 +1445,34 @@
               // number you are holding is behind a BETTER one is entirely a
               // question about movement.
               if (!Number.isFinite(g.openSpread) || !Number.isFinite(g.spreadMovement)) return '';
-              if (Math.abs(g.spreadMovement) < 0.25) {
-                return '<div class="pool-moved none">has not moved</div>';
-              }
+              // Under a point is not a move worth a line of its own, and
+              // "has not moved" on half the board was noise pretending to be
+              // information. Where it DID move, one line: where it started.
+              // The size is the difference between the two numbers, which the
+              // reader can see, so printing it as well said everything twice.
+              const size = Math.abs(g.spreadMovement);
+              if (size < 1) return '';
               const openShown = g.openSpread === 0 ? 'pick &rsquo;em'
                 : g.openSpread < 0 ? `${shortName(g.homeTeam)} ${g.openSpread}`
                 : `${shortName(g.awayTeam)} ${-g.openSpread}`;
-              const size = Math.abs(g.spreadMovement);
-              return `<div class="pool-moved ${size >= 2 ? 'big' : ''}">opened ${openShown}
-                &middot; moved ${size}</div>`;
+              return `<div class="pool-moved ${size >= 2 ? 'big' : ''}">from ${openShown}</div>`;
             })()}${(() => {
-              // The week day by day, which is the window that actually matters:
-              // the pool freezes its card on Wednesday, so what the market said
-              // on Monday and what it says on Sunday bracket the number being
-              // held. ESPN sells open and current and nothing in between, so
-              // this is recorded rather than fetched — and it is empty until
-              // the recorder has been running, which is why it hides itself
-              // instead of showing one lonely point.
-              const days = g.lineDays || [];
+              // The week day by day — but only when the days actually differ.
+              // A track reading "Thu -3 Fri -3 Sat -3" is four words to say the
+              // number held, which the line above already implies. It earns its
+              // space when it shows the number moving AFTER the pool froze its
+              // card, which is the whole reason for recording it.
+              const days = (g.lineDays || []).filter(d => Number.isFinite(d.spread));
               if (days.length < 2) return '';
+              const spreads = days.map(d => d.spread);
+              if (Math.max(...spreads) === Math.min(...spreads)) return '';
               const label = (d) => {
                 const [y, m, dd] = d.day.split('-').map(Number);
                 return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(y, m - 1, dd).getDay()];
               };
-              const sgn = (n) => n === null || n === undefined ? '—' : (n > 0 ? '+' + n : String(n));
+              const sgn = (n) => n > 0 ? '+' + n : String(n);
               return `<div class="pool-track">${days.map(d =>
-                `${label(d)} ${sgn(d.spread)}`).join(' &middot; ')}</div>`;
+                `${label(d)} ${sgn(d.spread)}`).join(' ')}</div>`;
             })()}</td>
             <td><input id="pa-${g.id}" type="number" step="0.5" placeholder="—"
                        value="${v.awaySpread ?? ''}" oninput="mirrorHome('${g.id}')"></td>
