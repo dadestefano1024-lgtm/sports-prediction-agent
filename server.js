@@ -3895,6 +3895,13 @@ app.post('/api/pool/:sport', async (req, res) => {
       // for a perfect week the product is the only number that decides
       // anything, and every figure on this tab was a factor of it.
       card: model.cardOdds(best, { target: count }),
+      // Every candidate, ranked, not just the ones that made the card. A game
+      // outside the six was priced exactly like the ones inside it — it just
+      // came out lower — so the interface can give every game an answer instead
+      // of leaving most of the board with no opinion on it. Sourced here rather
+      // than from the predictions path, which only knows a pool line once it has
+      // been saved to the database.
+      ranked: model.rankPoolPicks(candidates, candidates.length),
       considered: candidates.length,
       recorded,
       games,

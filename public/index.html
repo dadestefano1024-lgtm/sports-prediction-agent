@@ -172,7 +172,15 @@
     .pool-pick.strong { border-left-color: #3fb950; }
     .pool-pick .headline { font-weight: 700; font-size: 15px; }
     .pool-pick .detail { color: #8b949e; font-size: 12px; margin-top: 3px; }
-            .pool-block-off { border-left-color: #30363d !important; color: #6e7681; font-size: 11px; }
+            .pool-block-off { border-left-color: #30363d !important; }
+    .pool-block-off .pool-block-head { color: #6e7681; }
+    .pool-block-off .pool-block-head strong { color: #8b949e; }
+    .pool-block-off .pool-block-prob { color: #6e7681; }
+    .feed-warn { background: #2b2113; border: 1px solid #4a3a12; border-radius: 6px;
+                 padding: 9px 12px; margin-bottom: 12px; font-size: 12px; color: #d29922; }
+    .rec-badge { background: #1f6feb; color: #fff; font-size: 10px; font-weight: 700;
+                 text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 6px;
+                 border-radius: 3px; vertical-align: 2px; }
     .pool-block { background: #10151c; border-left: 3px solid #58a6ff; border-radius: 4px;
                   padding: 8px 10px; margin-bottom: 10px; }
     .pool-block-head { font-size: 13px; color: #8b949e; }
@@ -1517,7 +1525,7 @@
      * off a line that moved six is visibly different from two points off one
      * that moved two, without needing a label to interpret it.
      */
-    function poolBlockHTML(b) {
+    function poolBlockHTML(b, isRecommended) {
       if (!b) return '';
       const notes = [];
       if (b.overlapProb > 0.005) notes.push(`${(b.overlapProb * 100).toFixed(1)}% both sides win`);
@@ -1525,7 +1533,8 @@
       if (b.pushProb > 0.005) notes.push(`${(b.pushProb * 100).toFixed(1)}% lands on the number — a loss here`);
       const mv = b.market === 'total' ? b.totalMovement : b.spreadMovement;
       return `<div class="pool-block">
-        <div class="pool-block-head">Your pool pick
+        <div class="pool-block-head">${isRecommended
+            ? '<span class="rec-badge">Recommended</span> ' : ''}Your pool pick
           <strong>${b.pick}</strong>
           <span class="pool-block-prob">${(b.winProb * 100).toFixed(1)}%</span></div>
         <div class="pool-block-line">your line ${b.poolLine} &middot; market ${b.marketLine}
@@ -1763,6 +1772,12 @@
         // denominator did not match anything on screen. Say what was actually
         // compared: the games with a line entered.
         const entered = new Set(picks.map(b => b.gameId));
+        // Best candidate per game across the whole board, for the games that
+        // did not make the six.
+        const bestPerGame = {};
+        for (const c of (data.ranked || [])) {
+          if (!bestPerGame[c.gameId]) bestPerGame[c.gameId] = c;
+        }
         const withLines = poolGames.filter(g => {
           const v = (sharedOk ? (sharedLines || {}) : savedPoolLines())[g.id];
           return v && (Number.isFinite(v.spread) || Number.isFinite(v.total));
@@ -1781,6 +1796,20 @@
             body: JSON.stringify({ sport: 'nfl', ...(nflWeek ? { week: nflWeek } : {}) }),
           });
           const pred = await r.json();
+          // When the paid odds feed is exhausted every game prices as No lean
+          // and no verdict box renders anywhere, which reads like the app
+          // having no opinion rather than no data. Say which it is, because
+          // the two look identical on screen and only one of them is fixable.
+          const noBook = (pred.games || []).length > 0 &&
+            !(pred.games || []).some(x => x.myBook);
+          if (noBook) {
+            const holder = document.getElementById('p6-cards');
+            if (holder) holder.insertAdjacentHTML('beforebegin',
+              '<div class="feed-warn">The paid odds feed has no data right now, so there is no ' +
+              'book price to compare and every game below reads as <em>No lean</em>. The pool ' +
+              'numbers, the market moves, the injuries and the write-ups are all from free ' +
+              'sources and are unaffected.</div>');
+          }
           // Every game, not just the six.
           //
           // Danny has said twice that he wants to see the whole board, and the
@@ -1795,10 +1824,28 @@
             target: 'p6-cards',
             header: '',
             onlyIds: [...pickIds, ...restIds],
-            extraFor: (g) => byGame[g.id]
-              ? poolBlockHTML(byGame[g.id])
-              : '<div class="pool-block pool-block-off">Not in your best ' + picks.length +
-                ' this week &mdash; shown because a card you can see is a card you can argue with.</div>',
+            extraFor: (g) => {
+              const b = byGame[g.id];
+              if (b) return poolBlockHTML(b, true);
+              // Not one of the six, but still worth an answer. The pool line on
+              // this game was priced exactly like the others — it just came out
+              // lower — so the honest thing is to say which side it points at
+              // rather than leave a card with no opinion on it.
+              const p = bestPerGame[g.id] || g.poolPick;
+              if (!p) {
+                return '<div class="pool-block pool-block-off">No pool line entered for this game.</div>';
+              }
+              return `<div class="pool-block pool-block-off">
+                <div class="pool-block-head">If I had to pick
+                  <strong>${p.pick}</strong>
+                  <span class="pool-block-prob">${(p.winProb * 100).toFixed(1)}%</span></div>
+                <div class="pool-block-line">yours ${p.poolLine} &middot; market ${p.marketLine}
+                  &middot; ${p.gap} pt${p.gap === 1 ? '' : 's'} &mdash;
+                  ${p.winProb >= 0.52 ? 'playable, just not top six'
+                    : p.winProb >= 0.5 ? 'a coin flip; the number is barely better than the market'
+                    : 'below even money &mdash; the market has moved past your number here'}</div>
+              </div>`;
+            },
             hidePoolFlag: true,
             poolFor: (g) => (sharedOk ? (sharedLines || {}) : savedPoolLines())[g.id] || null,
           });
