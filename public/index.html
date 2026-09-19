@@ -191,6 +191,20 @@
     .rec-badge { background: #1f6feb; color: #fff; font-size: 10px; font-weight: 700;
                  text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 6px;
                  border-radius: 3px; vertical-align: 2px; }
+    /* Grey and amber rather than blue, so a slot that had to be filled never
+       reads at a glance like a pick the numbers argued for. */
+    .flat-badge { background: #30363d; color: #c9d1d9; font-size: 10px; font-weight: 700;
+                  text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 6px;
+                  border-radius: 3px; vertical-align: 2px; }
+    .avoid-badge { background: #7d4e00; color: #ffd9a0; font-size: 10px; font-weight: 700;
+                   text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 6px;
+                   border-radius: 3px; vertical-align: 2px; }
+    .pool-filler { font-size: 11px; color: #8b949e; margin-top: 5px; line-height: 1.45; }
+    .pool-flat { font-size: 11px; color: #8b949e; margin-top: 5px; line-height: 1.45; }
+    .pool-rounding { background: #10151c; border-left: 3px solid #8b949e; border-radius: 4px;
+                     padding: 10px 12px; margin: 0 0 12px; font-size: 12px; color: #8b949e;
+                     line-height: 1.55; }
+    .pool-rounding strong { color: #c9d1d9; }
     .pool-block { background: #10151c; border-left: 3px solid #58a6ff; border-radius: 4px;
                   padding: 8px 10px; margin-bottom: 10px; }
     .pool-block-head { font-size: 13px; color: #8b949e; }
@@ -1566,16 +1580,58 @@
              this pool, so it comes off both sides. The better half is still only
              ${(b.winProb * 100).toFixed(1)}%. Spend the slot elsewhere.</div>`
         : '';
+      // The badge follows the NUMBER, not the slot.
+      //
+      // Every one of the six used to be badged "Recommended" because it made
+      // the six. On Week 2 that put the badge on twelve picks priced at exactly
+      // 50.0% and one at 46.9%, which is the app saying the opposite of what it
+      // had just computed — and the reader could tell, because a card of nothing
+      // but underdogs cannot all be edges. The pool still needs six picks, so
+      // nothing is withheld; the ones with no edge are labelled as what they
+      // are and the slot is filled anyway.
+      const grade = b.grade || (b.winProb > 0.5005 ? 'edge'
+                              : b.winProb < 0.4995 ? 'avoid' : 'coinflip');
+      const badge = !isRecommended ? ''
+        : grade === 'edge' ? '<span class="rec-badge">Recommended</span> '
+        : grade === 'avoid' ? '<span class="avoid-badge">Avoid</span> '
+        : '<span class="flat-badge">Coin flip</span> ';
       return `<div class="pool-block${bothLose ? ' pool-block-dead' : ''}">
-        <div class="pool-block-head">${isRecommended
-            ? '<span class="rec-badge">Recommended</span> ' : ''}Your pool pick
+        <div class="pool-block-head">${badge}Your pool pick
           <strong>${b.pick}</strong>
           <span class="pool-block-prob">${(b.winProb * 100).toFixed(1)}%</span></div>
+        ${isRecommended && grade !== 'edge' ? `<div class="pool-filler">In your six because
+          the card needs six, not because the number is good. ${grade === 'avoid'
+            ? 'This one is below even money'
+            : 'This is a straight coin flip'} &mdash; if you have a game you like for a
+          reason the app cannot see, play it over this.</div>` : ''}
         <div class="pool-block-line">your line ${b.poolLine} &middot; market ${b.marketLine}
           &middot; <strong>${b.gap} pt${b.gap === 1 ? '' : 's'} of daylight</strong>${
           Number.isFinite(mv) && Math.abs(mv) >= 0.5
             ? ` &middot; the market itself moved ${Math.abs(mv)}` : ''}</div>
         ${notes.length ? `<div class="pool-block-note">${notes.join(' &middot; ')}</div>` : ''}
+        ${(() => {
+          // Movement measured from where the card was POSTED, not from the
+          // open. The open is Monday or earlier and was six points stale on one
+          // game this week, so it cannot say what has happened since Wednesday.
+          // The posted number is recovered from the card's own rounding and is
+          // known to half a point, so this reports what survives that.
+          const mv = b.movedSincePosted;
+          if (!mv) return '';
+          if (mv.direction === 'none') {
+            return `<div class="pool-flat">The market has not moved off your number by more
+              than the rounding itself, so there is nothing here either side can hold.
+              Both tickets price at about even money.</div>`;
+          }
+          const amt = `${mv.guaranteed} pt${mv.guaranteed === 1 ? '' : 's'}`;
+          return mv.helpsThisSide
+            ? `<div class="pool-with">Since your card was posted the market has moved at least
+                <strong>${amt}</strong> toward this side. That is the part that survives the
+                rounding, and it is the only kind of movement worth anything here.</div>`
+            : `<div class="pool-against">Since your card was posted the market has moved at least
+                <strong>${amt}</strong> the other way, toward
+                the ${mv.direction === 'favourite' ? 'favourite' : 'underdog'}. Your number is on
+                the wrong end of that.</div>`;
+        })()}
         ${(() => {
           // Which way the money has been going, relative to the side being
           // picked. Shown whenever the number gives no edge, because that is
@@ -1874,12 +1930,52 @@
           return v && (Number.isFinite(v.spread) || Number.isFinite(v.total));
         }).length;
 
+        // How many of the six are actually edges. Worth its own line at the top,
+        // because "your best 6" reads as six recommendations and on a card
+        // sitting half a point off the market it is usually one.
+        const edges = picks.filter(b => (b.grade || '') === 'edge').length;
+        const edgeLine = picks.length === 0 ? '' : edges === 0
+          ? `<div class="pool-rounding">None of these has an edge in the number this week.
+               They are the best of a board where your lines and the market agree, so treat all
+               six as coin flips and lean on whatever you know that the app does not.</div>`
+          : `<div class="pool-rounding"><strong>${edges} of your ${picks.length}
+               ${edges === 1 ? 'has' : 'have'} a real edge in the number.</strong>
+               The rest are coin flips filling out the card &mdash; the pool needs six picks
+               whether or not the week offers six good ones.</div>`;
+
         target.innerHTML = `<h3 style="margin:0 0 10px">Your best ${picks.length}
             <span style="font-weight:400;color:#8b949e;font-size:13px">
               &mdash; from the ${withLines} game${withLines === 1 ? '' : 's'} you have lines for</span></h3>
+          ${edgeLine}
           ${cardOddsHTML(data.card)}
           <div id="p6-cards"><div class="loading"><div class="spinner"></div>
-            <div>Loading the full read on these six...</div></div></div>`;
+            <div>Loading the full read on these six...</div></div></div>
+          <div id="p6-why"></div>`;
+
+        // The long version, below the picks where it was asked to live.
+        (() => {
+          const rd = (data.rounding || {}).spread;
+          const rt = (data.rounding || {}).total;
+          const why = document.getElementById('p6-why');
+          if (!why || !rd || !rd.rounds) return;
+          why.innerHTML = `<div class="pool-rounding">
+            <strong>Why nearly every pick is an underdog.</strong><br>
+            Your sheet is the market rounded away from zero &mdash;
+            ${rd.matched} of ${rd.testable} spreads this week${rt && rt.rounds
+              ? `, and ${rt.matched} of ${rt.testable} totals rounded up the same way` : ''}.
+            A market number of 6.5 reaches you as 7.<br><br>
+            That half point is worth <strong>nothing</strong> here, because a push is a loss in
+            your pool. Raiders +7 and Raiders +6.5 both lose a seven-point loss &mdash; same bet.
+            But Chargers &minus;7 pushes on a seven-point win where &minus;6.5 gets paid, so the
+            favourite is strictly worse than the market while the dog merely matches it.
+            The rounding does not reward the dog, it penalises the favourite. That is the whole
+            reason the board comes back full of underdogs, and it would happen on any week
+            regardless of who the app thinks is going to win.<br><br>
+            So a side that is only half a point better than the market prices at exactly 50.0%
+            and never above. The only thing that creates a real edge is the market moving a
+            <strong>full point or more</strong> after your card was posted &mdash; which is what
+            the movement line on each game measures.</div>`;
+        })();
 
         try {
           const r = await fetch('/api/predictions', {
@@ -1932,8 +2028,8 @@
                   <span class="pool-block-prob">${(p.winProb * 100).toFixed(1)}%</span></div>
                 <div class="pool-block-line">yours ${p.poolLine} &middot; market ${p.marketLine}
                   &middot; ${p.gap} pt${p.gap === 1 ? '' : 's'} &mdash;
-                  ${p.winProb >= 0.52 ? 'playable, just not top six'
-                    : p.winProb >= 0.5 ? 'a coin flip; the number is barely better than the market'
+                  ${(p.grade || '') === 'edge' ? 'a real edge in the number, just not top six'
+                    : p.winProb >= 0.4995 ? 'a coin flip; your number only beats the market by the rounding'
                     : (p.pushProb || 0) > 0.02
                       ? `neither side wins &mdash; your line sits on ${Math.abs(p.poolLine)}, which the
                          game lands on ${((p.pushProb || 0) * 100).toFixed(1)}% of the time, and a push loses here`

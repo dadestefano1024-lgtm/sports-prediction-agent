@@ -3785,6 +3785,7 @@ app.post('/api/pool/:sport', async (req, res) => {
     const events = wk.events;
 
     const candidates = [];
+    const roundingSample = { spread: [], total: [] };
     const games = [];
     for (const event of events) {
       const entry = lines[event.id];
@@ -3887,8 +3888,51 @@ app.post('/api/pool/:sport', async (req, res) => {
         return Math.abs(mv) < 0.5 ? null
           : { against, points: +Math.abs(mv).toFixed(1) };
       };
-      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved, headwind: headwind(edge.spread.side) });
+      // Both halves of the sheet, in the HOME orientation, so the rounding
+      // signature is measured on one consistent axis. The spread candidate
+      // reports its numbers from the side being backed, which flips sign game
+      // to game and would smear the signature across two conventions.
+      if (usableSpread && Number.isFinite(poolSpread) && Number.isFinite(marketSpread)) {
+        roundingSample.spread.push({ poolLine: poolSpread, marketLine: marketSpread });
+      }
+      if (Number.isFinite(poolTotal) && Number.isFinite(marketTotal)) {
+        roundingSample.total.push({ poolLine: poolTotal, marketLine: marketTotal });
+      }
+      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved, headwind: headwind(edge.spread.side), homeMarketSpread: marketSpread });
       if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved });
+    }
+
+    // Where the card was posted, recovered from the card itself.
+    //
+    // The sheet's whole numbers are the market rounded away from zero — 11 of
+    // 13 testable spreads and 13 of 15 totals on Week 2 — which means the
+    // posted number is known to within half a point without waiting on a season
+    // of line_history snapshots. That half point is the whole story of the tab:
+    // it is worth nothing where a push loses, so a game sitting half a point off
+    // the market has no edge on either side, and only movement that survives
+    // the rounding is real. Twelve of fifteen priced at exactly 50.0% for this
+    // reason and were all being badged "Recommended".
+    //
+    // Gated on the detector. If the sheet ever stops rounding, no movement is
+    // claimed and every pick falls back to being graded on its number alone.
+    const rounding = model.detectPoolRounding(roundingSample.spread);
+    const roundingTotals = model.detectPoolRounding(roundingSample.total);
+    for (const c of candidates) {
+      c.grade = model.gradePoolPick(c);
+      if (c.market !== 'spread' || !rounding.rounds) continue;
+      if (!Number.isFinite(c.homeLine) || !Number.isFinite(c.homeMarketSpread)) continue;
+      const mv = model.movementSincePosted({ poolLine: c.homeLine,
+                                             marketLine: c.homeMarketSpread });
+      if (!mv) continue;
+      // Re-expressed relative to the side being backed, which is what the card
+      // has to say out loud: movement toward the favourite helps a pick on the
+      // favourite and hurts one on the dog.
+      const backingFav = (c.side === 'home') === (c.homeMarketSpread < 0);
+      c.movedSincePosted = {
+        ...mv,
+        helpsThisSide: mv.direction === 'none' ? null
+          : (mv.direction === 'favourite') === backingFav,
+      };
     }
 
     const best = model.rankPoolPicks(candidates, count);
@@ -3920,6 +3964,9 @@ app.post('/api/pool/:sport', async (req, res) => {
       // been saved to the database.
       ranked: model.rankPoolPicks(candidates, candidates.length),
       considered: candidates.length,
+      // So the tab can say WHY nearly every pick is a dog instead of leaving
+      // the reader to notice it and distrust the whole thing.
+      rounding: { spread: rounding, total: roundingTotals },
       recorded,
       games,
     });

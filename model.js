@@ -1897,6 +1897,119 @@ function staleSupport(gap) {
   return 1;                  // 57.8% and 61.0%, where the model is already calibrated
 }
 
+/**
+ * Whether this week's pool card is just the market rounded away from zero.
+ *
+ * Measured on the Week 2 card (2026-09-18): 13 of 15 spreads equal the current
+ * market rounded away from zero, and 13 of 15 totals equal it rounded up. Two
+ * independent halves of the same sheet carrying the same signature. The two
+ * spread exceptions are the only two games where the market moved a full point
+ * after the card was posted, and both match the OPENING number rounded the same
+ * way.
+ *
+ * This is the whole explanation for a card of underdogs, and it is not a
+ * preference of the model. A push is a LOSS in this pool, so at a number
+ * rounded away from zero the dog side is identical to the market -- Raiders +7
+ * and +6.5 both lose a seven-point loss -- while the favourite side is strictly
+ * worse, because Chargers -7 pushes on a seven-point win where -6.5 pays.
+ * Rounding does not reward the dog, it penalises the favourite. Every
+ * unpenalised side therefore prices at exactly 50.0% and never above it, which
+ * is what twelve of the fifteen did.
+ *
+ * It is DETECTED, never assumed. A single whole number is evidence of nothing --
+ * only the card as a whole carries the signature. A market already sitting on a
+ * whole number needed no rounding, so it cannot confirm or deny and is counted
+ * out of the denominator rather than scored as a match. If the sheet's source
+ * ever stops rounding, the share falls and this abstains instead of inventing a
+ * posting number for the rest of the file to measure movement against.
+ *
+ * The earlier version of this check compared the card against the OPENING line
+ * and concluded there was no rounding. The open is Monday or earlier and was
+ * six points stale on one game; it cannot answer a question about what a
+ * Wednesday sheet was copied from.
+ */
+function detectPoolRounding(entries) {
+  const usable = (entries || []).filter(e => e &&
+    Number.isFinite(e.poolLine) && Number.isFinite(e.marketLine));
+  let matched = 0, whole = 0;
+  for (const e of usable) {
+    if (Math.abs(e.marketLine - Math.round(e.marketLine)) < 1e-9) { whole++; continue; }
+    const up = Math.sign(e.marketLine || 1) * Math.ceil(Math.abs(e.marketLine));
+    if (Math.abs(up - e.poolLine) < 1e-9) matched++;
+  }
+  const testable = usable.length - whole;
+  const share = testable > 0 ? matched / testable : 0;
+  return {
+    rounds: testable >= 6 && share >= 0.7,
+    matched, testable, whole, total: usable.length, share: +share.toFixed(3),
+  };
+}
+
+/**
+ * The interval the posted number sat in, given the card rounds away from zero.
+ *
+ * Rounding is lossy in one direction, so a pool number of 7 was either rounded
+ * up from 6.5 or was already 7. The posted magnitude is one of two values and
+ * everything downstream is an interval. Reporting a single reconstructed number
+ * would claim back half a point of precision the rounding destroyed.
+ */
+function postedLineRange(poolLine) {
+  if (!Number.isFinite(poolLine)) return null;
+  const p = Math.abs(poolLine);
+  return { lo: Math.max(0, p - 0.5), hi: p };
+}
+
+/**
+ * How far the market has moved since the card was posted, as an interval.
+ *
+ * Positive is toward the FAVOURITE -- the favourite laying more. Negative is
+ * toward the dog. Because the posted number is only known to half a point, so
+ * is the movement, and what matters is the part that survives that uncertainty.
+ *
+ * `guaranteed` is the movement the interval cannot avoid, and it is zero
+ * whenever the interval touches zero -- which is every ordinary rounded game.
+ * That is the point of computing it. A card sitting half a point off the market
+ * has NO movement behind it that can be told apart from the rounding itself,
+ * and the half point it holds is worth nothing where a push loses. Only a full
+ * point or more of post-posting movement survives to become an edge. On Week 2
+ * exactly one game of fifteen had any: the market went a point and a half to
+ * Washington after the card was posted.
+ *
+ * This is deliberately NOT sourced from line_history. The reconstruction works
+ * from the card itself, so it answers on the first week rather than after a
+ * season of snapshots -- and it is checkable, because the two games it says
+ * moved are the two the recorded open disagrees with.
+ */
+function movementSincePosted({ poolLine, marketLine } = {}) {
+  const range = postedLineRange(poolLine);
+  if (!range || !Number.isFinite(marketLine)) return null;
+  const m = Math.abs(marketLine);
+  const lo = +(m - range.hi).toFixed(2);
+  const hi = +(m - range.lo).toFixed(2);
+  let guaranteed = 0, direction = 'none';
+  if (lo > 0) { guaranteed = lo; direction = 'favourite'; }
+  else if (hi < 0) { guaranteed = -hi; direction = 'dog'; }
+  return { lo, hi, guaranteed: +guaranteed.toFixed(2), direction,
+           posted: { lo: range.lo, hi: range.hi } };
+}
+
+/**
+ * Whether a pool pick is an edge, a coin flip, or a slot to spend elsewhere.
+ *
+ * The pool needs six picks whatever the week offers, so this withholds nothing
+ * -- it stops six coin flips being presented as six recommendations. On Week 2
+ * one candidate of fifteen priced above 50.0%, twelve sat exactly on it and two
+ * below. Badging all six "Recommended" said the opposite of what the numbers
+ * said, and is the reason the tab read as untrustworthy: the reader could see
+ * that a card of nothing but underdogs could not all be edges.
+ */
+function gradePoolPick({ winProb } = {}) {
+  if (!Number.isFinite(winProb)) return null;
+  if (winProb < 0.4995) return 'avoid';
+  if (winProb > 0.5005) return 'edge';
+  return 'coinflip';
+}
+
 function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
                     poolTotal, marketTotal,
                     homeTeam = 'Home', awayTeam = 'Away' }) {
@@ -2148,6 +2261,26 @@ function rankPoolPicks(candidates, count = 6) {
       // only decides between picks that have none, which is exactly the case
       // where the app was recommending a team whose market had walked four
       // points away from them and saying nothing about it.
+      //
+      // Measured from where the card was POSTED when that is recoverable,
+      // which beats measuring from the open. The open is Monday or earlier and
+      // was six points stale on one game this week, so a headwind computed
+      // against it mixes movement the pool already captured with movement that
+      // happened afterwards — and only the second kind is held by anybody. The
+      // posted number is recovered from the card's own rounding, so this is
+      // available on the first week rather than after a season of snapshots.
+      const posted = (c) => {
+        const mv = c.movedSincePosted;
+        if (!mv || mv.direction === 'none') return null;
+        return mv.helpsThisSide ? mv.guaranteed : -mv.guaranteed;
+      };
+      const ap = posted(a), bp = posted(b);
+      if (ap !== null || bp !== null) {
+        const av = ap === null ? 0 : ap, bv = bp === null ? 0 : bp;
+        if (av !== bv) return bv - av;
+      }
+      // Open-to-now, the best available when the sheet does not round and the
+      // posting number cannot be recovered.
       const push = (c) => (c.headwind && c.headwind.against) ? c.headwind.points : 0;
       const pull = (c) => (c.headwind && !c.headwind.against) ? c.headwind.points : 0;
       const aScore = pull(a) - push(a), bScore = pull(b) - push(b);
@@ -2869,6 +3002,10 @@ module.exports = {
   favouredSide,
   cardOdds,
   staleSupport,
+  detectPoolRounding,
+  postedLineRange,
+  movementSincePosted,
+  gradePoolPick,
   NFL_TOTAL_PMF,
   totalResidualSurvival,
   totalResidualProb,

@@ -2414,3 +2414,175 @@ test('a push loses for both sides, not just the one taking points', () => {
   assert.ok(r.winProb + r.otherSideProb < 1 - 0.02,
     'the two sides together must NOT add to one — the push is not shared out');
 });
+
+// ----------------------------------------------------------------------------
+// The pool card is the market rounded away from zero
+// ----------------------------------------------------------------------------
+
+// Danny's real Week 2 card against the market it was scored on, 2026-09-18.
+// Kept as literal numbers because the point of the test is the SIGNATURE across
+// the whole sheet — no single row of it proves anything.
+const WEEK2 = [
+  { poolLine:   3, marketLine:   2.5 }, { poolLine:  -5, marketLine:  -4.5 },
+  { poolLine:   7, marketLine:   7   }, { poolLine:  -6, marketLine:  -5.5 },
+  { poolLine:   4, marketLine:   3.5 }, { poolLine:  -9, marketLine:  -8.5 },
+  { poolLine:  -8, marketLine:  -8.5 }, { poolLine:  -3, marketLine:  -2.5 },
+  { poolLine:  -3, marketLine:  -2.5 }, { poolLine:  -7, marketLine:  -6.5 },
+  { poolLine:  -5, marketLine:  -3.5 }, { poolLine:   4, marketLine:   3.5 },
+  { poolLine: -14, marketLine: -13.5 }, { poolLine:  -7, marketLine:  -6.5 },
+  { poolLine:  -7, marketLine:  -7   },
+];
+
+test('the Week 2 card is detected as rounded away from zero', () => {
+  const r = m.detectPoolRounding(WEEK2);
+  assert.equal(r.whole, 2, 'two markets already sat on a whole number and prove nothing');
+  assert.equal(r.testable, 13);
+  // The two misses are Saints/Ravens and Commanders/Cowboys, which are exactly
+  // the two games the market moved a full point on after the card was posted.
+  assert.equal(r.matched, 11);
+  assert.ok(r.rounds, '11 of 13 has to read as a rounded sheet');
+});
+
+test('the totals half of the same sheet carries the same signature', () => {
+  // Independent evidence: the spreads could conceivably round by coincidence,
+  // both halves of one sheet doing it cannot.
+  const totals = [
+    { poolLine: 44, marketLine: 43.5 }, { poolLine: 49, marketLine: 48.5 },
+    { poolLine: 40, marketLine: 39.5 }, { poolLine: 42, marketLine: 41.5 },
+    { poolLine: 45, marketLine: 44.5 }, { poolLine: 42, marketLine: 41.5 },
+    { poolLine: 47, marketLine: 46.5 }, { poolLine: 47, marketLine: 45.5 },
+    { poolLine: 46, marketLine: 45.5 }, { poolLine: 44, marketLine: 43.5 },
+    { poolLine: 51, marketLine: 50.5 }, { poolLine: 41, marketLine: 40.5 },
+    { poolLine: 45, marketLine: 44.5 }, { poolLine: 47, marketLine: 46.5 },
+    { poolLine: 48, marketLine: 48.5 },
+  ];
+  const r = m.detectPoolRounding(totals);
+  assert.ok(r.rounds);
+  assert.equal(r.matched, 13);
+});
+
+test('a card that does NOT round is not reported as rounding', () => {
+  // The negative control. A detector that cannot come back false is not
+  // measuring anything, and this one gates a claim about where the posted
+  // number was — so it has to be able to abstain.
+  const rounded = m.detectPoolRounding([
+    { poolLine: -4, marketLine: -3.5 }, { poolLine: -7, marketLine: -6.5 },
+    { poolLine:  3, marketLine:  2.5 }, { poolLine: -9, marketLine: -8.5 },
+    { poolLine:  6, marketLine:  5.5 }, { poolLine: -3, marketLine: -2.5 },
+    { poolLine: -5, marketLine: -4.5 }, { poolLine:  8, marketLine:  7.5 },
+  ]);
+  assert.ok(rounded.rounds, 'control: a genuinely rounded card must read true');
+
+  // Same games, rounded the other way — toward zero.
+  const other = m.detectPoolRounding([
+    { poolLine: -3, marketLine: -3.5 }, { poolLine: -6, marketLine: -6.5 },
+    { poolLine:  2, marketLine:  2.5 }, { poolLine: -8, marketLine: -8.5 },
+    { poolLine:  5, marketLine:  5.5 }, { poolLine: -2, marketLine: -2.5 },
+    { poolLine: -4, marketLine: -4.5 }, { poolLine:  7, marketLine:  7.5 },
+  ]);
+  assert.equal(other.matched, 0);
+  assert.ok(!other.rounds, 'a sheet rounding toward zero must not read as rounding away');
+});
+
+test('too few games to tell is not a finding', () => {
+  const r = m.detectPoolRounding([
+    { poolLine: -4, marketLine: -3.5 }, { poolLine: -7, marketLine: -6.5 },
+    { poolLine:  3, marketLine:  2.5 },
+  ]);
+  assert.equal(r.matched, 3);
+  assert.ok(!r.rounds, 'three matching rows is not a sheet-wide signature');
+});
+
+test('movement since posting is an interval, not a point', () => {
+  // The ordinary rounded game: posted magnitude was 6.5 or 7, market is 6.5,
+  // so the market has moved somewhere between half a point to the dog and
+  // nothing at all. Nothing survives the uncertainty.
+  const flat = m.movementSincePosted({ poolLine: -7, marketLine: -6.5 });
+  assert.deepEqual([flat.lo, flat.hi], [-0.5, 0]);
+  assert.equal(flat.guaranteed, 0);
+  assert.equal(flat.direction, 'none');
+
+  // Saints/Ravens: pool -8, market -8.5. Posted was 7.5 or 8, so the favourite
+  // is laying between half a point and a full point more than when it posted.
+  const toFav = m.movementSincePosted({ poolLine: -8, marketLine: -8.5 });
+  assert.deepEqual([toFav.lo, toFav.hi], [0.5, 1]);
+  assert.equal(toFav.guaranteed, 0.5);
+  assert.equal(toFav.direction, 'favourite');
+
+  // Commanders/Cowboys: pool -5, market -3.5. Posted was 4.5 or 5, so at LEAST
+  // a full point has gone to Washington. The only such game on the card.
+  const toDog = m.movementSincePosted({ poolLine: -5, marketLine: -3.5 });
+  assert.deepEqual([toDog.lo, toDog.hi], [-1.5, -1]);
+  assert.equal(toDog.guaranteed, 1);
+  assert.equal(toDog.direction, 'dog');
+
+  // A market already on a whole number cannot say which side of the rounding
+  // it came from, so it guarantees nothing either.
+  const whole = m.movementSincePosted({ poolLine: 7, marketLine: 7 });
+  assert.equal(whole.guaranteed, 0);
+});
+
+test('exactly one Week 2 game had movement that survived the rounding', () => {
+  const moved = WEEK2
+    .map(e => m.movementSincePosted(e))
+    .filter(r => r.guaranteed >= 1);
+  assert.equal(moved.length, 1, 'only Commanders/Cowboys clears a full point');
+  assert.equal(moved[0].direction, 'dog');
+});
+
+test('rounding away from zero penalises the favourite, it does not pay the dog', () => {
+  // The mechanism behind a card of nothing but underdogs. Pool -7 against a
+  // market of -6.5: the dog at +7 wins exactly what +6.5 wins, because a
+  // seven-point loss is a push and a push is a loss here. The favourite at -7
+  // loses the seven-point win that -6.5 would have been paid for.
+  const r = m.poolEdge({ sport: 'nfl', poolSpread: -7, poolAwaySpread: 7,
+                         marketSpread: -6.5, homeTeam: 'H', awayTeam: 'A' }).spread;
+  assert.equal(r.side, 'away', 'the unpenalised side is the dog');
+  assert.ok(Math.abs(r.winProb - 0.5) < 0.005,
+    'the dog matches the market exactly — it is handed no edge, only no penalty');
+  assert.ok(r.pushProb > 0.02, 'seven is a key number and must be able to land on itself');
+  assert.ok(r.otherSideProb < r.winProb - 0.02,
+    'the favourite must be strictly worse by about the push');
+});
+
+test('a pick at even money is graded a coin flip, not a recommendation', () => {
+  assert.equal(m.gradePoolPick({ winProb: 0.5 }), 'coinflip');
+  assert.equal(m.gradePoolPick({ winProb: 0.523 }), 'edge');
+  assert.equal(m.gradePoolPick({ winProb: 0.469 }), 'avoid');
+  assert.equal(m.gradePoolPick({ winProb: null }), null);
+});
+
+test('among coin flips, movement since POSTING outranks movement since the open', () => {
+  const flip = (extra) => ({ winProb: 0.5, rankScore: 0.5, gap: 0.5, tested: true, ...extra });
+  // A pick the market has moved half a point toward since the card posted, and
+  // one it has not moved on at all. The second carries a big open-to-now
+  // headwind in its favour, which is the stale measurement — most of that move
+  // happened before the card was posted and nobody holds it.
+  const ranked = m.rankPoolPicks([
+    flip({ pick: 'stale-tailwind', headwind: { against: false, points: 4 } }),
+    flip({ pick: 'moved-since-posting',
+           movedSincePosted: { direction: 'favourite', guaranteed: 0.5, helpsThisSide: true } }),
+  ], 2);
+  assert.equal(ranked[0].pick, 'moved-since-posting');
+});
+
+test('a coin flip the market has moved AWAY from since posting sorts last', () => {
+  const flip = (extra) => ({ winProb: 0.5, rankScore: 0.5, gap: 0.5, tested: true, ...extra });
+  const ranked = m.rankPoolPicks([
+    flip({ pick: 'hurt',
+           movedSincePosted: { direction: 'dog', guaranteed: 1, helpsThisSide: false } }),
+    flip({ pick: 'neutral' }),
+    flip({ pick: 'helped',
+           movedSincePosted: { direction: 'dog', guaranteed: 1, helpsThisSide: true } }),
+  ], 3);
+  assert.deepEqual(ranked.map(r => r.pick), ['helped', 'neutral', 'hurt']);
+});
+
+test('a real edge still outranks any amount of movement on a coin flip', () => {
+  const ranked = m.rankPoolPicks([
+    { pick: 'flip', winProb: 0.5, rankScore: 0.5, gap: 0.5, tested: true,
+      movedSincePosted: { direction: 'dog', guaranteed: 3, helpsThisSide: true } },
+    { pick: 'edge', winProb: 0.523, rankScore: 0.5034, gap: 1.5, tested: true },
+  ], 2);
+  assert.equal(ranked[0].pick, 'edge', 'movement breaks ties, it does not overrule a number');
+});
