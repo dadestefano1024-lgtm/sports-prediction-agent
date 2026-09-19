@@ -2353,3 +2353,53 @@ test('a real gap is still worth something', () => {
                          marketSpread: -3.5, homeTeam: 'H', awayTeam: 'A' }).spread;
   assert.ok(r.winProb > 0.51, `a 1.5 pt gap should clear even money, got ${(r.winProb * 100).toFixed(1)}%`);
 });
+
+// ---------------------------------------------------------------------------
+// Which side the push falls on is the whole story
+// ---------------------------------------------------------------------------
+test('the side that can land on your number is the side that is penalised', () => {
+  // This is why a real card comes back almost all underdogs, and it is not a
+  // view about underdogs. A push LOSES in this pool, so whichever side can push
+  // on the frozen number eats it, and the other side is left at exactly 50%.
+  const at = (pool, mkt) => {
+    const r = m.poolEdge({ sport: 'nfl', poolSpread: pool, poolAwaySpread: -pool,
+                           marketSpread: mkt, homeTeam: 'H', awayTeam: 'A' }).spread;
+    return {
+      fav: r.side === 'home' ? r.winProb : r.otherSideProb,
+      dog: r.side === 'away' ? r.winProb : r.otherSideProb,
+      push: r.pushProb, side: r.side,
+    };
+  };
+
+  // Pool number BIGGER than the market: the favourite pushes, the dog does not.
+  for (const [pool, mkt] of [[-5, -4.5], [-9, -8.5], [-3, -2.5], [-14, -13.5]]) {
+    const r = at(pool, mkt);
+    assert.equal(r.side, 'away', `${pool} against ${mkt} should favour the dog`);
+    assert.ok(Math.abs(r.dog - 0.5) < 0.01,
+      `the unpenalised side is exactly even money, got ${(r.dog * 100).toFixed(1)}%`);
+    assert.ok(Math.abs((0.5 - r.fav) - r.push) < 0.01,
+      'the favourite should be down by exactly the push');
+  }
+
+  // Pool number SMALLER: it flips, and the favourite becomes the pick.
+  for (const [pool, mkt] of [[-8, -8.5], [-6, -6.5], [-3, -3.5]]) {
+    const r = at(pool, mkt);
+    assert.equal(r.side, 'home', `${pool} against ${mkt} should favour the favourite`);
+    assert.ok(Math.abs(r.fav - 0.5) < 0.01);
+    assert.ok(Math.abs((0.5 - r.dog) - r.push) < 0.01);
+  }
+
+  // Matching exactly: both eat it, neither side is a bet.
+  for (const [pool, mkt] of [[-7, -7], [-3, -3]]) {
+    const r = at(pool, mkt);
+    assert.ok(Math.abs(r.fav - r.dog) < 0.005, 'a matched line must be symmetric');
+    assert.ok(r.fav < 0.48, 'and both sides must be below even money');
+  }
+});
+
+test('half a point of daylight is worth nothing; a full point is not', () => {
+  const win = (pool, mkt) => m.poolEdge({ sport: 'nfl', poolSpread: pool, poolAwaySpread: -pool,
+    marketSpread: mkt, homeTeam: 'H', awayTeam: 'A' }).spread.winProb;
+  assert.ok(Math.abs(win(-5, -4.5) - 0.5) < 0.01, 'half a point cannot beat even money');
+  assert.ok(win(-5, -3.5) > 0.51, 'a point and a half has to');
+});
