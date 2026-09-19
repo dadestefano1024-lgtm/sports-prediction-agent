@@ -181,6 +181,8 @@
     .pool-against strong { color: #f0883e; }
     .pool-against-inline { color: #d29922; }
     .pool-with { font-size: 11px; color: #3fb950; margin-top: 5px; }
+    .pool-disagrees { font-size: 11px; color: #8b949e; margin-top: 5px; line-height: 1.45;
+                      border-left: 2px solid #30363d; padding-left: 8px; }
     .pool-block-dead { border-left-color: #f85149 !important; }
     .pool-dead { font-size: 11px; color: #f85149; margin-top: 5px; line-height: 1.45; }
     .pool-dead strong { color: #ff7b72; }
@@ -1533,7 +1535,16 @@
      * off a line that moved six is visibly different from two points off one
      * that moved two, without needing a label to interpret it.
      */
-    function poolBlockHTML(b, isRecommended) {
+    /**
+     * @param b   the pool candidate
+     * @param isRecommended  one of the six
+     * @param g   the full game, so the pick can be checked against the app's
+     *            own projected score. A card reading "Ravens -8" above
+     *            "predicted Ravens by 4" is the app contradicting itself in
+     *            public, and the reader is right not to trust either half until
+     *            somebody explains which one to believe.
+     */
+    function poolBlockHTML(b, isRecommended, g) {
       if (!b) return '';
       const notes = [];
       if (b.overlapProb > 0.005) notes.push(`${(b.overlapProb * 100).toFixed(1)}% both sides win`);
@@ -1578,6 +1589,22 @@
                 line, so there is no cushion against being on the wrong end of that.</div>`
             : `<div class="pool-with">The market has moved ${h.points} points
                 <strong>toward</strong> this side since it opened.</div>`;
+        })()}
+        ${(() => {
+          // Does the projection have this side covering its own frozen number?
+          const ps = g && g.predictedScore;
+          if (!ps || !Number.isFinite(ps.home) || !Number.isFinite(ps.away)) return '';
+          const projMargin = ps.home - ps.away;            // + means home wins by
+          const line = Number(b.poolLine);
+          if (!Number.isFinite(line)) return '';
+          const covers = b.side === 'home' ? (projMargin + line > 0) : (-projMargin + line > 0);
+          if (covers) return '';
+          const who = projMargin >= 0 ? g.homeTeam : g.awayTeam;
+          return `<div class="pool-disagrees">The projection has
+            ${who.split(' ').pop()} by ${Math.abs(projMargin).toFixed(0)}, which does not cover this
+            number. It is recent scoring only and it loses to the closing line, so it is not a
+            reason to pass &mdash; but on a pick with no edge in the number, it is one more thing
+            pointing the other way.</div>`;
         })()}
         ${deadNote}
       </div>`;
@@ -1876,7 +1903,7 @@
             onlyIds: [...pickIds, ...restIds],
             extraFor: (g) => {
               const b = byGame[g.id];
-              if (b) return poolBlockHTML(b, true);
+              if (b) return poolBlockHTML(b, true, g);
               // Not one of the six, but still worth an answer. The pool line on
               // this game was priced exactly like the others — it just came out
               // lower — so the honest thing is to say which side it points at
