@@ -2922,7 +2922,19 @@ async function attachSituationFlags(games, sport) {
     // read the same arithmetic.
     if (g.poolEntry) {
       const pe = g.poolEntry;
-      const mkt = (g.odds && Number.isFinite(Number(g.odds.spread))) ? Number(g.odds.spread) : null;
+      // Same fallback chain the rest of the app uses. Reading only
+      // g.odds.spread found nothing on all sixteen games in production:
+      // matchOddsToGame returns null whenever The Odds API has no entry for a
+      // fixture, and the market number the cards actually display comes from
+      // the book first, then consensus, then ESPN's own board.
+      const mkt = (() => {
+        const mb = g.odds && g.odds.myBook;
+        for (const v of [mb && mb.spread, g.odds && g.odds.spread,
+                         g.lineMovement && g.lineMovement.currentSpread]) {
+          if (v !== null && v !== undefined && Number.isFinite(Number(v))) return Number(v);
+        }
+        return null;
+      })();
       g.poolSpread = Number.isFinite(pe.spread) ? pe.spread : null;
       g.poolAwaySpread = Number.isFinite(pe.awaySpread) ? pe.awaySpread : null;
       g.poolTotal = Number.isFinite(pe.total) ? pe.total : null;
