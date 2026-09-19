@@ -839,9 +839,28 @@ function espnDayStamp(offsetDays) {
   return key ? key.replace(/-/g, '') : '';
 }
 
-function espnScoreboardUrl(sportPath, days = 1) {
-  return `https://site.api.espn.com/apis/site/v2/sports/${sportPath}/scoreboard` +
-    `?dates=${espnDayStamp(0)}-${espnDayStamp(days)}&limit=100`;
+/**
+ * One day's scoreboard, or ESPN's own idea of the current slate.
+ *
+ * This used to ask for a date RANGE — `dates=20260918-20260923` — and ESPN now
+ * answers every one of those with a 400. Not some of them: every span the app
+ * used, one day, five days and the forty-five day look-ahead, all rejected on
+ * the same day. Single dates and the bare scoreboard still work, so the range
+ * is gone.
+ *
+ * It failed quietly because the caller catches, so the symptom was not an error
+ * anywhere — it was opening lines going missing, the Pick 6 losing the only
+ * signal it has about whether a number actually moved, and a health check
+ * reading degraded with nobody looking.
+ *
+ * `dayOffset` null asks for the current slate, which is what ESPN returns with
+ * no date at all and is usually the right answer on its own.
+ */
+function espnScoreboardUrl(sportPath, dayOffset = null) {
+  const base = `https://site.api.espn.com/apis/site/v2/sports/${sportPath}/scoreboard`;
+  return dayOffset === null
+    ? `${base}?limit=100`
+    : `${base}?dates=${espnDayStamp(dayOffset)}&limit=100`;
 }
 
 /**
@@ -908,10 +927,34 @@ async function fetchSlate(sportPath, { lookaheadDays = 45, weekSpanDays = null }
   const nearEvents = nextSlate((near.data || {}).events);
   if (nearEvents.length) return { events: nearEvents, payload: near.data || {}, upcoming: false };
 
-  const far = await cachedGet(espnScoreboardUrl(sportPath, lookaheadDays), { timeout: 12000 });
-  const payload = far.data || {};
-  const scheduled = ((payload.events) || [])
+  // Nothing playable in the current slate, so walk forward a day at a time.
+  //
+  // This was one request for a 45-day range until ESPN stopped accepting
+  // ranges. Day-by-day is more requests but it stops as soon as it has what it
+  // needs: the first day carrying games, plus `span` days after it to finish
+  // the slate. In season that is a handful; out of season it walks until it
+  // finds something, and every day it touches is cached for ten minutes.
+  const collected = [];
+  let lastPayload = {};
+  let firstHit = null;
+  for (let d = 0; d <= lookaheadDays; d++) {
+    const day = await cachedGet(espnScoreboardUrl(sportPath, d), { timeout: 12000 });
+    lastPayload = day.data || lastPayload;
+    const evs = ((day.data || {}).events) || [];
+    if (evs.length) {
+      collected.push(...evs);
+      if (firstHit === null) firstHit = d;
+    }
+    // Once the slate has started, take `span` more days and stop.
+    if (firstHit !== null && d >= firstHit + span) break;
+  }
+  const payload = { ...lastPayload, events: collected };
+  const seen = new Set();
+  const scheduled = collected
     .filter(e => e.competitions?.[0]?.status?.type?.state === 'pre')
+    // A game can appear under two day stamps around midnight Eastern, so the
+    // same event id must not be counted twice.
+    .filter(e => (seen.has(e.id) ? false : (seen.add(e.id), true)))
     .sort((a, b) => new Date(a.date) - new Date(b.date));
   if (!scheduled.length) return { events: [], payload, upcoming: false };
 
@@ -3301,9 +3344,15 @@ app.get('/api/pool/:sport', async (req, res) => {
       ? Math.min(NFL_WEEKS, Math.max(1, Number(req.query.week)))
       : await currentNflWeek();
 
-    const [wk, oddsData] = await Promise.all([
+    // Opening lines come along too. The prediction tabs have shown open against
+    // current all season while this one showed only current, so a game the
+    // market had hammered six points looked identical here to one that never
+    // moved. It is the same cached call the other tabs make, so it costs
+    // nothing to ask.
+    const [wk, oddsData, openingLines] = await Promise.all([
       fetchNflWeekEvents(week, year),
       fetchOdds(sport).catch(() => []),
+      fetchEspnOpeningLines(sport).catch(() => ({})),
     ]);
     // Every game in the week, played or not. A finished game is left in with
     // its result rather than vanishing, because a pool entry is made against
@@ -3360,6 +3409,19 @@ app.get('/api/pool/:sport', async (req, res) => {
           ? marketSpread : null,
         marketTotal,
         marketFrom,
+        // What the market has DONE, not just where it is. A frozen line is only
+        // worth something when the number it is behind actually improved, and
+        // that is a question about movement — which this endpoint never carried.
+        ...(() => {
+          const lm = openingLines[event.id];
+          if (!lm) return {};
+          return {
+            openSpread: Number.isFinite(lm.openSpread) ? lm.openSpread : null,
+            spreadMovement: Number.isFinite(lm.spreadMovement) ? lm.spreadMovement : null,
+            openTotal: Number.isFinite(lm.openTotal) ? lm.openTotal : null,
+            totalMovement: Number.isFinite(lm.totalMovement) ? lm.totalMovement : null,
+          };
+        })(),
         bookmaker: odds ? odds.bookmaker : null,
       };
     });
@@ -3453,9 +3515,10 @@ app.post('/api/pool/:sport', async (req, res) => {
     const week = Number.isFinite(Number(req.body && req.body.week))
       ? Math.min(NFL_WEEKS, Math.max(1, Number(req.body.week)))
       : await currentNflWeek();
-    const [wk, oddsData] = await Promise.all([
+    const [wk, oddsData, openingLines] = await Promise.all([
       fetchNflWeekEvents(week, year),
       fetchOdds(sport).catch(() => []),
+      fetchEspnOpeningLines(sport).catch(() => ({})),
     ]);
     const events = wk.events;
 
@@ -3533,8 +3596,18 @@ app.post('/api/pool/:sport', async (req, res) => {
                    spread: edge.spread, total: edge.total });
       const early = kicksOffBeforeSunday(event.date);
       const day = easternWeekday(event.date);
-      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day });
-      if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day });
+      // What the market did between opening and now, carried onto the pick so
+      // the card can say whether the number being held is behind one the market
+      // actually improved, or just behind one the pool set differently.
+      const lm = openingLines[event.id] || {};
+      const moved = {
+        openSpread: Number.isFinite(lm.openSpread) ? lm.openSpread : null,
+        spreadMovement: Number.isFinite(lm.spreadMovement) ? lm.spreadMovement : null,
+        openTotal: Number.isFinite(lm.openTotal) ? lm.openTotal : null,
+        totalMovement: Number.isFinite(lm.totalMovement) ? lm.totalMovement : null,
+      };
+      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved });
+      if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved });
     }
 
     const best = model.rankPoolPicks(candidates, count);

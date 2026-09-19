@@ -171,6 +171,9 @@
                    color: #d29922; border: 1px solid #4a3a12; border-radius: 3px;
                    padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
     .unsupported-note { color: #d29922; }
+    .pool-moved { font-size: 10px; color: #6e7681; margin-top: 2px; line-height: 1.3; }
+    .pool-moved.big { color: #58a6ff; }
+    .pool-moved.none { color: #484f58; font-style: italic; }
     .share-state { margin-top: 8px; font-size: 11px; }
     .share-on { color: #3fb950; }
     .share-off { color: #d29922; }
@@ -1404,7 +1407,7 @@
         // read Baltimore -3 one day and Baltimore +1 the next, and the column
         // showed only the digits, so there was no way to tell which side the
         // market had moved to. Always name the side LAYING the points.
-        const shortName = (full) => String(full || '').split(' ').pop();
+        const shortName = (full) => String(full || '').split(' ').pop();   // also used by the movement line below
         const ms = g.marketSpread === null ? '—'
           : g.marketSpread === 0 ? 'pick &rsquo;em'
           : g.marketSpread < 0
@@ -1416,7 +1419,23 @@
             <td>${g.awayTeam} @ <strong>${g.homeTeam}</strong><div class="pool-market">${g.gameTime}${
               g.earlyWeek ? ` &middot; <span class="pool-early">${g.kickoffDay || 'early'} &mdash; played before you pick</span>` : ''
             }</div></td>
-            <td class="pool-market">${ms}</td>
+            <td class="pool-market">${ms}${(() => {
+              // What the market DID, under where it is. The tab showed only the
+              // current number, so a game the market had moved six points read
+              // exactly like one that never moved at all — and whether the
+              // number you are holding is behind a BETTER one is entirely a
+              // question about movement.
+              if (!Number.isFinite(g.openSpread) || !Number.isFinite(g.spreadMovement)) return '';
+              if (Math.abs(g.spreadMovement) < 0.25) {
+                return '<div class="pool-moved none">has not moved</div>';
+              }
+              const openShown = g.openSpread === 0 ? 'pick &rsquo;em'
+                : g.openSpread < 0 ? `${shortName(g.homeTeam)} ${g.openSpread}`
+                : `${shortName(g.awayTeam)} ${-g.openSpread}`;
+              const size = Math.abs(g.spreadMovement);
+              return `<div class="pool-moved ${size >= 2 ? 'big' : ''}">opened ${openShown}
+                &middot; moved ${size}</div>`;
+            })()}</td>
             <td><input id="pa-${g.id}" type="number" step="0.5" placeholder="—"
                        value="${v.awaySpread ?? ''}" oninput="mirrorHome('${g.id}')"></td>
             <td><input id="ps-${g.id}" type="number" step="0.5" placeholder="—"
@@ -1507,7 +1526,16 @@
               <div class="detail">${b.matchup}</div>
               <div class="detail">
                 your line ${b.poolLine} &middot; market ${b.marketLine} &middot;
-                ${b.gap} pt${b.gap === 1 ? '' : 's'} stale${b.support < 1
+                ${b.gap} pt${b.gap === 1 ? '' : 's'} stale${(() => {
+                  // The market's own move, beside your gap. They are different
+                  // numbers and the difference is the whole point: a two-point
+                  // gap on a line the market never touched is the pool
+                  // disagreeing with the book, not a number left behind.
+                  const mv = b.market === 'total' ? b.totalMovement : b.spreadMovement;
+                  if (!Number.isFinite(mv)) return '';
+                  if (Math.abs(mv) < 0.25) return ' &middot; <span class="pool-moved none">market never moved</span>';
+                  return ` &middot; market moved ${Math.abs(mv)}`;
+                })()}${b.support < 1
                   // The probability above assumes the market's current number is the
                   // truth. That is only earned when the market improved it, and under
                   // two points it measurably did not. So the figure is still shown,
