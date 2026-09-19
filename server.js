@@ -2917,6 +2917,25 @@ async function attachSituationFlags(games, sport) {
       qbOutSide = 'away';
     }
 
+    // The pool's frozen numbers for this game, and what they are worth against
+    // the live market. Computed here so the flags, the blurb and the card all
+    // read the same arithmetic.
+    if (g.poolEntry) {
+      const pe = g.poolEntry;
+      const mkt = (g.odds && Number.isFinite(Number(g.odds.spread))) ? Number(g.odds.spread) : null;
+      g.poolSpread = Number.isFinite(pe.spread) ? pe.spread : null;
+      g.poolAwaySpread = Number.isFinite(pe.awaySpread) ? pe.awaySpread : null;
+      g.poolTotal = Number.isFinite(pe.total) ? pe.total : null;
+      if (g.poolSpread !== null && mkt !== null) {
+        const edge = model.poolEdge({
+          sport: 'nfl', poolSpread: g.poolSpread,
+          poolAwaySpread: g.poolAwaySpread, marketSpread: mkt,
+          homeTeam: g.homeTeam, awayTeam: g.awayTeam,
+        });
+        g.poolPick = edge.spread || null;
+      }
+    }
+
     // Kept on the game, not just handed to situationFlags. savePicksFromGames
     // records these against every pick so the question of whether injuries
     // predict anything can eventually be answered, and reading them off `game`
@@ -2971,6 +2990,21 @@ function buildCommentaryPrompt(sport, gamesWithStats, note) {
       // lower total is a discount for the over; the under is worse at 48.5
       // than at 49.5. It is a sign convention, it is easy to invert, and the
       // answer already exists a few lines away.
+      // The pool's frozen number, where one has been entered. This is the whole
+      // point of the Pick 6 and the commentary has never seen it — the cards
+      // could only say "strong candidate IF your pool is still on the old
+      // number", which is a guess about a number sitting in the database.
+      poolLine: Number.isFinite(g.poolSpread) ? {
+        homeSpread: g.poolSpread,
+        awaySpread: Number.isFinite(g.poolAwaySpread) ? g.poolAwaySpread : -g.poolSpread,
+        total: Number.isFinite(g.poolTotal) ? g.poolTotal : null,
+        vsMarket: g.poolPick
+          ? `${g.poolPick.pick} is ${g.poolPick.gap} point${g.poolPick.gap === 1 ? '' : 's'} ` +
+            `better than the market's number, and wins ${(g.poolPick.winProb * 100).toFixed(1)}% ` +
+            'of the time if the market number is treated as the truth'
+          : null,
+        bothLay: g.poolPick ? g.poolPick.shape === 'both-lay' : false,
+      } : null,
       bookVsMarket: odds.myBook ? {
         book: odds.myBook.name,
         spread: odds.myBook.spread,
@@ -3011,6 +3045,16 @@ For each game write:
 Do NOT predict scores, margins, probabilities, edges or bet sizes. Those are
 computed from the market and the data, and anything you invent is discarded on
 arrival. Do not tell the reader which side to bet.
+
+Where poolLine is present the reader plays a weekly pool that froze that number
+on Wednesday while the market kept moving, and a PUSH LOSES for them. It is the
+most interesting thing on the card when the gap is real: say which side the
+frozen number favours and by how much, using poolLine.vsMarket verbatim rather
+than working it out. Where poolLine.bothLay is true the pool laid points on BOTH
+teams, so neither side wins a game decided inside that number — worth saying
+plainly. Where poolLine is absent, do not speculate about what a pool might
+have; the app used to guess and it was guessing about a number it could have
+looked up.
 
 If you mention that this book's number differs from the market, the side it
 favours is given to you in bookVsMarket.favours. Use that wording or say
@@ -3318,6 +3362,18 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       poolFlag: (sport === 'nfl' && g.lineMovement)
         ? model.poolCandidate(g.lineMovement.spreadMovement, g.lineMovement.totalMovement)
         : null,
+
+      // The pool's actual frozen number and what it is worth, where one has
+      // been entered. poolFlag above is the guess this replaces — it could only
+      // ever say "strong candidate IF your pool is still on the old number",
+      // because nothing in this path had looked the number up. It is kept for
+      // the weeks nobody has entered a card.
+      poolLine: Number.isFinite(g.poolSpread) ? {
+        spread: g.poolSpread,
+        awaySpread: Number.isFinite(g.poolAwaySpread) ? g.poolAwaySpread : -g.poolSpread,
+        total: Number.isFinite(g.poolTotal) ? g.poolTotal : null,
+      } : null,
+      poolPick: g.poolPick || null,
 
       // The ESPN event id, so anything else can join to this analysis instead of
       // matching on team-name strings. The Pick 6 needs exactly that, and a
@@ -3931,6 +3987,17 @@ async function handleNFLPredictions(res, oddsData, requestedWeek) {
                         message: `No NFL games found for week ${week}` });
     }
 
+    // The pool's own card for this week, if anyone has entered it.
+    //
+    // Every tool this app has was being pointed at the market and none of it at
+    // the number Danny is actually holding. The cards could say "strong
+    // candidate if your pool is still on the old number" — a guess, because
+    // nothing here knew the pool number — while the pool lines sat in the
+    // database the whole time. Loading them here means the analysis, the flags
+    // and the written blurb can all talk about the real number instead of a
+    // hypothetical one.
+    const poolCard = (await getSharedPoolLines('nfl', week)).lines || {};
+
     // ESPN season types: 1 preseason, 2 regular, 3 post.
     const seasonType = Number(payload.season?.type ?? events[0]?.season?.type ?? 2);
     const seasonYear = Number(payload.season?.year ?? events[0]?.season?.year) || new Date().getFullYear();
@@ -4098,6 +4165,12 @@ async function handleNFLPredictions(res, oddsData, requestedWeek) {
     // Claude writes notes only; every number comes from model.js. Kept short on
     // purpose — the long legacy prompts still ask the other three sports for
     // figures that are now discarded.
+    // Hand each game its own pool line before the flags are worked out, so a
+    // flag can talk about the real frozen number rather than guessing that one
+    // might exist.
+    for (const g of gamesWithStats) {
+      if (g.id && poolCard[g.id]) g.poolEntry = poolCard[g.id];
+    }
     await attachSituationFlags(gamesWithStats, 'nfl');
     const prompt = buildCommentaryPrompt('nfl', gamesWithStats, isPreseason ? 'NOTE: these are PRESEASON games. Starters play limited snaps and results are not predictive. Say so where relevant.' : null);
     console.log('[NFL] Fetching commentary...');

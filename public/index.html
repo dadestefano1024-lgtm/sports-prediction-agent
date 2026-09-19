@@ -172,7 +172,8 @@
     .pool-pick.strong { border-left-color: #3fb950; }
     .pool-pick .headline { font-weight: 700; font-size: 15px; }
     .pool-pick .detail { color: #8b949e; font-size: 12px; margin-top: 3px; }
-            .pool-block { background: #10151c; border-left: 3px solid #58a6ff; border-radius: 4px;
+            .pool-block-off { border-left-color: #30363d !important; color: #6e7681; font-size: 11px; }
+    .pool-block { background: #10151c; border-left: 3px solid #58a6ff; border-radius: 4px;
                   padding: 8px 10px; margin-bottom: 10px; }
     .pool-block-head { font-size: 13px; color: #8b949e; }
     .pool-block-head strong { color: #c9d1d9; font-size: 14px; margin-left: 4px; }
@@ -1172,12 +1173,34 @@
                 // tab the block at the top of the card has already done that,
                 // with the actual numbers, so the same sentence becomes an
                 // instruction to do something already done.
-                const pf = (opts.hidePoolFlag || !g.poolFlag) ? '' : g.poolFlag
-                  ? `<div class="pool-flag">Pick 6: the market spread has moved ${g.poolFlag.points} pt${g.poolFlag.points === 1 ? '' : 's'} since it opened${
+                // Where the pool's number is actually known, say what it IS
+                // rather than what it might be. The hypothetical below only
+                // makes sense on a week nobody has entered a card.
+                //
+                // Assigned, not returned. This sits inside the verdict block's
+                // own function, so returning here would have handed back the
+                // pool line INSTEAD of the verdict, the situation flags and
+                // everything else on the card.
+                const realPool = (g.poolPick && !opts.hidePoolFlag) ? (() => {
+                  const p = g.poolPick;
+                  const shape = p.shape === 'both-lay'
+                    ? ` The pool laid points both ways, so a game decided inside ${Math.abs(p.poolLine)} loses whichever side you take.`
+                    : '';
+                  return `<div class="pool-flag">Pick 6: your line is ${p.poolLine}, the market is
+                    ${p.marketLine} &mdash; <strong>${p.gap} pt${p.gap === 1 ? '' : 's'}</strong> of daylight on
+                    ${p.pick}, winning ${(p.winProb * 100).toFixed(1)}% if the market number is the truth.${shape}</div>`;
+                })() : '';
+                // realPool first when it exists, the guess only when it does
+                // not. Written as a plain if-chain because the ternary version
+                // of this parsed as (realPool || hidden) ? '' : ... — which
+                // computed the real line and then threw it away.
+                let pf = '';
+                if (realPool) pf = realPool;
+                else if (!opts.hidePoolFlag && g.poolFlag) pf =
+                  `<div class="pool-flag">Pick 6: the market spread has moved ${g.poolFlag.points} pt${g.poolFlag.points === 1 ? '' : 's'} since it opened${
                       g.lineMovement && Number.isFinite(g.lineMovement.openSpread) && Number.isFinite(g.lineMovement.currentSpread)
                         ? ` (${g.lineMovement.openSpread > 0 ? '+' : ''}${g.lineMovement.openSpread} &rarr; ${g.lineMovement.currentSpread > 0 ? '+' : ''}${g.lineMovement.currentSpread})` : ''
-                    } — ${g.poolFlag.level === 'strong' ? 'strong candidate if your pool is still on the old number' : 'worth comparing against your pool number'}.</div>`
-                  : '';
+                    } — ${g.poolFlag.level === 'strong' ? 'strong candidate if your pool is still on the old number' : 'worth comparing against your pool number'}.</div>`;
                 // Situation flags sit with the verdict because they are the
                 // reason to look past it: the verdict grades price, a flag says
                 // the price may not have caught up with what is known.
@@ -1674,7 +1697,19 @@
         const byGame = {};
         for (const b of picks) byGame[b.gameId] = b;
 
-        target.innerHTML = `<h3 style="margin:0 0 10px">Best ${picks.length} of ${data.considered}</h3>
+        // "Best 6 of 10" counted CANDIDATES, which is a number nobody asked
+        // about — a game with a spread and a total counted twice, so the
+        // denominator did not match anything on screen. Say what was actually
+        // compared: the games with a line entered.
+        const entered = new Set(picks.map(b => b.gameId));
+        const withLines = poolGames.filter(g => {
+          const v = (sharedOk ? (sharedLines || {}) : savedPoolLines())[g.id];
+          return v && (Number.isFinite(v.spread) || Number.isFinite(v.total));
+        }).length;
+
+        target.innerHTML = `<h3 style="margin:0 0 10px">Your best ${picks.length}
+            <span style="font-weight:400;color:#8b949e;font-size:13px">
+              &mdash; from the ${withLines} game${withLines === 1 ? '' : 's'} you have lines for</span></h3>
           ${cardOddsHTML(data.card)}
           <div id="p6-cards"><div class="loading"><div class="spinner"></div>
             <div>Loading the full read on these six...</div></div></div>`;
@@ -1685,11 +1720,24 @@
             body: JSON.stringify({ sport: 'nfl', ...(nflWeek ? { week: nflWeek } : {}) }),
           });
           const pred = await r.json();
+          // Every game, not just the six.
+          //
+          // Danny has said twice that he wants to see the whole board, and the
+          // six-card version hid the ten he did not pick — including the ones
+          // he might have wanted to argue with. The picks come first, in rank
+          // order, then the rest of the week behind them.
+          const pickIds = picks.map(b => b.gameId);
+          const restIds = (pred.games || [])
+            .map(g => g.id)
+            .filter(id => id && !entered.has(id));
           renderGames(pred, {
             target: 'p6-cards',
             header: '',
-            onlyIds: picks.map(b => b.gameId),
-            extraFor: (g) => poolBlockHTML(byGame[g.id]),
+            onlyIds: [...pickIds, ...restIds],
+            extraFor: (g) => byGame[g.id]
+              ? poolBlockHTML(byGame[g.id])
+              : '<div class="pool-block pool-block-off">Not in your best ' + picks.length +
+                ' this week &mdash; shown because a card you can see is a card you can argue with.</div>',
             hidePoolFlag: true,
             poolFor: (g) => (sharedOk ? (sharedLines || {}) : savedPoolLines())[g.id] || null,
           });
