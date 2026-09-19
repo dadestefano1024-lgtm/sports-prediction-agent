@@ -171,6 +171,19 @@
                    color: #d29922; border: 1px solid #4a3a12; border-radius: 3px;
                    padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
     .unsupported-note { color: #d29922; }
+    .pick-analysis { margin-top: 6px; }
+    .pa-box > summary { cursor: pointer; font-size: 11px; color: #58a6ff; list-style: none; }
+    .pa-box > summary::-webkit-details-marker { display: none; }
+    .pa-box > summary::before { content: '\25B8'; display: inline-block;
+                                width: 12px; transition: transform 0.12s; }
+    .pa-box[open] > summary::before { transform: rotate(90deg); }
+    .pa-row { display: flex; gap: 8px; margin-top: 5px; font-size: 11px; line-height: 1.45; }
+    .pa-key { flex: 0 0 96px; color: #6e7681; text-transform: uppercase;
+              letter-spacing: 0.4px; font-size: 10px; padding-top: 1px; }
+    .pa-val { color: #a8b1ba; }
+    .pa-caveat { color: #6e7681; font-style: italic; }
+    .pa-agree { color: #3fb950; }
+    .pa-flag { color: #d29922; }
     .pool-inj { font-size: 10px; margin-top: 2px; line-height: 1.3; }
     .inj-plain { color: #6e7681; }
     .inj-heavy { color: #d29922; font-weight: 600; }
@@ -1356,6 +1369,71 @@
       }
     }
 
+    // Everything the NFL tab knows about these six games, put where the picks
+    // are.
+    //
+    // Shown, not ranked on. Nothing here moves a pick's position, and that
+    // stays true until a measurement says it should — the tab this borrows from
+    // is 16-16 with closing line value of minus a third of a point, so its
+    // judgement is worth reading and not worth obeying. A person deciding a
+    // real card wants the game behind the number either way.
+    //
+    // Joined by ESPN event id, which had to be added for this: a first attempt
+    // matched on team-name strings and silently found nothing.
+    async function fillPickAnalysis(picks) {
+      if (!picks || !picks.length) return;
+      let games = [];
+      try {
+        const r = await fetch('/api/predictions', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sport: 'nfl', ...(nflWeek ? { week: nflWeek } : {}) }),
+        });
+        const d = await r.json();
+        games = d.games || [];
+      } catch (e) { return; }
+      const byId = {};
+      for (const g of games) if (g.id) byId[g.id] = g;
+      for (const b of picks) {
+        const slot = document.getElementById('pa6-' + b.gameId);
+        const g = byId[b.gameId];
+        if (slot && g) slot.innerHTML = analysisHTML(g, b);
+      }
+    }
+
+    function analysisHTML(g, pick) {
+      const rows = [];
+      const away = (g.awayTeam || '').split(' ').pop();
+      const home = (g.homeTeam || '').split(' ').pop();
+
+      if (g.predictedScore) {
+        rows.push(['projection',
+          `${away} ${g.predictedScore.away} &ndash; ${g.predictedScore.home} ${home}` +
+          ' <span class="pa-caveat">recent scoring only, and it loses to the closing line, ' +
+          'so it is background rather than a reason</span>']);
+      }
+      if (g.bestBet && g.bestBet.pick) {
+        const same = g.bestBet.pick === pick.pick;
+        rows.push(['the live tab says', `${g.bestBet.label}: ${g.bestBet.pick}` + (same
+          ? ' <span class="pa-agree">same side as your pool pick</span>'
+          : ' <span class="pa-caveat">a different bet at a different number &mdash; that is the ' +
+            'book&rsquo;s line, not your frozen one</span>')]);
+      }
+      for (const f of (g.situationFlags || [])) {
+        rows.push(['flag', `<span class="pa-flag">${f.note}</span>`]);
+      }
+      if (g.weather && g.weather.windy) rows.push(['weather', `wind ${g.weather.windSpeed} mph`]);
+      if (g.assessment) rows.push(['the game', g.assessment]);
+      for (const k of (g.keyFactors || []).slice(0, 3)) rows.push(['', k]);
+      if (g.injuriesKnown === false) {
+        rows.push(['injuries', '<span class="pa-flag">report unavailable &mdash; do not read ' +
+          'that as both teams being healthy</span>']);
+      }
+      if (!rows.length) return '';
+      return `<details class="pa-box"><summary>the full breakdown</summary>${rows.map(([k, v]) =>
+        `<div class="pa-row"><span class="pa-key">${k}</span><span class="pa-val">${v}</span></div>`
+      ).join('')}</details>`;
+    }
+
     // The card, not the picks.
     //
     // Every number on this tab was per-pick, which is the wrong altitude for a
@@ -1553,6 +1631,10 @@
           target.innerHTML = '<div class="pool-note">Nothing to rank yet — the market has no line for those games.</div>';
           return;
         }
+        // Fired AFTER the picks are drawn. It is the same endpoint the NFL tab
+        // uses, so usually a cache hit, but on a cold week it takes the better
+        // part of a minute and the ranking should not wait behind it.
+        setTimeout(() => fillPickAnalysis(data.best || []), 0);
         target.innerHTML = `
           <h3 style="margin:0 0 10px">Best ${data.best.length} of ${data.considered}</h3>
           ${cardOddsHTML(data.card)}
@@ -1600,6 +1682,7 @@
                   return bits.length ? ' &middot; ' + bits.join(' &middot; ') : '';
                 })()}
               </div>
+              <div class="pick-analysis" id="pa6-${b.gameId}"></div>
             </div>`).join('')}
           <div class="pool-note" style="margin-top:12px">
             Percentages come from treating the current market number as the expected result and

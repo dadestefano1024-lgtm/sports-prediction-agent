@@ -3319,6 +3319,12 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
         ? model.poolCandidate(g.lineMovement.spreadMovement, g.lineMovement.totalMovement)
         : null,
 
+      // The ESPN event id, so anything else can join to this analysis instead of
+      // matching on team-name strings. The Pick 6 needs exactly that, and a
+      // first attempt to join the two by id silently matched nothing because
+      // this object never carried one.
+      id: g.id || g.espnId || null,
+
       injuriesKnown: g.injuriesKnown !== false,
       keyFactors: (commentary[g.homeTeam + '|' + g.awayTeam] || {}).keyFactors || [],
       assessment: (commentary[g.homeTeam + '|' + g.awayTeam] || {}).assessment || null,
@@ -4039,6 +4045,11 @@ async function handleNFLPredictions(res, oddsData, requestedWeek) {
         : [];
 
       return {
+        // Carried through so the finished analysis can be joined to by id rather
+        // than by matching team-name strings. The Pick 6 needs exactly that to
+        // show this breakdown beside a pool pick, and every sport gets it because
+        // all four handlers build the same shape.
+        id: event.id,
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
@@ -4157,6 +4168,11 @@ async function handleNBAPredictions(res, oddsData) {
         : [];
 
       return {
+        // Carried through so the finished analysis can be joined to by id rather
+        // than by matching team-name strings. The Pick 6 needs exactly that to
+        // show this breakdown beside a pool pick, and every sport gets it because
+        // all four handlers build the same shape.
+        id: event.id,
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
@@ -4249,6 +4265,11 @@ async function handleNHLPredictions(res, oddsData) {
         : [];
 
       return {
+        // Carried through so the finished analysis can be joined to by id rather
+        // than by matching team-name strings. The Pick 6 needs exactly that to
+        // show this breakdown beside a pool pick, and every sport gets it because
+        // all four handlers build the same shape.
+        id: event.id,
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
@@ -4348,6 +4369,11 @@ async function handleMLBPredictions(res, oddsData) {
         : [];
 
       return {
+        // Carried through so the finished analysis can be joined to by id rather
+        // than by matching team-name strings. The Pick 6 needs exactly that to
+        // show this breakdown beside a pool pick, and every sport gets it because
+        // all four handlers build the same shape.
+        id: event.id,
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
