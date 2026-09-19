@@ -2307,3 +2307,49 @@ test('the card says when it is leaning on unsupported picks', () => {
   assert.equal(c.unsupported, 2);
   assert.equal(c.complete, true);
 });
+
+// ---------------------------------------------------------------------------
+// The market's own number has to be a coin flip
+// ---------------------------------------------------------------------------
+test('betting the market number is 50/50 at every half point', () => {
+  // The defining property of a fair spread, and the check that caught the
+  // worst bug in this model. Key-number weights are indexed on |margin|, so
+  // they are symmetric about ZERO, not about the game being priced — the 2.834
+  // spike on 3 sat below the mean of any real favourite and dragged the whole
+  // distribution toward it. The dog won by up to 9 points at the market's own
+  // number, and a real fifteen-game card came back fifteen dogs.
+  for (const line of [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 13.5, 16.5]) {
+    const o = m.coverOutcomes({ predictedMargin: line, spread: -line, sigma: 10.82, sport: 'nfl' });
+    assert.ok(Math.abs(o.win - o.loss) < 0.005,
+      `at ${line} the market's own number gives fav ${(o.win * 100).toFixed(1)}% ` +
+      `and dog ${(o.loss * 100).toFixed(1)}% — it must be even`);
+  }
+});
+
+test('a whole-number line is symmetric with the push in the middle', () => {
+  for (const line of [3, 7, 10, 14]) {
+    const o = m.coverOutcomes({ predictedMargin: line, spread: -line, sigma: 10.82, sport: 'nfl' });
+    assert.ok(Math.abs(o.win - o.loss) < 0.005,
+      `at ${line} the two sides must be equal, got ${(o.win * 100).toFixed(1)} / ${(o.loss * 100).toFixed(1)}`);
+    assert.ok(o.push > 0.02, `${line} is a whole number and must be able to push`);
+    assert.ok(Math.abs(o.win + o.loss + o.push - 1) < 1e-6);
+  }
+});
+
+test('the pool half point is worth nothing when it only buys a push', () => {
+  // +3 against a market of +2.5 wins exactly the games +2.5 wins; the extra
+  // half only turns a loss into a push, and a push loses in this pool. The
+  // model used to price that at 53-56%.
+  const r = m.poolEdge({ sport: 'nfl', poolSpread: 3, poolAwaySpread: -3,
+                         marketSpread: 2.5, homeTeam: 'H', awayTeam: 'A' }).spread;
+  assert.ok(Math.abs(r.winProb - 0.5) < 0.01,
+    `holding +3 against a market +2.5 should be a coin flip, got ${(r.winProb * 100).toFixed(1)}%`);
+});
+
+test('a real gap is still worth something', () => {
+  // The fix must not flatten everything — 1.5 points across a market of 3.5 is
+  // a genuine edge and has to survive.
+  const r = m.poolEdge({ sport: 'nfl', poolSpread: -5, poolAwaySpread: 5,
+                         marketSpread: -3.5, homeTeam: 'H', awayTeam: 'A' }).spread;
+  assert.ok(r.winProb > 0.51, `a 1.5 pt gap should clear even money, got ${(r.winProb * 100).toFixed(1)}%`);
+});

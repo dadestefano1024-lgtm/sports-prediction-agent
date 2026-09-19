@@ -1261,14 +1261,65 @@ function buildIntegerPmf({ mean, sigma, lo, hi, weightFor }) {
   return pmf;
 }
 
+/**
+ * Probability of each integer margin, key numbers included — and RE-CENTRED.
+ *
+ * The weights are indexed on |margin|, so they are symmetric about zero and not
+ * about the game being priced. Weight 2.834 sits on 3; price a game the market
+ * makes a nine-point favourite and that enormous spike is on the low side of
+ * the mean, so normalising afterwards drags the whole distribution toward zero.
+ * Measured drift before this fix: -0.18 points at a mean of 2.5, -0.53 at 8.5,
+ * -0.63 at 13.5.
+ *
+ * A distribution whose mean is below the market's own number says every game
+ * lands closer than the market thinks, which favours the DOG at every line
+ * above three. It showed up exactly that way: betting the market's own number,
+ * which must be 50/50 by definition, came back 53.9% for the dog at 8.5 and
+ * 54.5% at 7.5, and a real fifteen-game card returned fifteen dogs and no
+ * favourites.
+ *
+ * So the underlying normal is shifted until the WEIGHTED distribution's mean is
+ * the mean that was asked for. The key numbers keep their shape; the centre
+ * stops moving. Solved by bisection because the relationship is monotone but
+ * has no closed form once arbitrary weights are involved.
+ */
 function marginPmf({ mean, sigma, sport, maxMargin = 70 }) {
   const key = String(sport || '').toLowerCase();
   const weights = key === 'nfl' ? NFL_KEY_NUMBER_WEIGHTS : {};
-  return buildIntegerPmf({
-    mean, sigma, lo: -maxMargin, hi: maxMargin,
-    weightFor: (m) => Object.prototype.hasOwnProperty.call(weights, Math.abs(m))
-      ? weights[Math.abs(m)] : 1,
+  const weightFor = (m) => Object.prototype.hasOwnProperty.call(weights, Math.abs(m))
+    ? weights[Math.abs(m)] : 1;
+  const build = (centre) => buildIntegerPmf({
+    mean: centre, sigma, lo: -maxMargin, hi: maxMargin, weightFor,
   });
+  if (!Object.keys(weights).length) return build(mean);
+
+  // Balanced on the MEDIAN, not the mean.
+  //
+  // Centring the mean was tried first and did not fix it: the mean landed
+  // exactly on target and the dog still won by 5.4 points at 7.5, because a
+  // key-number distribution is skewed and its mean and median are not the same
+  // place. A fair spread is defined by the median — it is the number where both
+  // sides are equally likely — so that is the property to enforce, and it is
+  // also exactly the sanity check that failed: bet the market's own number and
+  // get 50/50.
+  const tilt = (pmf) => {
+    let above = 0, below = 0;
+    for (const [m, p] of pmf) {
+      if (m > mean) above += p; else if (m < mean) below += p;
+    }
+    return above - below;
+  };
+
+  let lo = mean - 8, hi = mean + 8;
+  let pmf = build(mean);
+  if (Math.abs(tilt(pmf)) < 1e-4) return pmf;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    pmf = build(mid);
+    // More mass above the target means the centre is too high.
+    if (tilt(pmf) < 0) lo = mid; else hi = mid;
+  }
+  return build((lo + hi) / 2);
 }
 
 /**
