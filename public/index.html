@@ -1398,8 +1398,41 @@
 
     // Written back on a timer rather than on every keystroke, so typing a
     // two-digit number is one round trip instead of two.
+    // A pending edit that has not reached the server yet.
+    //
+    // This cost Danny a real number. The save is debounced, loadPool() refetches
+    // the shared copy whenever the tab or the week changes, and renderPool
+    // merges with the SERVER winning — so typing 10.5 and switching tabs inside
+    // the debounce window meant the fetch returned the old 9, the re-render put
+    // 9 back in the box, and the next save wrote 9 over the 10.5. Backgrounding
+    // a phone did the same thing more quietly: the timer simply never fired.
     let shareTimer = null;
+    let pendingLines = null;
+
+    /** Send whatever is pending right now, without waiting for the timer. */
+    function flushPoolLines() {
+      if (!pendingLines) return;
+      const body = JSON.stringify({ week: nflWeek, lines: pendingLines });
+      clearTimeout(shareTimer);
+      const toSave = pendingLines;
+      pendingLines = null;
+      // keepalive so it survives the page being hidden or closed mid-request.
+      fetch('/api/pool/nfl/lines', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body, keepalive: true,
+      }).then(() => { sharedLines = toSave; sharedAt = new Date().toISOString(); })
+        .catch(() => { /* the local copy still holds it */ });
+    }
+
+    // Leaving the page, hiding it, or switching apps on a phone all count.
+    window.addEventListener('pagehide', flushPoolLines);
+    window.addEventListener('beforeunload', flushPoolLines);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) flushPoolLines();
+    });
+
     function sharePoolLines(lines) {
+      pendingLines = lines;
       clearTimeout(shareTimer);
       shareTimer = setTimeout(async () => {
         try {
@@ -1411,6 +1444,7 @@
           sharedOk = !!d.shared;
           sharedLines = lines;
           sharedAt = new Date().toISOString();
+          if (pendingLines === lines) pendingLines = null;
           const el = document.getElementById('share-state');
           if (el) el.innerHTML = shareStateHTML();
         } catch (e) { /* the local copy still holds */ }
@@ -1436,6 +1470,9 @@
     }
 
     async function loadPool() {
+      // Anything typed but not yet sent goes first. Otherwise the fetch below
+      // returns the pre-edit copy and the re-render hands it straight back.
+      flushPoolLines();
       const content = document.getElementById('content');
       content.innerHTML = '<div class="loading"><div class="spinner"></div><div>Loading this week&rsquo;s games and market lines...</div></div>';
       try {
@@ -1525,7 +1562,12 @@
       // local copy is whatever THIS browser last typed and the server's is what
       // the pool actually posted.
       const local = savedPoolLines();
-      const saved = sharedOk ? { ...local, ...(sharedLines || {}) } : local;
+      // Server wins, EXCEPT while an edit is still on its way there. Without
+      // that exception a fetch landing mid-edit hands back the pre-edit number
+      // and the box silently reverts under the cursor.
+      const saved = (sharedOk && !pendingLines)
+        ? { ...local, ...(sharedLines || {}) }
+        : { ...(sharedLines || {}), ...local };
       if (!poolGames.length) {
         document.getElementById('content').innerHTML =
           '<div class="no-games">No upcoming NFL games in the next week.</div>';
