@@ -113,7 +113,12 @@
     }
     .games-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      /* min(420px, 100%), not a bare 420px. A bare minimum is a FLOOR, so on
+         any container narrower than it — every phone, and the Pick 6 holder
+         that was being squeezed by its own spinner — the column stayed 420
+         wide and pushed out past the edge. Measured at a 564px viewport: a
+         381px grid holding a 420px card. */
+      grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr));
       gap: 16px;
     }
     .game-card {
@@ -312,6 +317,9 @@
     /* The odds board: three columns, label then open then current. */
     .ob { border: 1px solid #21262d; border-radius: 6px; background: #10151c;
           overflow: hidden; margin-bottom: 12px; }
+    .ob-head3, .ob-row:has(.ob-mine) { grid-template-columns: 1fr 1fr 1fr 1fr !important; }
+    .ob-mine .ob-num { color: #58a6ff; font-weight: 700; }
+    .ob-mine-col { color: #58a6ff; }
     .ob-head, .ob-row { display: grid; grid-template-columns: 1fr 1fr 1fr;
                         align-items: center; }
     .ob-head { padding: 6px 10px; border-bottom: 1px solid #21262d;
@@ -959,35 +967,52 @@
             const changed = (a, z) => a !== null && a !== undefined &&
                                       z !== null && z !== undefined && a !== z;
 
-            const row = (label, oLine, oPx, cLine, cPx) => `
+            // Your frozen number sits BETWEEN open and current, because that is
+            // where it sits in time — the market opened, the pool posted its
+            // card, the market kept going. Reading left to right is then the
+            // week in order, and the two gaps either side of the middle column
+            // are the two different things that were being confused all week:
+            // how far the market has travelled, and how much of it you are
+            // holding.
+            const mine = opts.poolFor ? opts.poolFor(g) : null;
+            const row = (label, oLine, oPx, cLine, cPx, myLine) => `
               <div class="ob-row">
                 <div class="ob-label">${label}</div>
                 ${cell(oLine, oPx, false)}
+                ${mine ? `<div class="ob-cell ob-mine"><span class="ob-num">${
+                  myLine === null || myLine === undefined ? '&mdash;' : myLine
+                }</span><span class="ob-px">&nbsp;</span></div>` : ''}
                 ${cell(cLine, cPx, changed(oLine, cLine) || changed(oPx, cPx))}
               </div>`;
 
             linesHTML = `
               <div class="ob">
-                <div class="ob-head">
+                <div class="ob-head${mine ? ' ob-head3' : ''}">
                   <div class="ob-label">${b.book || 'Odds'}</div>
                   <div class="ob-col">Open</div>
+                  ${mine ? '<div class="ob-col ob-mine-col">Yours</div>' : ''}
                   <div class="ob-col">Current</div>
                 </div>
                 ${row(shortName(g.awayTeam),
                       pts(o.awaySpread), px(o.awaySpreadPrice),
-                      pts(c.awaySpread), px(c.awaySpreadPrice))}
+                      pts(c.awaySpread), px(c.awaySpreadPrice),
+                      mine ? pts(mine.awaySpread) : null)}
                 ${row(shortName(g.homeTeam),
                       pts(o.homeSpread), px(o.homeSpreadPrice),
-                      pts(c.homeSpread), px(c.homeSpreadPrice))}
+                      pts(c.homeSpread), px(c.homeSpreadPrice),
+                      mine ? pts(mine.spread) : null)}
                 ${row('Over',
                       o.total ?? '—', px(o.overPrice),
-                      c.total ?? '—', px(c.overPrice))}
+                      c.total ?? '—', px(c.overPrice),
+                      mine ? (mine.total ?? '—') : null)}
                 ${row('Under',
                       o.total ?? '—', px(o.underPrice),
-                      c.total ?? '—', px(c.underPrice))}
+                      c.total ?? '—', px(c.underPrice),
+                      mine ? (mine.total ?? '—') : null)}
                 ${row('Moneyline',
                       `${px(o.awayML) || '—'} / ${px(o.homeML) || '—'}`, '',
-                      `${px(c.awayML) || '—'} / ${px(c.homeML) || '—'}`, '')}
+                      `${px(c.awayML) || '—'} / ${px(c.homeML) || '—'}`, '',
+                      mine ? '—' : null)}
               </div>`;
           } else {
             // No opening numbers for this game. Show what there is rather than
@@ -1651,8 +1676,8 @@
 
         target.innerHTML = `<h3 style="margin:0 0 10px">Best ${picks.length} of ${data.considered}</h3>
           ${cardOddsHTML(data.card)}
-          <div class="loading" id="p6-cards"><div class="spinner"></div>
-            <div>Loading the full read on these six...</div></div>`;
+          <div id="p6-cards"><div class="loading"><div class="spinner"></div>
+            <div>Loading the full read on these six...</div></div></div>`;
 
         try {
           const r = await fetch('/api/predictions', {
@@ -1666,6 +1691,7 @@
             onlyIds: picks.map(b => b.gameId),
             extraFor: (g) => poolBlockHTML(byGame[g.id]),
             hidePoolFlag: true,
+            poolFor: (g) => (sharedOk ? (sharedLines || {}) : savedPoolLines())[g.id] || null,
           });
         } catch (e) {
           // The ranking is the part that matters and it is already computed;
