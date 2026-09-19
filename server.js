@@ -60,6 +60,23 @@ if (process.env.DATABASE_URL) {
       // number and must not be averaged in with the others.
       await pool.query(
         `ALTER TABLE picks ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'recommendation'`);
+      // Why the pick was made, recorded beside the pick itself.
+      //
+      // The app has argued all season about whether injuries and line movement
+      // should feed the recommendations, and the argument could not be settled
+      // because nothing ever wrote down whether they were PRESENT when a pick
+      // was made. Not "we measured and they do not help" — nobody could
+      // measure. A graded pick with these columns filled can answer it; one
+      // without them never will, however many of them pile up.
+      for (const col of [
+        'spread_movement NUMERIC',      // market open -> current, at pick time
+        'injuries_home INT',
+        'injuries_away INT',
+        'injury_baseline NUMERIC',      // league median that week
+        'stale_support NUMERIC',        // what the move-size bucket backs
+      ]) {
+        await pool.query(`ALTER TABLE picks ADD COLUMN IF NOT EXISTS ${col}`);
+      }
       // The pool's OWN lines, shared rather than per-browser.
       //
       // These lived in localStorage, which meant they lived on one device. Two
@@ -299,8 +316,10 @@ async function savePick(pickData) {
       INSERT INTO picks (
         sport, espn_game_id, home_team, away_team, game_time,
         market, pick, line, edge, confidence,
-        predicted_home, predicted_away, line_at_pick, source
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        predicted_home, predicted_away, line_at_pick, source,
+        spread_movement, injuries_home, injuries_away, injury_baseline, stale_support
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                $15, $16, $17, $18, $19)
       RETURNING id;
     `, [
       pickData.sport,
@@ -317,6 +336,11 @@ async function savePick(pickData) {
       pickData.predicted_away,
       pickData.line_at_pick,
       pickData.source || 'recommendation',
+      Number.isFinite(pickData.spread_movement) ? pickData.spread_movement : null,
+      Number.isFinite(pickData.injuries_home) ? pickData.injuries_home : null,
+      Number.isFinite(pickData.injuries_away) ? pickData.injuries_away : null,
+      Number.isFinite(pickData.injury_baseline) ? pickData.injury_baseline : null,
+      Number.isFinite(pickData.stale_support) ? pickData.stale_support : null,
     ]);
     return result.rows[0].id;
   } catch (err) {
@@ -364,6 +388,15 @@ async function savePicksFromGames(sport, games, eventMap) {
       // Points of advantage over the market, which is what was recommended on.
       edge: bet.advantagePts,
       confidence: game.confidence,
+      // The same signals the pool records, so the two tabs can be compared on
+      // equal terms later. This tab already USES injuries and movement; the
+      // pool does not. Recording both makes that a measurable difference
+      // instead of a standing argument.
+      spread_movement: (game.lineMovement && Number.isFinite(game.lineMovement.spreadMovement))
+        ? game.lineMovement.spreadMovement : null,
+      injuries_home: Number.isFinite(game.injuriesOutHome) ? game.injuriesOutHome : null,
+      injuries_away: Number.isFinite(game.injuriesOutAway) ? game.injuriesOutAway : null,
+      injury_baseline: Number.isFinite(game.injuryBaseline) ? game.injuryBaseline : null,
       predicted_home: game.predictedScore ? game.predictedScore.home : null,
       predicted_away: game.predictedScore ? game.predictedScore.away : null,
       line_at_pick: bet.line,
@@ -2884,6 +2917,15 @@ async function attachSituationFlags(games, sport) {
       qbOutSide = 'away';
     }
 
+    // Kept on the game, not just handed to situationFlags. savePicksFromGames
+    // records these against every pick so the question of whether injuries
+    // predict anything can eventually be answered, and reading them off `game`
+    // when they only existed as call arguments would have written nulls
+    // forever without raising a thing.
+    g.injuriesOutHome = outBySide.home;
+    g.injuriesOutAway = outBySide.away;
+    g.injuryBaseline = baseline;
+
     g.situationFlags = model.situationFlags({
       spreadMovement: lm.spreadMovement,
       totalMovement: lm.totalMovement,
@@ -3617,6 +3659,16 @@ async function savePoolPicks(sport, best, gamesById) {
         predicted_away: null,
         line_at_pick: b.poolLine,
         source: 'pool',
+        // The signals that were TRUE when this pick was made, so the question
+        // of whether they predict anything becomes answerable later. The
+        // ranking does not use them and deliberately does not: the NFL tab,
+        // which does use injuries and the rest, is running 16-16 with closing
+        // line value of minus a third of a point, so importing that machinery
+        // would be importing something not yet shown to work. Record first.
+        spread_movement: Number.isFinite(b.spreadMovement) ? b.spreadMovement : null,
+        stale_support: Number.isFinite(b.support) ? b.support : null,
+        injuries_home: b.injuriesHome, injuries_away: b.injuriesAway,
+        injury_baseline: b.injuryBaseline,
       });
       if (id) saved++;
     }
@@ -3644,11 +3696,18 @@ app.post('/api/pool/:sport', async (req, res) => {
     const week = Number.isFinite(Number(req.body && req.body.week))
       ? Math.min(NFL_WEEKS, Math.max(1, Number(req.body.week)))
       : await currentNflWeek();
-    const [wk, oddsData, openingLines] = await Promise.all([
+    const [wk, oddsData, openingLines, leagueInjuriesP, baselineP] = await Promise.all([
       fetchNflWeekEvents(week, year),
       fetchOdds(sport).catch(() => []),
       fetchEspnOpeningLines(sport).catch(() => ({})),
+      fetchLeagueInjuries(sport).catch(() => new Map()),
+      injuryBaseline(sport).catch(() => null),
     ]);
+    const injKeyP = (name) => String(name || '').toLowerCase().replace(/[^a-z]/g, '');
+    const outCountP = (team) => {
+      const list = leagueInjuriesP && leagueInjuriesP.get(injKeyP(team));
+      return list ? list.filter(i => i.level === 'out' && !i.longTerm).length : null;
+    };
     const events = wk.events;
 
     const candidates = [];
@@ -3734,6 +3793,8 @@ app.post('/api/pool/:sport', async (req, res) => {
         spreadMovement: Number.isFinite(lm.spreadMovement) ? lm.spreadMovement : null,
         openTotal: Number.isFinite(lm.openTotal) ? lm.openTotal : null,
         totalMovement: Number.isFinite(lm.totalMovement) ? lm.totalMovement : null,
+        injuriesHome: outCountP(homeFull), injuriesAway: outCountP(awayFull),
+        injuryBaseline: baselineP,
       };
       if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved });
       if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved });
