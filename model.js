@@ -2137,7 +2137,22 @@ function rankPoolPicks(candidates, count = 6) {
       // anything — measured at 50.5% over 190 games against a model saying ~54%.
       const as = Number.isFinite(a.rankScore) ? a.rankScore : a.winProb;
       const bs = Number.isFinite(b.rankScore) ? b.rankScore : b.winProb;
-      return (bs - as) || (b.winProb - a.winProb) || (b.gap - a.gap);
+      // A tenth of a point, not half of one. Support shrinks an unbacked edge
+      // hard, so a genuine 52.3% and a dead 50.0% can sit 0.003 apart on this
+      // scale — a 0.005 window called them tied and let the tiebreak sort a
+      // real edge below three coin flips.
+      if (Math.abs(as - bs) > 0.001) return bs - as;
+      // Tied on the number, which is most of a card whose lines all sit half a
+      // point off the market. Broken by whether the market has been moving
+      // TOWARD the side or away from it. This does not override an edge — it
+      // only decides between picks that have none, which is exactly the case
+      // where the app was recommending a team whose market had walked four
+      // points away from them and saying nothing about it.
+      const push = (c) => (c.headwind && c.headwind.against) ? c.headwind.points : 0;
+      const pull = (c) => (c.headwind && !c.headwind.against) ? c.headwind.points : 0;
+      const aScore = pull(a) - push(a), bScore = pull(b) - push(b);
+      if (aScore !== bScore) return bScore - aScore;
+      return (b.winProb - a.winProb) || (b.gap - a.gap);
     })
     .slice(0, count);
 }

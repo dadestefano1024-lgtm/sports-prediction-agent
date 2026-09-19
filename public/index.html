@@ -177,6 +177,10 @@
     .pool-block-off .pool-block-head strong { color: #8b949e; }
     .pool-block-off .pool-block-prob { color: #6e7681; }
     .pool-why-dogs { font-size: 11px; color: #8b949e; margin-top: 8px; line-height: 1.5; }
+    .pool-against { font-size: 11px; color: #d29922; margin-top: 5px; line-height: 1.45; }
+    .pool-against strong { color: #f0883e; }
+    .pool-against-inline { color: #d29922; }
+    .pool-with { font-size: 11px; color: #3fb950; margin-top: 5px; }
     .pool-block-dead { border-left-color: #f85149 !important; }
     .pool-dead { font-size: 11px; color: #f85149; margin-top: 5px; line-height: 1.45; }
     .pool-dead strong { color: #ff7b72; }
@@ -1561,6 +1565,20 @@
           Number.isFinite(mv) && Math.abs(mv) >= 0.5
             ? ` &middot; the market itself moved ${Math.abs(mv)}` : ''}</div>
         ${notes.length ? `<div class="pool-block-note">${notes.join(' &middot; ')}</div>` : ''}
+        ${(() => {
+          // Which way the money has been going, relative to the side being
+          // picked. Shown whenever the number gives no edge, because that is
+          // when it is the only thing left to go on.
+          const h = b.headwind;
+          if (!h) return '';
+          return h.against
+            ? `<div class="pool-against">The market has moved <strong>${h.points} points away</strong>
+                from this side since it opened. Your number gives you
+                ${b.gap === 0 ? 'nothing' : b.gap + ' pt' + (b.gap === 1 ? '' : 's')} over the current
+                line, so there is no cushion against being on the wrong end of that.</div>`
+            : `<div class="pool-with">The market has moved ${h.points} points
+                <strong>toward</strong> this side since it opened.</div>`;
+        })()}
         ${deadNote}
       </div>`;
     }
@@ -1878,7 +1896,10 @@
                     : (p.pushProb || 0) > 0.02
                       ? `neither side wins &mdash; your line sits on ${Math.abs(p.poolLine)}, which the
                          game lands on ${((p.pushProb || 0) * 100).toFixed(1)}% of the time, and a push loses here`
-                      : 'below even money &mdash; the market has moved past your number'}</div>
+                      : 'below even money &mdash; the market has moved past your number'}${
+                    p.headwind && p.headwind.against
+                      ? ` &middot; <span class="pool-against-inline">market has moved ${p.headwind.points} pts away from this side</span>`
+                      : ''}</div>
               </div>`;
             },
             hidePoolFlag: true,

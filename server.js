@@ -3870,7 +3870,24 @@ app.post('/api/pool/:sport', async (req, res) => {
         injuriesHome: outCountP(homeFull), injuriesAway: outCountP(awayFull),
         injuryBaseline: baselineP,
       };
-      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved });
+      // Is the market moving TOWARD the side being picked, or away from it?
+      //
+      // A frozen line with no daylight left is a coin flip, and this week
+      // twelve of fifteen are exactly that. When the edge is gone the question
+      // is no longer "which number is better" but "is there any reason to
+      // dislike this side", and a market that has moved four points away from
+      // it is the loudest reason available. Atlanta is the case: the app
+      // suppressed its own projection because the starting quarterback is out,
+      // the market moved four points off them, and the ranking recommended them
+      // anyway because it could not see either fact.
+      const headwind = (side) => {
+        if (!Number.isFinite(moved.spreadMovement)) return null;
+        const mv = moved.spreadMovement;   // + means the home number grew, home got worse
+        const against = side === 'home' ? mv > 0 : mv < 0;
+        return Math.abs(mv) < 0.5 ? null
+          : { against, points: +Math.abs(mv).toFixed(1) };
+      };
+      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved, headwind: headwind(edge.spread.side) });
       if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved });
     }
 
