@@ -1582,13 +1582,22 @@
           // when it is the only thing left to go on.
           const h = b.headwind;
           if (!h) return '';
+          // A total move is not an edge. The market moved two points on the
+          // Raiders and the tab said so, which reads like two points in hand —
+          // but a point and a half of it happened before the pool posted its
+          // number, and only the remainder is being held. Say which is which.
+          const held = b.gap;
+          const before = +(h.points - held).toFixed(1);
           return h.against
             ? `<div class="pool-against">The market has moved <strong>${h.points} points away</strong>
-                from this side since it opened. Your number gives you
-                ${b.gap === 0 ? 'nothing' : b.gap + ' pt' + (b.gap === 1 ? '' : 's')} over the current
-                line, so there is no cushion against being on the wrong end of that.</div>`
+                from this side since it opened, and your number gives you
+                ${held === 0 ? 'nothing' : held + ' pt' + (held === 1 ? '' : 's')} over the current
+                line &mdash; no cushion against being on the wrong end of it.</div>`
             : `<div class="pool-with">The market has moved ${h.points} points
-                <strong>toward</strong> this side since it opened.</div>`;
+                <strong>toward</strong> this side since it opened${before > 0
+                  ? ` &mdash; but ${before} of that happened before your line was posted, so what you
+                      actually hold is ${held === 0 ? 'nothing' : held + ' pt' + (held === 1 ? '' : 's')}`
+                  : ''}.</div>`;
         })()}
         ${(() => {
           // Does the projection have this side covering its own frozen number?

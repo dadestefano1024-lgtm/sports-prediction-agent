@@ -2403,3 +2403,14 @@ test('half a point of daylight is worth nothing; a full point is not', () => {
   assert.ok(Math.abs(win(-5, -4.5) - 0.5) < 0.01, 'half a point cannot beat even money');
   assert.ok(win(-5, -3.5) > 0.51, 'a point and a half has to');
 });
+
+test('a push loses for both sides, not just the one taking points', () => {
+  // Pool line -8, the favourite wins by exactly 8. Neither ticket cashes.
+  const r = m.poolEdge({ sport: 'nfl', poolSpread: -8, poolAwaySpread: 8,
+                         marketSpread: -8.5, homeTeam: 'H', awayTeam: 'A' }).spread;
+  assert.ok(r.pushProb > 0.02, 'a whole number must be able to land on itself');
+  assert.ok(Math.abs(r.winProb + r.otherSideProb + r.pushProb - 1) < 0.005,
+    'win + other side + push must be the whole of it, with the push belonging to nobody');
+  assert.ok(r.winProb + r.otherSideProb < 1 - 0.02,
+    'the two sides together must NOT add to one — the push is not shared out');
+});
