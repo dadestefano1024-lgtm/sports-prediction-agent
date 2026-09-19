@@ -176,6 +176,10 @@
     .pool-block-off .pool-block-head { color: #6e7681; }
     .pool-block-off .pool-block-head strong { color: #8b949e; }
     .pool-block-off .pool-block-prob { color: #6e7681; }
+    .pool-why-dogs { font-size: 11px; color: #8b949e; margin-top: 8px; line-height: 1.5; }
+    .pool-block-dead { border-left-color: #f85149 !important; }
+    .pool-dead { font-size: 11px; color: #f85149; margin-top: 5px; line-height: 1.45; }
+    .pool-dead strong { color: #ff7b72; }
     .feed-warn { background: #2b2113; border: 1px solid #4a3a12; border-radius: 6px;
                  padding: 9px 12px; margin-bottom: 12px; font-size: 12px; color: #d29922; }
     .rec-badge { background: #1f6feb; color: #fff; font-size: 10px; font-weight: 700;
@@ -1532,7 +1536,22 @@
       if (b.deadProb > 0.005) notes.push(`${(b.deadProb * 100).toFixed(1)}% neither side wins`);
       if (b.pushProb > 0.005) notes.push(`${(b.pushProb * 100).toFixed(1)}% lands on the number — a loss here`);
       const mv = b.market === 'total' ? b.totalMovement : b.spreadMovement;
-      return `<div class="pool-block">
+      // Neither side winning is a real state and it was never reported.
+      //
+      // The pool posts whole numbers, a push LOSES here, and a whole number on
+      // a 3 lands on itself 9.3% of the time. That dead mass comes off BOTH
+      // sides, so on this week's card five games have no side that clears even
+      // money — the app ranked them and recommended the better half of a losing
+      // proposition without ever saying so.
+      const bothLose = b.winProb < 0.5 && (b.pushProb || 0) > 0.02;
+      const deadNote = bothLose
+        ? `<div class="pool-dead">Neither side wins here. Your line sits on
+             <strong>${Math.abs(b.poolLine)}</strong>, which the game lands on exactly
+             ${((b.pushProb || 0) * 100).toFixed(1)}% of the time &mdash; and a push is a loss in
+             this pool, so it comes off both sides. The better half is still only
+             ${(b.winProb * 100).toFixed(1)}%. Spend the slot elsewhere.</div>`
+        : '';
+      return `<div class="pool-block${bothLose ? ' pool-block-dead' : ''}">
         <div class="pool-block-head">${isRecommended
             ? '<span class="rec-badge">Recommended</span> ' : ''}Your pool pick
           <strong>${b.pick}</strong>
@@ -1542,6 +1561,7 @@
           Number.isFinite(mv) && Math.abs(mv) >= 0.5
             ? ` &middot; the market itself moved ${Math.abs(mv)}` : ''}</div>
         ${notes.length ? `<div class="pool-block-note">${notes.join(' &middot; ')}</div>` : ''}
+        ${deadNote}
       </div>`;
     }
 
@@ -1689,6 +1709,11 @@
           the way the pool posts it. So a normal line is <strong>+3</strong> away and
           <strong>-3</strong> home, and the home box fills itself in until you change it.
           <div id="share-state" class="share-state">${shareStateHTML()}</div>
+          <div class="pool-why-dogs">Most picks come back as plus numbers, and that is the pool's
+          doing rather than a quirk here: it posts whole numbers while the market prices in halves,
+          so a market of <strong>-2.5</strong> becomes a pool line of <strong>-3</strong> &mdash;
+          the dog gets the extra half point and the favourite pays for it. Margins also cluster on
+          3, which from a line of 7 or 9 sits on the dog's side. Both point the same way.</div>
 
         </div>
         <div style="margin-bottom:14px">
@@ -1843,7 +1868,10 @@
                   &middot; ${p.gap} pt${p.gap === 1 ? '' : 's'} &mdash;
                   ${p.winProb >= 0.52 ? 'playable, just not top six'
                     : p.winProb >= 0.5 ? 'a coin flip; the number is barely better than the market'
-                    : 'below even money &mdash; the market has moved past your number here'}</div>
+                    : (p.pushProb || 0) > 0.02
+                      ? `neither side wins &mdash; your line sits on ${Math.abs(p.poolLine)}, which the
+                         game lands on ${((p.pushProb || 0) * 100).toFixed(1)}% of the time, and a push loses here`
+                      : 'below even money &mdash; the market has moved past your number'}</div>
               </div>`;
             },
             hidePoolFlag: true,
