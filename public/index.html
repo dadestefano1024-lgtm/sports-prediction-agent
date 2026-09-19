@@ -212,6 +212,10 @@
     .card-sub { color: #6e7681; font-size: 12px; }
     .card-line { font-size: 11px; color: #8b949e; margin-top: 4px; }
     .card-warn { color: #d29922; }
+    .pool-longform { margin-top: 18px; }
+    .pool-longform > summary { cursor: pointer; font-size: 12px; color: #58a6ff;
+                               list-style: none; padding: 6px 0; }
+    .pool-longform > summary::-webkit-details-marker { display: none; }
     .pool-note {
       background: #161b22; border: 1px solid #30363d; border-radius: 6px;
       padding: 12px 14px; margin-bottom: 14px; color: #8b949e; font-size: 12px; line-height: 1.5;
@@ -1485,6 +1489,16 @@
         // resolved rather than whatever this tab thought the week was.
         await loadSharedLines();
         renderPool();
+        // Rank straight away when there is something to rank.
+        //
+        // The card is entered once on Wednesday and read on Sunday, so by the
+        // time this tab is opened the answer is already determined. Making
+        // someone press a button to be shown what the app has already worked
+        // out is a step that exists for no reason. Skipped on an empty week,
+        // where the button is the prompt to start entering.
+        const entered = Object.values(sharedOk ? (sharedLines || {}) : savedPoolLines())
+          .filter(v => v && (Number.isFinite(v.spread) || Number.isFinite(v.total))).length;
+        if (entered) rankPool();
       } catch (err) {
         content.innerHTML = `<div class="error">❌ ${err.message}</div>`;
       }
@@ -1666,8 +1680,16 @@
           the way the pool posts it. So a normal line is <strong>+3</strong> away and
           <strong>-3</strong> home, and the home box fills itself in until you change it.
           <div id="share-state" class="share-state">${shareStateHTML()}</div>
-          <br><br>
-          Where the pool lays points BOTH ways &mdash; <strong>-2</strong> against
+
+        </div>
+        <div style="margin-bottom:14px">
+          <button class="btn btn-primary" onclick="rankPool()">Re-rank my picks</button>
+        </div>
+        <div id="pool-results"></div>
+        <!-- The long read sits UNDER the picks now. It is worth having and it is
+             not worth reading every single week before getting to the card. -->
+        <details class="pool-longform"><summary>How this is scored, and why spreads and not totals</summary>
+          <div class="pool-note">          Where the pool lays points BOTH ways &mdash; <strong>-2</strong> against
           <strong>-2</strong> on a tight game, no plus money anywhere &mdash; type both numbers.
           That is not a spread and it is not priced like one: whichever side you take has to win
           by three, and if the game lands inside two points either way, both picks lose. On an
@@ -1685,11 +1707,8 @@
           still worth what the arithmetic says &mdash; there is just no evidence behind it the way
           there is for spreads. Given a choice between a stale spread and a stale total, take the
           spread.
-        </div>
-        <div style="margin-bottom:14px">
-          <button class="btn btn-primary" onclick="rankPool()">Rank my picks</button>
-        </div>
-        <div id="pool-results"></div>
+</div>
+        </details>
         <table class="pool-table">
           <thead><tr>
             <th>Game</th><th>${(() => {
