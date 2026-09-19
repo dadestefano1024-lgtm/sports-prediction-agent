@@ -84,6 +84,25 @@ if (process.env.DATABASE_URL) {
           PRIMARY KEY (sport, week, game_id)
         );
       `);
+      // Where the number has BEEN, not just where it opened and where it is.
+      //
+      // ESPN gives two points, open and current, and that is not the week Danny
+      // actually plays: his pool posts its card on Wednesday, so what matters is
+      // what the market said before that and what it says on Sunday when he
+      // picks. Nobody sells that history, so it has to be recorded — from now
+      // forward, every couple of hours, for free off the scoreboard.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS line_history (
+          sport TEXT NOT NULL,
+          game_id TEXT NOT NULL,
+          captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          spread NUMERIC,
+          total NUMERIC,
+          PRIMARY KEY (sport, game_id, captured_at)
+        );
+      `);
+      await pool.query(
+        `CREATE INDEX IF NOT EXISTS idx_line_history_game ON line_history(sport, game_id, captured_at);`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_picks_game ON picks(espn_game_id);`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_picks_ungraded ON picks(result) WHERE result IS NULL;`);
       dbReady = true;
@@ -95,6 +114,89 @@ if (process.env.DATABASE_URL) {
   })();
 } else {
   console.log('[DB] DATABASE_URL not set — pick tracking disabled');
+}
+
+// ============================================================================
+// LINE HISTORY — what the number was on the days that matter
+// ============================================================================
+
+/**
+ * Snapshot every current game's spread and total.
+ *
+ * Deliberately reads the ESPN board rather than the paid odds feed: this runs
+ * on a timer whether anyone is looking or not, and it is not worth a request
+ * from a 500-a-month allowance to learn that a line did not move.
+ *
+ * One row per game per capture. Consecutive identical rows are not collapsed —
+ * "the line held at -3 for four days" is a fact about the week, and a table
+ * that only stores changes cannot tell it apart from a gap in the recording.
+ */
+async function captureLineSnapshot(sport = 'nfl') {
+  if (!dbReady || !pool) return 0;
+  try {
+    const lines = await fetchEspnOpeningLines(sport);
+    const entries = Object.entries(lines || {});
+    if (!entries.length) return 0;
+    let saved = 0;
+    for (const [gameId, v] of entries) {
+      const spread = Number.isFinite(v.currentSpread) ? v.currentSpread : null;
+      const total = Number.isFinite(v.currentTotal) ? v.currentTotal : null;
+      if (spread === null && total === null) continue;
+      await pool.query(
+        `INSERT INTO line_history (sport, game_id, spread, total)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (sport, game_id, captured_at) DO NOTHING`,
+        [sport, gameId, spread, total]);
+      saved++;
+    }
+    console.log(`[LINE_HISTORY] ${sport}: snapshotted ${saved} games`);
+    return saved;
+  } catch (err) {
+    console.error('[LINE_HISTORY]', err.message);
+    return 0;
+  }
+}
+
+/**
+ * One point per day rather than every snapshot.
+ *
+ * Twelve captures a day across a football week is eighty-odd points per game,
+ * which is not a thing anybody reads. The last reading of each Eastern day is,
+ * because the question being asked is "what did it say on Monday, and what does
+ * it say now" — days, not hours.
+ */
+function dailyLineSummary(series) {
+  const byDay = new Map();
+  for (const point of series || []) {
+    const day = espnDayKey(point.at);
+    if (!day) continue;
+    byDay.set(day, { day, spread: point.spread, total: point.total, at: point.at });
+  }
+  return [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
+/** Every snapshot held for a set of games, oldest first. */
+async function getLineHistory(sport, gameIds) {
+  if (!dbReady || !pool || !gameIds || !gameIds.length) return {};
+  try {
+    const { rows } = await pool.query(
+      `SELECT game_id, captured_at, spread, total
+         FROM line_history
+        WHERE sport = $1 AND game_id = ANY($2)
+        ORDER BY captured_at ASC`, [sport, gameIds]);
+    const out = {};
+    for (const r of rows) {
+      (out[r.game_id] = out[r.game_id] || []).push({
+        at: r.captured_at,
+        spread: r.spread === null ? null : Number(r.spread),
+        total: r.total === null ? null : Number(r.total),
+      });
+    }
+    return out;
+  } catch (err) {
+    console.error('[LINE_HISTORY] read:', err.message);
+    return {};
+  }
 }
 
 // ============================================================================
@@ -3349,15 +3451,31 @@ app.get('/api/pool/:sport', async (req, res) => {
     // market had hammered six points looked identical here to one that never
     // moved. It is the same cached call the other tabs make, so it costs
     // nothing to ask.
-    const [wk, oddsData, openingLines] = await Promise.all([
+    // Injuries come along too. The prediction cards have had them all season
+    // while this tab had nothing — and a line that moves on Thursday because a
+    // quarterback is out is precisely the case where a number frozen on
+    // Wednesday is worth holding or worth avoiding. Both calls are cached.
+    const [wk, oddsData, openingLines, leagueInjuries, baseline] = await Promise.all([
       fetchNflWeekEvents(week, year),
       fetchOdds(sport).catch(() => []),
       fetchEspnOpeningLines(sport).catch(() => ({})),
+      fetchLeagueInjuries(sport).catch(() => new Map()),
+      injuryBaseline(sport).catch(() => null),
     ]);
+    const injKey = (name) => String(name || '').toLowerCase().replace(/[^a-z]/g, '');
+    const outCount = (team) => {
+      const list = leagueInjuries && leagueInjuries.get(injKey(team));
+      if (!list) return null;
+      return list.filter(i => i.level === 'out' && !i.longTerm).length;
+    };
     // Every game in the week, played or not. A finished game is left in with
     // its result rather than vanishing, because a pool entry is made against
     // the whole week and a card that quietly shrinks is confusing.
     const events = wk.events;
+    // What the number has been on each day of the week. Empty until the
+    // recorder has been running a while, which is honest — there is no
+    // historical feed to backfill from.
+    const history = await getLineHistory(sport, events.map(e => e.id));
 
     const games = events.map(event => {
       const comp = event.competitions[0];
@@ -3421,6 +3539,17 @@ app.get('/api/pool/:sport', async (req, res) => {
             openTotal: Number.isFinite(lm.openTotal) ? lm.openTotal : null,
             totalMovement: Number.isFinite(lm.totalMovement) ? lm.totalMovement : null,
           };
+        })(),
+        // Day by day through the week, so the number the pool froze on
+        // Wednesday can be read against what the market said before and after.
+        lineDays: dailyLineSummary(history[event.id]),
+        // Players ruled out per side, against the league median. Counts rather
+        // than a verdict: who is out is a fact, what it is worth is not, and
+        // this tab has no measured injury effect to claim one with.
+        injuriesOut: (() => {
+          const h = outCount(homeFull), a = outCount(awayFull);
+          if (h === null && a === null) return null;
+          return { home: h, away: a, baseline };
         })(),
         bookmaker: odds ? odds.bookmaker : null,
       };
@@ -4792,6 +4921,16 @@ setInterval(() => {
 setInterval(() => {
   captureClosingLines().catch(e => console.error('[CLV_JOB]', e.message));
 }, 10 * 60 * 1000);
+
+// Line history every two hours. Frequent enough to show a Thursday injury
+// moving a number, sparse enough that a week of football is a few dozen rows
+// per game, and free because it reads the scoreboard rather than the paid feed.
+setInterval(() => {
+  captureLineSnapshot('nfl').catch(e => console.error('[LINE_HISTORY]', e.message));
+}, 2 * 60 * 60 * 1000);
+setTimeout(() => {
+  captureLineSnapshot('nfl').catch(e => console.error('[LINE_HISTORY]', e.message));
+}, 60000);
 setTimeout(() => {
   captureClosingLines().catch(e => console.error('[CLV_JOB]', e.message));
 }, 45000);
