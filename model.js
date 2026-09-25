@@ -1916,12 +1916,19 @@ function staleSupport(gap) {
  * unpenalised side therefore prices at exactly 50.0% and never above it, which
  * is what twelve of the fifteen did.
  *
- * It is DETECTED, never assumed. A single whole number is evidence of nothing --
- * only the card as a whole carries the signature. A market already sitting on a
- * whole number needed no rounding, so it cannot confirm or deny and is counted
- * out of the denominator rather than scored as a match. If the sheet's source
- * ever stops rounding, the share falls and this abstains instead of inventing a
- * posting number for the rest of the file to measure movement against.
+ * It is DETECTED, never assumed, and only the games that can SPEAK to the rule
+ * are counted. A residual of exactly half a point says which way the sheet
+ * rounds. A residual of zero means the market was already whole and needed no
+ * rounding. A residual of a full point or more is the market having moved since
+ * Wednesday, which says nothing about the rule either way -- scoring those as
+ * failures is what made this abstain on Week 3, a card with four real movers.
+ * Both-lay games are excluded upstream, because a pool laying points on both
+ * sides is not a rounded single number at all.
+ *
+ * It stays falsifiable: a sheet rounding toward zero scores zero, and a sheet
+ * that does not round lands almost nothing on a half point and abstains on
+ * sample size. If the source ever stops rounding, no posting number is invented
+ * for the rest of the file to measure movement against.
  *
  * The earlier version of this check compared the card against the OPENING line
  * and concluded there was no rounding. The open is Monday or earlier and was
@@ -1931,17 +1938,33 @@ function staleSupport(gap) {
 function detectPoolRounding(entries) {
   const usable = (entries || []).filter(e => e &&
     Number.isFinite(e.poolLine) && Number.isFinite(e.marketLine));
-  let matched = 0, whole = 0;
+  let up = 0, down = 0, whole = 0, moved = 0;
   for (const e of usable) {
-    if (Math.abs(e.marketLine - Math.round(e.marketLine)) < 1e-9) { whole++; continue; }
-    const up = Math.sign(e.marketLine || 1) * Math.ceil(Math.abs(e.marketLine));
-    if (Math.abs(up - e.poolLine) < 1e-9) matched++;
+    // The residual in MAGNITUDE. Rounding away from zero makes the pool number
+    // exactly half a point bigger than a market sitting on a half; rounding
+    // toward zero makes it exactly half a point smaller.
+    const r = Math.abs(e.poolLine) - Math.abs(e.marketLine);
+    if (Math.abs(r) < 1e-9) { whole++; continue; }
+    if (Math.abs(r - 0.5) < 1e-9) { up++; continue; }
+    if (Math.abs(r + 0.5) < 1e-9) { down++; continue; }
+    // A full point or more is the MARKET having moved since the card was
+    // posted. It is silent on which way the sheet rounds, so it must not be
+    // scored as a failure of the rounding rule.
+    //
+    // Counting it as one was the original mistake here, and it broke the check
+    // in the direction that hides the most: the more the market moves after
+    // Wednesday, the fewer games match, so confidence fell exactly when the
+    // reconstruction became most useful. Week 3 read 7 of 11 and abstained on a
+    // card with four real movers, where the games that carry information about
+    // the rule ran 8 up to 2 down.
+    moved++;
   }
-  const testable = usable.length - whole;
-  const share = testable > 0 ? matched / testable : 0;
+  const testable = up + down;
+  const share = testable > 0 ? up / testable : 0;
   return {
     rounds: testable >= 6 && share >= 0.7,
-    matched, testable, whole, total: usable.length, share: +share.toFixed(3),
+    matched: up, against: down, testable, whole, moved,
+    total: usable.length, share: +share.toFixed(3),
   };
 }
 

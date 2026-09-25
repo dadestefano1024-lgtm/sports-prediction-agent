@@ -2436,11 +2436,13 @@ const WEEK2 = [
 test('the Week 2 card is detected as rounded away from zero', () => {
   const r = m.detectPoolRounding(WEEK2);
   assert.equal(r.whole, 2, 'two markets already sat on a whole number and prove nothing');
-  assert.equal(r.testable, 13);
-  // The two misses are Saints/Ravens and Commanders/Cowboys, which are exactly
-  // the two games the market moved a full point on after the card was posted.
+  assert.equal(r.moved, 1, 'Commanders/Cowboys had moved a point and a half — silent on the rule');
+  assert.equal(r.testable, 12, 'only the half-point residuals speak to the rounding');
+  // The one dissenter is Saints/Ravens, where the market moved half a point to
+  // the favourite after the card was posted and overtook the rounded number.
   assert.equal(r.matched, 11);
-  assert.ok(r.rounds, '11 of 13 has to read as a rounded sheet');
+  assert.equal(r.against, 1);
+  assert.ok(r.rounds);
 });
 
 test('the totals half of the same sheet carries the same signature', () => {
@@ -2585,4 +2587,43 @@ test('a real edge still outranks any amount of movement on a coin flip', () => {
     { pick: 'edge', winProb: 0.523, rankScore: 0.5034, gap: 1.5, tested: true },
   ], 2);
   assert.equal(ranked[0].pick, 'edge', 'movement breaks ties, it does not overrule a number');
+});
+
+// Danny's Week 3 card (posted Wed 23 Sep 2026) against the market on the Friday.
+// Kept because it is the week that broke the first version of the detector: four
+// games had moved a full point or more, and counting those as failures of the
+// rounding rule dropped it to 7 of 11 and made it abstain.
+const WEEK3 = [
+  { poolLine:  3, marketLine:  2.5 }, { poolLine:  4, marketLine:  3.5 },
+  { poolLine:  3, marketLine:  1.5 }, { poolLine: 12, marketLine: 10.5 },
+  { poolLine: -7, marketLine: -7   }, { poolLine: -7, marketLine: -6.5 },
+  { poolLine:  7, marketLine:  7.5 }, { poolLine: -3, marketLine: -2.5 },
+  { poolLine: -3, marketLine: -3   }, { poolLine: -9, marketLine: -8.5 },
+  { poolLine:  3, marketLine:  3.5 }, { poolLine: -4, marketLine: -3   },
+  { poolLine:  3, marketLine:  2.5 }, { poolLine:  5, marketLine:  4.5 },
+];
+
+test('movement does not count against the rounding rule', () => {
+  const r = m.detectPoolRounding(WEEK3);
+  assert.equal(r.moved, 3, 'Texans, Chiefs and Raiders had all moved a point or more');
+  assert.equal(r.whole, 2);
+  assert.equal(r.testable, 9, 'nine games sat exactly half a point off the market');
+  assert.equal(r.matched, 7);
+  assert.equal(r.against, 2, 'Seahawks and Ravens, both overtaken by half a point');
+  assert.ok(r.rounds, '7 of 9 is a rounded sheet; the first version scored 7 of 11 and abstained');
+});
+
+test('the detector can still say no when the market has moved a lot', () => {
+  // The guard against the fix going too far. Same four movers, but the
+  // half-point games now sit on the TOWARD-zero side. Excluding movement must
+  // not make the answer unconditional.
+  const flipped = WEEK3.map(e => {
+    const r = Math.abs(e.poolLine) - Math.abs(e.marketLine);
+    if (Math.abs(r - 0.5) > 1e-9) return e;        // only the away-from-zero ones
+    return { ...e, poolLine: e.poolLine - Math.sign(e.poolLine) };
+  });
+  const r = m.detectPoolRounding(flipped);
+  assert.equal(r.moved, 3, 'the movers are untouched');
+  assert.ok(r.matched < r.against, 'the half-point games now point the other way');
+  assert.ok(!r.rounds);
 });

@@ -3892,7 +3892,14 @@ app.post('/api/pool/:sport', async (req, res) => {
       // signature is measured on one consistent axis. The spread candidate
       // reports its numbers from the side being backed, which flips sign game
       // to game and would smear the signature across two conventions.
-      if (usableSpread && Number.isFinite(poolSpread) && Number.isFinite(marketSpread)) {
+      // Both-lay games sit out. When the pool lays points on BOTH sides -- this
+      // week's Vikings -2 / Buccaneers -2 -- the number is not a rounded market
+      // price, it is a two-sided construction on a near pick-em, so it cannot
+      // testify about the rounding rule in either direction.
+      const mirrored = !Number.isFinite(poolAway) ||
+        Math.abs(poolAway - (-poolSpread)) < 1e-9;
+      if (usableSpread && mirrored &&
+          Number.isFinite(poolSpread) && Number.isFinite(marketSpread)) {
         roundingSample.spread.push({ poolLine: poolSpread, marketLine: marketSpread });
       }
       if (Number.isFinite(poolTotal) && Number.isFinite(marketTotal)) {
