@@ -205,6 +205,10 @@
                      padding: 10px 12px; margin: 0 0 12px; font-size: 12px; color: #8b949e;
                      line-height: 1.55; }
     .pool-rounding strong { color: #c9d1d9; }
+    .sit-flag-measured { font-size: 11px; color: #8b949e; line-height: 1.5;
+                         margin: 4px 0 6px 0; padding-left: 10px;
+                         border-left: 2px solid #30363d; }
+    .sit-flag-measured strong { color: #c9d1d9; }
     .pool-block { background: #10151c; border-left: 3px solid #58a6ff; border-radius: 4px;
                   padding: 8px 10px; margin-bottom: 10px; }
     .pool-block-head { font-size: 13px; color: #8b949e; }
@@ -1260,8 +1264,17 @@
                 // Situation flags sit with the verdict because they are the
                 // reason to look past it: the verdict grades price, a flag says
                 // the price may not have caught up with what is known.
-                const flags = (g.situationFlags || []).map(f =>
-                  `<div class="sit-flag ${f.severity}">${f.note}</div>`).join('');
+                const flags = (g.situationFlags || []).map(f => {
+                  const measured = f.type === 'qb-static-line'
+                    ? `<div class="sit-flag-measured">Over 2023&ndash;25, fading a team starting a
+                        backup went <strong>58.4%</strong> on the 77 games where it disagreed with
+                        the market&rsquo;s move, against 37.7% for following the move. It is not
+                        scored here: 2023 ran 48.3% against 64% in each of the last two seasons,
+                        and there are no opening lines before late 2023 to settle it. Your own read
+                        on the quarterback is better than anything the app has.</div>`
+                    : '';
+                  return `<div class="sit-flag ${f.severity}">${f.note}</div>${measured}`;
+                }).join('');
                 if (silent) return `${pf}${flags}`;
                 // A verdict that carries its working says everything in there,
                 // so the one-line reason and the caveat are dropped rather than

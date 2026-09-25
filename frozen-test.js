@@ -195,7 +195,7 @@ const before = (logs, cutoff) => {
           leagueAvg: rated.leagueAvg, sport: 'nfl',
         });
         if (!proj) continue;
-        rows.push({ year: year, week: week, hn: hn, an: an, margin: fh - fa,
+        rows.push({ id: ev.id, year: year, week: week, hn: hn, an: an, margin: fh - fa,
                     open: sp.open, close: sp.close, proj: proj.predictedMargin });
       }
       save();
@@ -204,7 +204,13 @@ const before = (logs, cutoff) => {
     }
   }
   save();
-  fs.writeFileSync('./frozen-rows.json', JSON.stringify(rows));
+  const prior = fs.existsSync('./frozen-rows.json')
+    ? JSON.parse(fs.readFileSync('./frozen-rows.json', 'utf8')) : [];
+  const merged = new Map();
+  for (const r of prior) merged.set(String(r.id), r);
+  for (const r of rows) merged.set(String(r.id), r);
+  fs.writeFileSync('./frozen-rows.json', JSON.stringify([...merged.values()]));
+  console.log('frozen-rows.json now holds ' + merged.size + ' games');
   console.error('');
   console.log('rows: ' + rows.length + '  (' + FIRST + '-' + LAST +
     ', network calls this run: ' + fetched + ')\n');
