@@ -938,6 +938,26 @@
         return;
       }
 
+      // "No lean" and "no data" are the same picture, and only one is fixable.
+      //
+      // Every verdict on this board comes from the paid odds feed having a
+      // better NUMBER than the rest of the market. With the feed empty, all
+      // sixteen games read "No lean" and "No edge", which looks like the app
+      // having examined them and shrugged. It has not examined anything.
+      //
+      // This lived inside loadPool, so the Pick 6 tab said so and the NFL tab —
+      // the one whose entire verdict depends on that price — did not. A notice
+      // bolted onto one caller is the wrong altitude for a fact about the feed,
+      // so it is stated here, once, where every board renders.
+      const wantsBook = games.some(g => g.bestBet || g.spreadPick);
+      const feedWarn = (wantsBook && !games.some(g => g.myBook))
+        ? '<div class="feed-warn">The paid odds feed has no data right now, so there is no ' +
+          'book price to compare. Every game below reads as <em>No lean</em> because nothing ' +
+          'could be priced &mdash; not because the sides were examined and found even. The ' +
+          'pool numbers, the market moves, the injuries and the write-ups come from free ' +
+          'sources and are unaffected.</div>'
+        : '';
+
       // Sorted, not filtered: every game is still here, the ones worth acting
       // on are just at the top instead of scattered down a fifteen-game card.
       // Stable within a rank, so kickoff order survives underneath.
@@ -1282,6 +1302,7 @@
         (opts.header !== undefined
           ? opts.header
           : (currentSport === 'nfl' ? weekPickerHTML(nflWeek, nflWeeks) : '')) +
+        feedWarn +
         `<div class="games-grid">${html}</div>`;
     }
 
@@ -1987,16 +2008,7 @@
           // and no verdict box renders anywhere, which reads like the app
           // having no opinion rather than no data. Say which it is, because
           // the two look identical on screen and only one of them is fixable.
-          const noBook = (pred.games || []).length > 0 &&
-            !(pred.games || []).some(x => x.myBook);
-          if (noBook) {
-            const holder = document.getElementById('p6-cards');
-            if (holder) holder.insertAdjacentHTML('beforebegin',
-              '<div class="feed-warn">The paid odds feed has no data right now, so there is no ' +
-              'book price to compare and every game below reads as <em>No lean</em>. The pool ' +
-              'numbers, the market moves, the injuries and the write-ups are all from free ' +
-              'sources and are unaffected.</div>');
-          }
+          // The dead-feed notice is stated by renderGames for every board.
           // Every game, not just the six.
           //
           // Danny has said twice that he wants to see the whole board, and the

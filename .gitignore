@@ -6,3 +6,6 @@ epatest-cache.json
 sharptest-cache.json
 nfl-history.json
 nfl-open-close.json
+frozen-cache.json
+frozen-out.txt
+frozen-err.txt
