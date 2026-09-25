@@ -3759,7 +3759,7 @@ app.post('/api/pool/:sport', async (req, res) => {
   const sport = String(req.params.sport || '').toLowerCase();
   const path = ESPN_SCOREBOARD_PATHS[sport];
   if (!path) return res.status(400).json({ error: `Unsupported sport: ${sport}` });
-  const lines = (req.body && req.body.lines) || {};
+  const sentLines = (req.body && req.body.lines) || {};
   const count = Math.min(Math.max(parseInt(req.body && req.body.count, 10) || 6, 1), 20);
 
   try {
@@ -3770,13 +3770,20 @@ app.post('/api/pool/:sport', async (req, res) => {
     const week = Number.isFinite(Number(req.body && req.body.week))
       ? Math.min(NFL_WEEKS, Math.max(1, Number(req.body.week)))
       : await currentNflWeek();
-    const [wk, oddsData, openingLines, leagueInjuriesP, baselineP] = await Promise.all([
-      fetchNflWeekEvents(week, year),
-      fetchOdds(sport).catch(() => []),
-      fetchEspnOpeningLines(sport).catch(() => ({})),
-      fetchLeagueInjuries(sport).catch(() => new Map()),
-      injuryBaseline(sport).catch(() => null),
-    ]);
+    const [wk, oddsData, openingLines, leagueInjuriesP, baselineP, sharedForWeek] =
+      await Promise.all([
+        fetchNflWeekEvents(week, year),
+        fetchOdds(sport).catch(() => []),
+        fetchEspnOpeningLines(sport).catch(() => ({})),
+        fetchLeagueInjuries(sport).catch(() => new Map()),
+        injuryBaseline(sport).catch(() => null),
+        getSharedPoolLines(sport, week).catch(() => ({ lines: {} })),
+      ]);
+    // The shared card underneath whatever the browser sent. See mergePoolLines:
+    // ranking only what the request carried is how a failed shared load turns
+    // into a silently short card instead of an error.
+    const merged = model.mergePoolLines(sharedForWeek && sharedForWeek.lines, sentLines);
+    const lines = merged.lines;
     const injKeyP = (name) => String(name || '').toLowerCase().replace(/[^a-z]/g, '');
     const outCountP = (team) => {
       const list = leagueInjuriesP && leagueInjuriesP.get(injKeyP(team));
@@ -3971,6 +3978,14 @@ app.post('/api/pool/:sport', async (req, res) => {
       // been saved to the database.
       ranked: model.rankPoolPicks(candidates, candidates.length),
       considered: candidates.length,
+      // Where the card came from, and why it is empty when it is. A clean 200
+      // carrying nothing is indistinguishable from a week with no edges, and
+      // only one of those is worth telling somebody about.
+      linesFrom: { stored: merged.fromStored, sent: merged.fromSent, used: merged.used },
+      emptyReason: candidates.length > 0 ? null
+        : merged.used === 0
+          ? 'no pool lines are saved for this week yet'
+          : 'lines are saved, but the market has no number to score them against',
       // So the tab can say WHY nearly every pick is a dog instead of leaving
       // the reader to notice it and distrust the whole thing.
       rounding: { spread: rounding, total: roundingTotals },

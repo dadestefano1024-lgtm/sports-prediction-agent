@@ -2627,3 +2627,55 @@ test('the detector can still say no when the market has moved a lot', () => {
   assert.ok(r.matched < r.against, 'the half-point games now point the other way');
   assert.ok(!r.rounds);
 });
+
+// ----------------------------------------------------------------------------
+test('the shared card is scored even when the browser sends nothing', () => {
+  // The silent failure: shared load hiccups, the browser posts an empty card,
+  // the endpoint ranks nothing and returns a clean 200.
+  const stored = { a: { spread: -3, total: 44 }, b: { spread: 7, total: 41 } };
+  const r = m.mergePoolLines(stored, {});
+  assert.equal(r.used, 2);
+  assert.equal(r.fromStored, 2);
+  assert.equal(r.fromSent, 0);
+  assert.deepEqual(r.lines, stored);
+});
+
+test('a number just typed beats the stored one for that game only', () => {
+  const stored = { a: { spread: -3, total: 44 }, b: { spread: 7, total: 41 } };
+  const sent = { a: { spread: -4, total: 44 } };
+  const r = m.mergePoolLines(stored, sent);
+  assert.equal(r.lines.a.spread, -4, 'the newer number wins');
+  assert.equal(r.lines.b.spread, 7, 'the game the browser never sent is still scored');
+  assert.equal(r.used, 2);
+});
+
+test('an all-blank sent entry does not erase a stored line', () => {
+  // Three nulls is what a set of empty boxes looks like. Letting it outrank the
+  // database would hand the silent short card straight back. Clearing goes
+  // through PUT, which deletes the row.
+  const stored = { a: { spread: -3, total: 44 } };
+  const r = m.mergePoolLines(stored, { a: { spread: null, awaySpread: null, total: null } });
+  assert.equal(r.lines.a.spread, -3);
+  assert.equal(r.used, 1);
+  assert.equal(r.fromSent, 0, 'a blank entry is absent, not an instruction');
+});
+
+test('merging an empty database with an empty body is still empty', () => {
+  const r = m.mergePoolLines({}, {});
+  assert.deepEqual(r.lines, {});
+  assert.equal(r.used, 0);
+  // The endpoint turns this into a stated reason rather than a bare 200.
+});
+
+test('a game with only a total still counts as a line', () => {
+  const r = m.mergePoolLines({ a: { spread: null, total: 44 } }, {});
+  assert.equal(r.used, 1);
+});
+
+test('a genuine pick-em zero is a line, not a blank', () => {
+  // The other half of the null fix: rejecting nulls must not reject 0.
+  const r = m.mergePoolLines({}, { a: { spread: 0, awaySpread: 0, total: 44 } });
+  assert.equal(r.used, 1);
+  assert.equal(r.fromSent, 1);
+  assert.equal(r.lines.a.spread, 0);
+});

@@ -2026,6 +2026,47 @@ function movementSincePosted({ poolLine, marketLine } = {}) {
  * said, and is the reason the tab read as untrustworthy: the reader could see
  * that a card of nothing but underdogs could not all be edges.
  */
+/**
+ * The card to score: what the database holds, with whatever the browser sent
+ * laid over the top, per game.
+ *
+ * The ranking endpoint took its lines from the request body alone. The browser
+ * loads the shared card when the tab opens, so normally the two agree -- but when
+ * that load fails the browser falls back to its own copy, posts a partial card
+ * or none at all, and the endpoint ranks exactly what it was handed and returns
+ * 200. That is how the whole point of a shared card fails silently: one reader
+ * enters fifteen games, the other opens the tab through a hiccup and ranks six.
+ * It is the same shape as the opening lines vanishing behind a caught error --
+ * empty rather than broken, so nothing anywhere reports a problem.
+ *
+ * Stored underneath, sent on top. A game the browser never heard of is still
+ * scored from the database; a number the reader has just typed still wins,
+ * because it is the more recent of the two. Scoring POST never writes, so
+ * merging cannot persist anything -- clearing a box goes through PUT, which
+ * deletes the row outright.
+ *
+ * A sent entry with every field blank is treated as absent rather than as an
+ * instruction to erase: three nulls is what an empty set of boxes looks like,
+ * and letting that outrank a stored line would hand the silent failure straight
+ * back.
+ */
+function mergePoolLines(stored, sent) {
+  const out = {};
+  const isNum = (v) => v !== null && v !== undefined && v !== '' &&
+    Number.isFinite(Number(v));
+  const hasNumber = (v) => !!v &&
+    (isNum(v.spread) || isNum(v.awaySpread) || isNum(v.total));
+  for (const [id, v] of Object.entries(stored || {})) if (hasNumber(v)) out[id] = v;
+  for (const [id, v] of Object.entries(sent || {})) if (hasNumber(v)) out[id] = v;
+  const count = (o) => Object.values(o || {}).filter(hasNumber).length;
+  return {
+    lines: out,
+    fromStored: count(stored),
+    fromSent: count(sent),
+    used: Object.keys(out).length,
+  };
+}
+
 function gradePoolPick({ winProb } = {}) {
   if (!Number.isFinite(winProb)) return null;
   if (winProb < 0.4995) return 'avoid';
@@ -3029,6 +3070,7 @@ module.exports = {
   postedLineRange,
   movementSincePosted,
   gradePoolPick,
+  mergePoolLines,
   NFL_TOTAL_PMF,
   totalResidualSurvival,
   totalResidualProb,

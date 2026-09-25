@@ -1917,7 +1917,13 @@
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         if (!data.best || !data.best.length) {
-          target.innerHTML = '<div class="pool-note">Nothing to rank yet — the market has no line for those games.</div>';
+          const lf = data.linesFrom || {};
+          target.innerHTML = '<div class="pool-note">Nothing to rank yet &mdash; ' +
+            (data.emptyReason || 'the market has no number to score these against') + '.' +
+            (Number.isFinite(lf.used)
+              ? ` <span style="color:#6e7681">(${lf.used} game${lf.used === 1 ? '' : 's'} with a line: ` +
+                `${lf.stored || 0} shared, ${lf.sent || 0} from this device)</span>`
+              : '') + '</div>';
           return;
         }
         // Fired AFTER the picks are drawn. It is the same endpoint the NFL tab
