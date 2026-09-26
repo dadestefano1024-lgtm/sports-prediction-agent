@@ -659,40 +659,11 @@ async function clearImplausibleClosingLines() {
   return bad.length;
 }
 
-async function getClvStats(sport = null) {
-  if (!dbReady || !pool) return null;
-  const filter = sport ? `AND sport = $1` : '';
-  const params = sport ? [sport] : [];
-  const rows = await pool.query(`
-    SELECT pick, home_team, away_team, line_at_pick, closing_line
-    FROM picks
-    WHERE market = 'spread'
-      AND closing_line IS NOT NULL
-      AND line_at_pick IS NOT NULL
-      ${filter};
-  `, params);
-
-  let beat = 0, tied = 0, lost = 0, sum = 0, n = 0;
-  for (const r of rows.rows) {
-    const side = pickedSide(r);
-    if (!side) continue;
-    const clv = model.closingLineValue({
-      betSpread: Number(r.line_at_pick),
-      closingSpread: Number(r.closing_line),
-      side,
-    });
-    if (clv === null || !Number.isFinite(clv)) continue;
-    n++; sum += clv;
-    if (clv > 0) beat++; else if (clv < 0) lost++; else tied++;
-  }
-
-  return {
-    samples: n,
-    avgCLV: n ? +(sum / n).toFixed(3) : null,
-    beat, tied, lost,
-    beatRate: n ? +(beat / n).toFixed(4) : null,
-  };
-}
+// getClvStats lives further down this file, next to getPoolStats. An earlier
+// copy sat here with a different return shape (avgCLV/beatRate against the
+// later avgPoints/beatPct) and was dead the whole time: both are function
+// declarations, so the second one wins and every caller got that one. Editing
+// the copy here would have changed nothing at all, silently.
 
 /**
  * Get aggregated history stats for the History tab.
@@ -4847,14 +4818,19 @@ app.get('/api/health', async (req, res) => {
  *
  * The columns and the capture job already existed. Nothing read them.
  */
-async function getClvStats(sport) {
+async function getClvStats(sport, source = null) {
   if (!dbReady || !pool) return null;
   const params = [];
   let where = "WHERE closing_line IS NOT NULL AND line_at_pick IS NOT NULL AND market = 'spread'";
   if (sport) { params.push(sport); where += ` AND sport = $${params.length}`; }
+  if (source) {
+    params.push(source);
+    where += ` AND COALESCE(source, 'recommendation') = $${params.length}`;
+  }
 
   const { rows } = await pool.query(
-    `SELECT sport, pick, home_team, away_team, line_at_pick, closing_line, result
+    `SELECT sport, pick, home_team, away_team, line_at_pick, closing_line, result,
+            COALESCE(source, 'recommendation') AS src
        FROM picks ${where}`, params);
   if (!rows.length) return { picks: 0 };
 
@@ -4862,6 +4838,22 @@ async function getClvStats(sport) {
   // that are written from the same value and are therefore always equal.
   const key = (x) => String(x || '').toLowerCase().replace(/[^a-z]/g, '');
   let beat = 0, worse = 0, level = 0, sum = 0, unknown = 0;
+  // Split as well as pooled. The comment under this function has said since it
+  // was written that a pool entry and a live recommendation are two different
+  // bets against two different numbers and that averaging them describes
+  // neither -- and then this function averaged them, because it never looked at
+  // the source column. A frozen Wednesday number beating the close measures the
+  // pool edge; a book's number beating the close measures the book edge. One
+  // figure covering both moves when either moves and means nothing on its own.
+  const per = {};
+  const bump = (k, movedToward) => {
+    if (!per[k]) per[k] = { picks: 0, beatClose: 0, worseThanClose: 0, level: 0, sum: 0 };
+    const o = per[k];
+    o.picks++; o.sum += movedToward;
+    if (movedToward > 0.01) o.beatClose++;
+    else if (movedToward < -0.01) o.worseThanClose++;
+    else o.level++;
+  };
   for (const r of rows) {
     const taken = Number(r.line_at_pick);
     const closed = Number(r.closing_line);
@@ -4878,9 +4870,21 @@ async function getClvStats(sport) {
     if (movedToward > 0.01) beat++;
     else if (movedToward < -0.01) worse++;
     else level++;
+    bump(r.src || 'recommendation', movedToward);
   }
   const n = beat + worse + level;
   if (!n) return { picks: 0, unresolvedSide: unknown };
+  const bySource = {};
+  for (const [k, o] of Object.entries(per)) {
+    bySource[k] = {
+      picks: o.picks,
+      beatClose: o.beatClose,
+      worseThanClose: o.worseThanClose,
+      level: o.level,
+      beatPct: +(o.beatClose / o.picks * 100).toFixed(1),
+      avgPoints: +(o.sum / o.picks).toFixed(3),
+    };
+  }
   return {
     picks: n,
     unresolvedSide: unknown,
@@ -4889,6 +4893,9 @@ async function getClvStats(sport) {
     level,
     beatPct: +(beat / n * 100).toFixed(1),
     avgPoints: +(sum / n).toFixed(3),
+    // Read these, not the pooled figures above, when asking whether either edge
+    // is real. The pooled ones are kept only because the History tab prints them.
+    bySource,
   };
 }
 
@@ -4910,7 +4917,7 @@ async function getPoolStats(sport) {
   if (sport) { params.push(sport); where += ` AND sport = $${params.length}`; }
   const { rows } = await pool.query(
     `SELECT market, result, edge FROM picks ${where}`, params);
-  if (!rows.length) return { picks: 0 };
+  if (!rows.length) return { picks: 0, clv: await getClvStats(sport, 'pool') };
 
   const graded = rows.filter(r => r.result);
   const wins = graded.filter(r => r.result === 'win').length;
@@ -4918,7 +4925,15 @@ async function getPoolStats(sport) {
   const settled = graded.length;
   const bySpread = graded.filter(r => r.market === 'spread');
   const spreadWins = bySpread.filter(r => r.result === 'win').length;
+  // The closing-line record for the POOL specifically: did a number frozen on
+  // Wednesday beat where the market settled on Sunday? That is a direct read on
+  // the only edge this card has, and it accrues six data points a week instead
+  // of one win-or-lose. At six picks a week a win rate says nothing until next
+  // season; this converges in weeks.
+  const clv = await getClvStats(sport, 'pool');
+
   return {
+    clv,
     picks: rows.length,
     pending: rows.length - settled,
     settled,
