@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test model.test.js parser.test.js",
+    "analyse": "node frozen-test.js && node increment-test.js && node reach.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

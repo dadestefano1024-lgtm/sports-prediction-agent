@@ -2679,3 +2679,45 @@ test('a genuine pick-em zero is a line, not a blank', () => {
   assert.equal(r.fromSent, 1);
   assert.equal(r.lines.a.spread, 0);
 });
+
+// ----------------------------------------------------------------------------
+test('a frozen pool line is scored against the consensus, not one book', () => {
+  const r = m.poolMarketNumber({ consensus: -7.5, book: -6.5, espn: -7 });
+  assert.equal(r.value, -7.5);
+  assert.equal(r.from, 'market consensus');
+  assert.equal(r.bookDisagreement, 1);
+});
+
+test('the outlier book flipped the pick, which is why the order changed', () => {
+  // Pool line -7. Against the consensus -7.5 the pool number is the better one
+  // and the FAVOURITE is the side to back; against an outlier book at -6.5 it is
+  // the worse one and the DOG gets picked. Same card, opposite pick.
+  const side = (marketSpread) => m.poolEdge({
+    sport: 'nfl', poolSpread: -7, poolAwaySpread: 7, marketSpread,
+    homeTeam: 'H', awayTeam: 'A',
+  }).spread.side;
+  assert.equal(side(-7.5), 'home', 'against the consensus, back the favourite');
+  assert.equal(side(-6.5), 'away', 'against the outlier book, back the dog');
+});
+
+test('the fallbacks still score a game the paid feed never had', () => {
+  assert.equal(m.poolMarketNumber({ consensus: null, book: -4, espn: -3.5 }).value, -4);
+  assert.equal(m.poolMarketNumber({ consensus: null, book: null, espn: -3.5 }).from, 'ESPN');
+  assert.equal(m.poolMarketNumber({}).value, null);
+});
+
+test('a pick-em zero is a real market number', () => {
+  // Number(null) is 0 and Number.isFinite(0) is true; the guard has to reject
+  // the empties before coercion or every missing line becomes a 0 spread.
+  const r = m.poolMarketNumber({ consensus: 0, book: -3 });
+  assert.equal(r.value, 0);
+  assert.equal(r.from, 'market consensus');
+  const empty = m.poolMarketNumber({ consensus: null, book: 0 });
+  assert.equal(empty.value, 0, 'and a real 0 behind a null is still found');
+  assert.equal(empty.from, 'book');
+});
+
+test('no disagreement is reported when only one source exists', () => {
+  assert.equal(m.poolMarketNumber({ consensus: -7.5 }).bookDisagreement, 0);
+  assert.equal(m.poolMarketNumber({ book: -7.5 }).bookDisagreement, 0);
+});

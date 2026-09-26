@@ -2050,6 +2050,53 @@ function movementSincePosted({ poolLine, marketLine } = {}) {
  * and letting that outrank a stored line would hand the silent failure straight
  * back.
  */
+/**
+ * Which market number to score a FROZEN pool line against.
+ *
+ * Not the same question the NFL tab asks, and the pool was answering the NFL
+ * tab's version. There, the number that matters is the one on the screen of the
+ * book the bet gets placed at, because that is the price actually transacted --
+ * a consensus of nine books, eight of which have no account behind them, is not
+ * a price anybody can take.
+ *
+ * The pool transacts nowhere. Its number is frozen on Wednesday and settles
+ * against the final score, so the market number is being used as an ESTIMATE of
+ * the true line, and for that job one retail book is worse than the whole board.
+ * Having no account at a book is irrelevant to how well its number forecasts.
+ *
+ * It flips picks, not just decimals. Pool line -7, consensus -7.5, one book at
+ * -6.5: against the book the pool number looks worse than the market and the dog
+ * gets picked, against the consensus it looks better and the favourite does.
+ * Same card, opposite pick, decided by which book happened to be preferred.
+ *
+ * So: consensus first, a single book behind it, the ESPN scrape last. The
+ * fallbacks still matter -- a game missing from the paid feed has to be scored
+ * somehow -- they are just no longer allowed to outrank the better estimate.
+ *
+ * `spread` of exactly 0 is a legal pick-em line, so the empties are rejected
+ * before coercion rather than after. Number(null) is 0 and Number.isFinite(0) is
+ * true, which is the trap that has now been found three times in this file.
+ */
+function poolMarketNumber({ consensus = null, book = null, espn = null } = {}) {
+  const ok = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+  const sources = [
+    ['market consensus', consensus],
+    ['book', book],
+    ['ESPN', espn],
+  ];
+  for (const [from, v] of sources) {
+    if (ok(v)) {
+      // When the board and a single book disagree by a point or more, the
+      // estimate is genuinely uncertain and the card should be able to say so
+      // rather than quietly picking one.
+      const spread = (ok(consensus) && ok(book))
+        ? Math.abs(Number(consensus) - Number(book)) : 0;
+      return { value: Number(v), from, bookDisagreement: +spread.toFixed(2) };
+    }
+  }
+  return { value: null, from: null, bookDisagreement: 0 };
+}
+
 function mergePoolLines(stored, sent) {
   const out = {};
   const isNum = (v) => v !== null && v !== undefined && v !== '' &&
@@ -3071,6 +3118,7 @@ module.exports = {
   movementSincePosted,
   gradePoolPick,
   mergePoolLines,
+  poolMarketNumber,
   NFL_TOTAL_PMF,
   totalResidualSurvival,
   totalResidualProb,

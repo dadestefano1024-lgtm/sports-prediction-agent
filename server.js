@@ -3821,12 +3821,24 @@ app.post('/api/pool/:sport', async (req, res) => {
         }
         return null;
       };
-      const marketSpread = pickNum(mb && mb.spread, odds && odds.spread,
-                                   espnOdds && espnOdds.spread);
-      const marketTotal = pickNum(mb && mb.total, odds && odds.total,
-                                  espnOdds && espnOdds.overUnder);
-      const marketFrom = (mb && Number.isFinite(Number(mb.spread))) ? (mb.name || MY_BOOK)
-        : (odds && Number.isFinite(Number(odds.spread))) ? 'market consensus' : 'ESPN';
+      // Consensus ahead of a single book here, unlike the NFL tab. See
+      // model.poolMarketNumber: a frozen pool line is scored against an ESTIMATE
+      // of the true number, not against a price anybody is transacting at, and
+      // preferring one retail book flips picks whenever that book is an outlier.
+      const refSpread = model.poolMarketNumber({
+        consensus: odds && odds.spread, book: mb && mb.spread,
+        espn: espnOdds && espnOdds.spread,
+      });
+      const refTotal = model.poolMarketNumber({
+        consensus: odds && odds.total, book: mb && mb.total,
+        espn: espnOdds && espnOdds.overUnder,
+      });
+      const marketSpread = refSpread.value;
+      const marketTotal = refTotal.value;
+      const marketFrom = refSpread.from === 'book' ? ((mb && mb.name) || MY_BOOK)
+        : refSpread.from;
+      // Non-zero only when the board and the book both exist and disagree.
+      const bookDisagreement = refSpread.bookDisagreement;
 
       const usableSpread = marketSpread !== null && model.plausibleSpread(sport, marketSpread);
 
@@ -3862,7 +3874,7 @@ app.post('/api/pool/:sport', async (req, res) => {
 
       const label = `${awayFull} @ ${homeFull}`;
       games.push({ id: event.id, matchup: label, gameTime: new Date(event.date).toLocaleString(),
-                   marketSpread, marketTotal, marketFrom,
+                   marketSpread, marketTotal, marketFrom, bookDisagreement,
                    spread: edge.spread, total: edge.total });
       const early = kicksOffBeforeSunday(event.date);
       const day = easternWeekday(event.date);
