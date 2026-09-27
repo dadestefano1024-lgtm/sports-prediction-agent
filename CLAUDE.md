@@ -77,6 +77,9 @@ Each cost real work. Numbers, not opinions.
 | Correlation between covers in a week | variance ratio 0.97 = independent, so multiplying the six is correct | `week-correlation.js` |
 | More confidence in last season | `priorRegression=1` is the WORST setting: 11.772 vs 11.066 | `regression-sweep.js` |
 | Line movement at a live price | 48.1% following, 51.9% fading — both noise | `fade-the-move.js` |
+| **An EPA-per-play model** (nflverse play-by-play, opponent-blended, scale fitted on 2023 and tested on 2024-25) | **0.67 points better than the points model** — 10.405 MAE against 11.07 — and still loses to the closing line at 9.807 and even the opening line at 9.939. Kill criterion met: no bet in it as a game-predictor | `epa-build.js`, `epa-test.js` |
+| Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
+| Backing home at every opener (the drift itself) | +0.228 CLV, which is below the ~0.25 needed to clear the vig, and the win rate is 49.0% | `epa-test.js`, `frozen-test.js` |
 
 **The one live candidate:** fading a team starting a backup QB. 59.2% on 201 bets
 (2.61 SD), and 58.4% vs the move's 37.7% on the 77 games where the two disagree.
@@ -133,6 +136,13 @@ has been looked up by three hundred people with money on it.
 
 This is why the one thing that works is not a fact about football at all. It is a
 fact about a PRICE: holding a number the market has moved away from.
+
+**And the sharpest form of it: REACTING to movement works, ANTICIPATING it does
+not.** Backing the side the market moved toward, at a number it has left behind,
+is 67.9% on four-point moves. Trying to guess which way it will move next and bet
+the opener ahead of it fails at every threshold, and fails worst where the model
+is most confident. You cannot front-run the market. You can hold a number it
+walked away from.
 
 `MODEL_TRUST = 0.1`. Every pricing decision is 90% market, 10% projection. The
 displayed score is the blend, not the raw model — showing the raw 10% is what made

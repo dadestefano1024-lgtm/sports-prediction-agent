@@ -9,3 +9,5 @@ nfl-open-close.json
 frozen-cache.json
 frozen-out.txt
 frozen-err.txt
+pbp*.csv.gz
+epa-weekly.json
