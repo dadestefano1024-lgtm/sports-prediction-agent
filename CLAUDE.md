@@ -76,6 +76,7 @@ Each cost real work. Numbers, not opinions.
 | Totals (stale-line rule) | 50.8–54.3%, seasons disagree (49.5 vs 53.2) | `stale-totals-pool.js` |
 | Correlation between covers in a week | variance ratio 0.97 = independent, so multiplying the six is correct | `week-correlation.js` |
 | More confidence in last season | `priorRegression=1` is the WORST setting: 11.772 vs 11.066 | `regression-sweep.js` |
+| **Using only this season's data, rebuilt weekly** | Worse than the blend in EVERY bucket and far worse than the market. Even at weeks 14-18 with thirteen games in hand: this-year-only 13.476, blend 12.102, market 10.122 | `regression-sweep.js` |
 | Line movement at a live price | 48.1% following, 51.9% fading — both noise | `fade-the-move.js` |
 | **An EPA-per-play model** (nflverse play-by-play, opponent-blended, scale fitted on 2023 and tested on 2024-25) | **0.67 points better than the points model** — 10.405 MAE against 11.07 — and still loses to the closing line at 9.807 and even the opening line at 9.939. Kill criterion met: no bet in it as a game-predictor | `epa-build.js`, `epa-test.js` |
 | Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
@@ -149,6 +150,32 @@ displayed score is the blend, not the raw model — showing the raw 10% is what 
 Kansas City at Miami read 17-16 against a market of 47.
 
 ---
+
+## Why no model built on team performance can be precise
+
+**A team's own record is about 75% noise over half a season.** Measured across 861
+team-seasons of nflverse: the correlation between first-half and second-half point
+differential is r = 0.498, so r-squared = 0.248. Only a quarter of what a team has
+done so far carries into what it does next.
+
+That single number explains most of this file:
+
+- why "use only this season, it is the most relevant data" is backwards — one
+  season is 16 games of a high-variance thing, and the problem is sample size, not
+  staleness. Last season regressed is another 17 games of evidence and adds more
+  signal than it costs.
+- why turning the model's confidence up makes it worse.
+- why the market's number beats every model here: it aggregates far more than team
+  scoring.
+- and why single games sit near a coin flip against a fair line. That is football,
+  not a defect in the app. It is also why a 2-point stale number is worth 55% and
+  not 70% — small edges are the only kind that can exist on top of something this
+  noisy.
+
+**Where "this year only" IS correct, and is already done:** the pool's own
+behaviour. Which way the sheet rounds, how big the gaps run, how the poster
+behaves — there is no prior season to borrow from and a different person would
+behave differently. `detectPoolRounding` re-measures it every week.
 
 ## The honest ceiling
 
