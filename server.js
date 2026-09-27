@@ -3247,9 +3247,68 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       // anything set it. It finally has data.
       weather: g.weather ?? null,
 
-      predictedScore: projection
-        ? { home: Math.round(projection.predictedHome), away: Math.round(projection.predictedAway) }
-        : { home: null, away: null },
+      // The score the app ACTUALLY bets with, which is not the raw model.
+      //
+      // MODEL_TRUST is 0.1: every pricing decision in this file is 90% market
+      // and 10% projection. The card was showing the raw 10% -- the number the
+      // app trusts least and, measured, the worst of the three. Swept over 690
+      // games in regression-sweep.js, mean absolute error of the projected
+      // margin against the real one:
+      //
+      //   this season has   market close   best model setting
+      //     0-2 games          9.619            11.066
+      //     3-5 games          9.472            10.166
+      //
+      // The market wins in every bucket at every setting of the season blend, so
+      // printing the raw projection beside the line was showing the reader the
+      // least accurate of the two numbers and inviting exactly the reaction it
+      // got: Kansas City at Miami read as a two-point game against a market of
+      // ten and a half, and looked broken because it was the wrong number to
+      // show, not because the maths was wrong.
+      //
+      // So the headline score is the blend, and the raw projection is kept
+      // beside it as modelOnly for anyone who wants to see where they diverge.
+      // With two games played the raw model is heavily regressed on purpose --
+      // and the sweep says that regression should if anything be HARDER, since
+      // trusting last season at full strength costs 0.6 points of accuracy.
+      predictedScore: (() => {
+        if (!projection) return { home: null, away: null };
+        // ESPN behind the paid feed, because the paid feed is the thing that runs
+        // out. rawSpread comes from odds.spread and is null the moment the
+        // monthly quota is gone -- which is precisely when somebody is looking at
+        // this card -- so without the fallback this whole block would quietly do
+        // nothing for the rest of the month. ESPN carries the same numbers free.
+        const lm = g.lineMovement || {};
+        const homeSpread = (spreadUsable && Number.isFinite(rawSpread)) ? rawSpread
+          : (Number.isFinite(lm.currentSpread) && model.plausibleSpread(sport, lm.currentSpread)
+              ? lm.currentSpread : null);
+        const marketMargin = homeSpread === null ? null : -homeSpread;
+        if (marketMargin === null) {
+          return { home: Math.round(projection.predictedHome),
+                   away: Math.round(projection.predictedAway), basis: 'model only' };
+        }
+        const blendedMargin = MODEL_TRUST * projection.predictedMargin +
+          (1 - MODEL_TRUST) * marketMargin;
+        // The total is anchored the same way and on the same argument, though
+        // without a measurement of its own: the projected totals ran about five
+        // points under the market even after the leagueAvg fix, which is itself
+        // evidence the early-season model total is biased low. Redistributing a
+        // market total around the blended margin keeps the two halves a real
+        // scoreline instead of two independent estimates printed side by side.
+        const marketTotalNow = (Number.isFinite(rawTotal) && rawTotal > 0) ? rawTotal
+          : (Number.isFinite(lm.currentTotal) && lm.currentTotal > 0 ? lm.currentTotal : null);
+        const total = marketTotalNow === null ? projection.predictedTotal
+          : MODEL_TRUST * projection.predictedTotal + (1 - MODEL_TRUST) * marketTotalNow;
+        return {
+          home: Math.round((total + blendedMargin) / 2),
+          away: Math.round((total - blendedMargin) / 2),
+          basis: 'market-anchored',
+          blendedMargin: +blendedMargin.toFixed(2),
+          modelOnly: { home: Math.round(projection.predictedHome),
+                       away: Math.round(projection.predictedAway),
+                       margin: +projection.predictedMargin.toFixed(2) },
+        };
+      })(),
 
       // "No edge" is a real, common and correct answer. The old pipeline had no
       // way to say it — it produced a pick for every game, always.
