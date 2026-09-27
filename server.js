@@ -109,6 +109,14 @@ if (process.env.DATABASE_URL) {
       // picks. Nobody sells that history, so it has to be recorded — from now
       // forward, every couple of hours, for free off the scoreboard.
       await pool.query(`
+        CREATE TABLE IF NOT EXISTS api_quota (
+          provider TEXT PRIMARY KEY,
+          remaining INTEGER,
+          used INTEGER,
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `);
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS line_history (
           sport TEXT NOT NULL,
           game_id TEXT NOT NULL,
@@ -123,6 +131,11 @@ if (process.env.DATABASE_URL) {
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_picks_game ON picks(espn_game_id);`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_picks_ungraded ON picks(result) WHERE result IS NULL;`);
       dbReady = true;
+      // What is left of the paid feed's month, which does not survive a restart
+      // in memory and has to come back from the table above. Awaited so the
+      // quota guard in fetchOdds knows the answer before the first request of a
+      // cold start, which was itself costing one request to discover.
+      await loadOddsQuota();
       console.log('[DB] Connected and tables ready');
     } catch (err) {
       console.error('[DB] Setup failed:', err.message);
@@ -2446,7 +2459,57 @@ let lastOddsQuota = { remaining: null, used: null, lastCost: null, at: null };
  *   4. Increased timeout from 10s to 15s to survive Render free-tier slowness.
  *   5. Falls back to stale cache on error rather than returning null.
  */
-async function fetchOdds(sport) {
+/**
+ * The paid feed's monthly allowance, kept in the database so it survives a
+ * restart, and a floor under it so the month cannot be spent by accident.
+ *
+ * The free tier is 500 requests a month. Every cold start costs one, every
+ * uncached page load costs one, and nothing was watching: the month was 498 gone
+ * by the 25th, which meant the one measured live edge this app has -- a book
+ * offering a better number than the market -- was switched off for the part of
+ * the month when it would have been used.
+ *
+ * ODDS_QUOTA_RESERVE requests are held back and never spent automatically. They
+ * are there for the moment somebody actually needs a price, reached by passing
+ * force, rather than burned by a background refresh on a Tuesday.
+ */
+const ODDS_QUOTA_RESERVE = Number(process.env.ODDS_QUOTA_RESERVE ?? 12);
+
+async function saveOddsQuota(q) {
+  if (!dbReady || !pool || !Number.isFinite(q && q.remaining)) return;
+  await pool.query(
+    `INSERT INTO api_quota (provider, remaining, used, updated_at)
+     VALUES ('oddsapi', $1, $2, NOW())
+     ON CONFLICT (provider) DO UPDATE SET
+       remaining = EXCLUDED.remaining, used = EXCLUDED.used, updated_at = NOW()`,
+    [q.remaining, Number.isFinite(q.used) ? q.used : null]);
+}
+
+async function loadOddsQuota() {
+  if (!dbReady || !pool) return;
+  try {
+    const { rows } = await pool.query(
+      `SELECT remaining, used, updated_at FROM api_quota WHERE provider = 'oddsapi'`);
+    if (!rows.length) return;
+    // A new month resets the allowance, so a stamp from a previous month says
+    // nothing about what is left now.
+    const at = new Date(rows[0].updated_at);
+    const now = new Date();
+    if (at.getUTCFullYear() !== now.getUTCFullYear() || at.getUTCMonth() !== now.getUTCMonth()) {
+      console.log('[ODDS] stored quota is from a previous month, ignoring it');
+      return;
+    }
+    lastOddsQuota = {
+      remaining: rows[0].remaining, used: rows[0].used,
+      lastCost: null, at: at.toISOString(),
+    };
+    console.log(`[ODDS] restored quota from database — ${rows[0].remaining} remaining`);
+  } catch (err) {
+    console.warn('[ODDS] could not restore quota:', err.message);
+  }
+}
+
+async function fetchOdds(sport, { force = false } = {}) {
   const apiKey = process.env.ODDS_API_KEY;
   if (!apiKey) {
     console.log('[ODDS] No ODDS_API_KEY found');
@@ -2459,6 +2522,18 @@ async function fetchOdds(sport) {
     const ageSec = Math.round((Date.now() - cached.timestamp) / 1000);
     console.log(`[ODDS] Cache hit for ${sport} (${ageSec}s old, ${cached.data?.length || 0} games)`);
     return cached.data;
+  }
+
+  // Below the reserve, serve whatever is cached rather than spending one of the
+  // last requests on a page load nobody is reading. Stale prices are worse than
+  // fresh ones; no prices at all on the day it matters is worse than both.
+  const left = lastOddsQuota.remaining;
+  if (!force && Number.isFinite(left) && left <= ODDS_QUOTA_RESERVE) {
+    const age = cached ? Math.round((Date.now() - cached.timestamp) / 60000) : null;
+    console.warn(`[ODDS] ${left} requests left, at or below the reserve of ` +
+      `${ODDS_QUOTA_RESERVE} — not fetching. ` +
+      (cached ? `Serving cache ${age}m old.` : 'Nothing cached; returning null.'));
+    return cached ? cached.data : null;
   }
 
   const sportMap = {
@@ -2496,6 +2571,12 @@ async function fetchOdds(sport) {
       lastCost: lastCost === undefined ? null : Number(lastCost),
       at: new Date().toISOString(),
     };
+    // Written through to the database, because this process does not survive.
+    // Render's free tier spins down when idle and the in-memory copy dies with
+    // it, so on every cold start the guard below had no idea what was left and
+    // spent a request to find out. That is how 498 of 500 went in three weeks
+    // on an app nobody was watching.
+    saveOddsQuota(lastOddsQuota).catch(() => {});
 
     if (response.status >= 400) {
       console.error(`[ODDS] HTTP ${response.status} for ${sport}:`, JSON.stringify(response.data));
