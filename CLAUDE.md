@@ -72,6 +72,7 @@ Each cost real work. Numbers, not opinions.
 | Recent form as a picker | 49.2% (−0.40 SD) | `increment-test.js` |
 | Rest advantage (3+ days) | 50.9% (0.23 SD) | `increment-test.js` |
 | Wind / cold / roof / short week / divisional | none clears three gates; wind has 41 games, cold 28, so unmeasured rather than disproven | `increment-test.js` |
+| West-coast team travelling east for a 1pm kickoff — the most-cited travel effect in football | 63 games. Fading the traveller 49.2%, backing them 47.6%. The market expected home by 0.33 and the road team won by 0.17, so the jet-lagged side slightly OUTPERFORMED the line — the point estimate is backwards | `increment-test.js` |
 | Totals (stale-line rule) | 50.8–54.3%, seasons disagree (49.5 vs 53.2) | `stale-totals-pool.js` |
 | Correlation between covers in a week | variance ratio 0.97 = independent, so multiplying the six is correct | `week-correlation.js` |
 | More confidence in last season | `priorRegression=1` is the WORST setting: 11.772 vs 11.066 | `regression-sweep.js` |
@@ -121,6 +122,17 @@ The reason is in the comment above the depth-chart fetcher, written long before
 any of the tests: *a QB injury that is public is already in the market price, so
 adding our own adjustment on top of a market-anchored model would count it
 twice.* The market move **is** the news.
+
+**The general principle, and the answer to "but travel and rest obviously matter
+to humans".** They do. They matter to the players and they are already in the
+line, so there is nothing left to win. A factor only becomes an edge if the market
+MIS-prices it, and the better known a factor is, the more thoroughly it is priced.
+Past a point it is over-priced: the famous west-coast-early-kickoff effect has the
+travelling team beating the line, not losing to it. Anything that can be looked up
+has been looked up by three hundred people with money on it.
+
+This is why the one thing that works is not a fact about football at all. It is a
+fact about a PRICE: holding a number the market has moved away from.
 
 `MODEL_TRUST = 0.1`. Every pricing decision is 90% market, 10% projection. The
 displayed score is the blend, not the raw model — showing the raw 10% is what made
