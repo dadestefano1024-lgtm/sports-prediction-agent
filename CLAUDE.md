@@ -6,6 +6,12 @@ rediscovered every session and some of them got rebuilt. If anything here
 disagrees with what you measure, the measurement wins — **fix this file in the
 same commit.**
 
+There *was* a README. It described a different application: NBA-only, Claude
+generating the predictions, and "arbitrage opportunity detection" that appears
+nowhere in the code. Its "Prediction Methodology" — rest, travel and pace point
+adjustments — is exactly what `reach.js` shows moves nothing. A stale map is worse
+than none, because it is believed. `README.md` is now setup only and points here.
+
 Owner: Danny DeStefano. Not a programmer. Direct, no preambles, pushes back when
 something is wrong and is usually right to.
 
@@ -188,6 +194,11 @@ its name.**
 - `model.js` is pure. No network, no database, no Express. Everything testable.
 - Every measured result lives in the header of the script that produced it **and**
   in the table above. A result recorded only in a script header gets rediscovered.
+- **Check the tree before concluding a file is missing.** `fade-the-move.js`,
+  `stale-oos.js`, `total-pmf.js`, `solve-keys.js` and `pool-math.js` are all
+  tracked and always have been. They looked deleted only because the working copy
+  had lost 26 tracked files, `README.md` among them, and `git ls-files --deleted`
+  is the question to ask before `git log --diff-filter=D`.
 - Never push without Danny's say-so; push = deploy.
 - Never spend odds-API quota casually. Check `/api/health` first — it reports
   `quotaRemaining` without spending one.
