@@ -2721,3 +2721,52 @@ test('no disagreement is reported when only one source exists', () => {
   assert.equal(m.poolMarketNumber({ consensus: -7.5 }).bookDisagreement, 0);
   assert.equal(m.poolMarketNumber({ book: -7.5 }).bookDisagreement, 0);
 });
+
+// ----------------------------------------------------------------------------
+test('the league baseline is not set by the two teams who played Thursday', () => {
+  // Week 3 of 2026 had one completed game, Atlanta 35 at Green Bay 14, so two
+  // teams of thirty-two had three games. leagueAvg was computed over only the
+  // teams clearing minGames, so those two set the whole league's scoring rate:
+  // it came out near 15 against a true 23, every rating is scaled by it, and a
+  // projected total is roughly twice it. The board showed 17-16 on a game the
+  // market had at 47.
+  const mk = (n, s, a) => Array.from({ length: n }, () => ({ opponent: 'X', scored: s, allowed: a }));
+  const logs = { X: mk(2, 24, 24) };
+  for (let i = 0; i < 30; i++) logs['T' + i] = mk(2, 24, 24);
+  logs.LowA = mk(3, 13, 17);
+  logs.LowB = mk(3, 17, 13);
+
+  const r = m.opponentAdjustedRatings(logs, { iterations: 3, minGames: 3 });
+  assert.equal(Object.keys(r.ratings).length, 2, 'minGames still decides who gets a rating');
+  assert.ok(r.leagueAvg > 22 && r.leagueAvg < 24,
+    `baseline must come from every team that played, got ${r.leagueAvg}`);
+});
+
+test('a projected total is in the right range early in a season', () => {
+  const mk = (n, s, a) => Array.from({ length: n }, () => ({ opponent: 'X', scored: s, allowed: a }));
+  const logs = { X: mk(2, 24, 24) };
+  for (let i = 0; i < 30; i++) logs['T' + i] = mk(2, 24, 24);
+  logs.A = mk(3, 24, 24);
+  logs.B = mk(3, 24, 24);
+  const r = m.opponentAdjustedRatings(logs, { iterations: 3, minGames: 3 });
+  const p = m.projectFromRatings({
+    homeOff: r.ratings.A.offense, homeDef: r.ratings.A.defense,
+    awayOff: r.ratings.B.offense, awayDef: r.ratings.B.defense,
+    leagueAvg: r.leagueAvg, sport: 'nfl',
+  });
+  assert.ok(p.predictedTotal > 42 && p.predictedTotal < 52,
+    `two average teams must project near a normal NFL total, got ${p.predictedTotal}`);
+});
+
+test('a full season is unaffected by the baseline fix', () => {
+  // Regression guard: when every team clears minGames the two computations are
+  // identical, so the fix must not move a mature season's numbers.
+  const mk = (n, s, a) => Array.from({ length: n }, () => ({ opponent: 'X', scored: s, allowed: a }));
+  const logs = {};
+  for (let i = 0; i < 32; i++) logs['T' + i] = mk(10, 20 + (i % 9), 24 - (i % 7));
+  const r = m.opponentAdjustedRatings(logs, { iterations: 3, minGames: 3 });
+  assert.equal(Object.keys(r.ratings).length, 32);
+  let scored = 0, games = 0;
+  for (const v of Object.values(logs)) for (const g of v) { scored += g.scored; games++; }
+  close(r.leagueAvg, scored / games, 1e-9, 'every team qualifies, so nothing changes');
+});

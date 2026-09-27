@@ -1517,9 +1517,24 @@ function opponentAdjustedRatings(logs, { iterations = 3, minGames = 3 } = {}) {
   const teams = Object.keys(logs || {}).filter(t => (logs[t] || []).length >= minGames);
   if (teams.length < 2) return null;
 
+  // The league baseline comes from EVERY team that has played, not only the
+  // teams that clear minGames.
+  //
+  // minGames decides who is allowed a rating. It has no business deciding what
+  // the league average is, and letting it do so broke every projection in week
+  // 3. Week 3 of 2026 had exactly one completed game, Atlanta 35 at Green Bay
+  // 14, so two teams of thirty-two had three games and the whole league's
+  // scoring baseline was those two teams. leagueAvg came out near 16 instead of
+  // 23, every rating is scaled by it, and a projected total is roughly twice it
+  // -- so the board showed Kansas City at Miami as 17-16, a 33-point game the
+  // market had at 47, and every other game squashed to the same place.
+  //
+  // It heals itself by about week 5 as teams cross the threshold, which is
+  // exactly why it survived: the projections are visibly wrong for a fortnight
+  // a year and plausible for the rest of it.
   let scored = 0, games = 0;
-  for (const t of teams) {
-    for (const g of logs[t]) {
+  for (const t of Object.keys(logs || {})) {
+    for (const g of (logs[t] || [])) {
       if (!Number.isFinite(g.scored) || !Number.isFinite(g.allowed)) continue;
       scored += g.scored;
       games += 1;
