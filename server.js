@@ -1548,12 +1548,31 @@ const QB_UNAVAILABLE = new Set(['out', 'doubtful', 'injured reserve', 'ir', 'sus
  * practice this costs one round of fetches per prediction-cache window rather
  * than one per request.
  */
-async function fetchNFLGameLogs(seasonYear) {
+const TEAM_IDS_BY_SPORT = { nfl: () => nflTeamIds, nba: () => nbaTeamIds,
+                           nhl: () => nhlTeamIds, mlb: () => mlbTeamIds };
+
+/**
+ * Every team's completed regular-season games for one sport and season.
+ *
+ * Was NFL-only, which is why basketball, hockey and baseball projected from raw
+ * last-five scoring averages with no opponent adjustment. That is not a small
+ * difference: the football backtest measured raw averages leaning to the
+ * UNDERDOG on 83% of games, because a team off a soft schedule looks strong and
+ * the market already knows better. Adjusting brought it to 38%. The other three
+ * sports were running the 83% version.
+ *
+ * opponentAdjustedRatings has always been sport-agnostic. Only the fetch was not.
+ */
+async function fetchGameLogs(sport, seasonYear) {
+  const key = String(sport || '').toLowerCase();
+  const ids = (TEAM_IDS_BY_SPORT[key] || (() => null))();
+  const path = ESPN_SCOREBOARD_PATHS[key];
+  if (!ids || !path) return {};
   const logs = {};
-  await Promise.all(Object.entries(nflTeamIds).map(async ([nick, id]) => {
+  await Promise.all(Object.entries(ids).map(async ([nick, id]) => {
     try {
       const r = await cachedGet(
-        `https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${id}/schedule?season=${seasonYear}`,
+        `https://site.api.espn.com/apis/site/v2/sports/${path}/teams/${id}/schedule?season=${seasonYear}`,
         { timeout: 8000 });
       const out = [];
       for (const e of (r.data && r.data.events) || []) {
@@ -1569,7 +1588,7 @@ async function fetchNFLGameLogs(seasonYear) {
         const isHome = String(h.team.id) === String(id);
         const opp = isHome ? aw : h;
         out.push({
-          opponent: teamNickname(opp.team.displayName, nflTeamIds),
+          opponent: teamNickname(opp.team.displayName, ids),
           scored: isHome ? hs : as,
           allowed: isHome ? as : hs,
         });
@@ -1581,6 +1600,10 @@ async function fetchNFLGameLogs(seasonYear) {
   }));
   return logs;
 }
+
+/** Kept so the football callers read as before. */
+const fetchNFLGameLogs = (seasonYear) => fetchGameLogs('nfl', seasonYear);
+
 
 async function fetchNFLStartingQB(teamName, seasonYear) {
   try {
@@ -3271,7 +3294,16 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
 
     // A game may decline to be projected on its own account (a changed starting
     // quarterback, say) even when the rest of the slate is fine.
-    const reason = skipReason || g.skipReason
+    // Preseason decided HERE rather than in each handler. Football had the whole
+    // apparatus -- isPreseason, suppressed projections, a note to the write-up --
+    // and basketball, hockey and baseball had no seasonType check at all, so all
+    // three would have priced a preseason game as a real one off last season's
+    // ratings with rosters that are not playing. The first NBA preseason game of
+    // 2026-27 is 3 October and would have been the demonstration.
+    const preseason = Number(g.seasonType) === 1
+      ? 'preseason - starters play limited minutes and recent form describes lineups that are not playing'
+      : null;
+    const reason = skipReason || g.skipReason || preseason
       || (started ? 'game already under way - the book is pricing the remainder, not the full game' : null)
       || null;
     // reason states outright that we are declining to project, rather than
@@ -4498,6 +4530,36 @@ async function handleNBAPredictions(res, oddsData) {
 
     // Fetch ESPN opening lines once for all games (cached 5 min)
     const espnOpeningLines = await fetchEspnOpeningLines('nba');
+
+    // Opponent-adjusted ratings, computed once for the slate.
+    //
+    // Basketball had none and projected from raw last-five scoring averages.
+    // The football backtest measured that exact approach leaning to the UNDERDOG
+    // on 83% of games -- a team off a soft schedule looks strong, the market
+    // already knows, so the model disbelieves good favourites. Adjusting brought
+    // it to 38%. This is the same blend football uses: last season regressed
+    // halfway, handed over as this season accumulates, which also means week one
+    // projects at all instead of waiting for three games.
+    //
+    // ESPN labels a season by the year it ENDS, so 2026-27 is 2027.
+    let nbaRatings = null;
+    try {
+      const seasonYear = Number((slate.season && slate.season.year) || new Date().getFullYear());
+      const [curLogs, priorLogs] = await Promise.all([
+        fetchGameLogs('nba', seasonYear),
+        fetchGameLogs('nba', seasonYear - 1),
+      ]);
+      nbaRatings = model.blendSeasonRatings({
+        current: model.opponentAdjustedRatings(curLogs, { iterations: 3, minGames: 3 }),
+        prior: model.opponentAdjustedRatings(priorLogs, { iterations: 3, minGames: 3 }),
+        gamesForFullWeight: 20, priorRegression: 0.5,
+      });
+      const rated = nbaRatings && nbaRatings.ratings ? Object.keys(nbaRatings.ratings).length : 0;
+      console.log(`[NBA] ratings for ${rated} teams` +
+        (nbaRatings ? `, league average ${nbaRatings.leagueAvg.toFixed(1)} pts` : ''));
+    } catch (err) {
+      console.warn('[NBA] ratings unavailable:', err.message);
+    }
     const eventMap = {};
 
     const gamesWithStats = await Promise.all(events.map(async (event) => {
@@ -4537,6 +4599,22 @@ async function handleNBAPredictions(res, oddsData) {
         // show this breakdown beside a pool pick, and every sport gets it because
         // all four handlers build the same shape.
         id: event.id,
+        // So buildGamesFromModel can decline to project a preseason game. The decision lives there, in one place; this is only the plumbing.
+        seasonType: (event.seasonType && event.seasonType.id) != null
+          ? Number(event.seasonType.id)
+          : (event.season && event.season.type != null ? Number(event.season.type) : null),
+        // Opponent-adjusted when the ratings exist; buildGamesFromModel falls
+        // back to raw scoring averages when this is null.
+        projection: (() => {
+          const r = nbaRatings && nbaRatings.ratings;
+          const h = r && r[homeTeamName], a = r && r[awayTeamName];
+          if (!h || !a) return null;
+          return model.projectFromRatings({
+            homeOff: h.offense, homeDef: h.defense,
+            awayOff: a.offense, awayDef: a.defense,
+            leagueAvg: nbaRatings.leagueAvg, sport: 'nba',
+          });
+        })(),
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
@@ -4634,6 +4712,10 @@ async function handleNHLPredictions(res, oddsData) {
         // show this breakdown beside a pool pick, and every sport gets it because
         // all four handlers build the same shape.
         id: event.id,
+        // So buildGamesFromModel can decline to project a preseason game. The decision lives there, in one place; this is only the plumbing.
+        seasonType: (event.seasonType && event.seasonType.id) != null
+          ? Number(event.seasonType.id)
+          : (event.season && event.season.type != null ? Number(event.season.type) : null),
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
@@ -4738,6 +4820,10 @@ async function handleMLBPredictions(res, oddsData) {
         // show this breakdown beside a pool pick, and every sport gets it because
         // all four handlers build the same shape.
         id: event.id,
+        // So buildGamesFromModel can decline to project a preseason game. The decision lives there, in one place; this is only the plumbing.
+        seasonType: (event.seasonType && event.seasonType.id) != null
+          ? Number(event.seasonType.id)
+          : (event.season && event.season.type != null ? Number(event.season.type) : null),
         homeTeam: homeFullName,
         awayTeam: awayFullName,
         gameTime: new Date(event.date).toLocaleString(),
