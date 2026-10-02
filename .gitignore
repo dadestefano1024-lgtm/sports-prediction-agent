@@ -11,3 +11,7 @@ frozen-out.txt
 frozen-err.txt
 pbp*.csv.gz
 epa-weekly.json
+cal-*-cache.json
+cal-*-rows.json
+cal-*-out.txt
+cal-*-err.txt

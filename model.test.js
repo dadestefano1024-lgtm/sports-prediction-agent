@@ -325,15 +325,16 @@ test('sportConfig', () => {
 // ----------------------------------------------------------------------------
 test('projectFromScoringAverages: hand-computed NBA game', () => {
   // expHome = (115 + 112)/2 = 113.5 ; expAway = (108 + 110)/2 = 109
-  // hfa 2.5 splits +1.25 / -1.25 -> margin 7.0, total unchanged at 222.5
+  // hfa 1.75 splits +0.875 / -0.875 -> margin 6.25, total unchanged at 222.5
+  // (was 2.5 and margin 7.0; the hfa is now measured — see SPORTS)
   const p = m.projectFromScoringAverages({
     homeAvgScored: 115, homeAvgAllowed: 110,
     awayAvgScored: 108, awayAvgAllowed: 112,
     sport: 'nba',
   });
-  close(p.predictedHome, 114.75, 1e-9);
-  close(p.predictedAway, 107.75, 1e-9);
-  close(p.predictedMargin, 7.0, 1e-9);
+  close(p.predictedHome, 114.375, 1e-9);
+  close(p.predictedAway, 108.125, 1e-9);
+  close(p.predictedMargin, 6.25, 1e-9);
   close(p.predictedTotal, 222.5, 1e-9);
   // internal consistency: the score must reproduce the margin and the total
   close(p.predictedHome - p.predictedAway, p.predictedMargin, 1e-9);
@@ -365,7 +366,7 @@ test('projectFromScoringAverages accepts numeric strings', () => {
     homeAvgScored: '115.0', homeAvgAllowed: '110.0',
     awayAvgScored: '108.0', awayAvgAllowed: '112.0', sport: 'nba',
   });
-  close(p.predictedMargin, 7.0, 1e-9);
+  close(p.predictedMargin, 6.25, 1e-9);   // 4.5 + measured hfa 1.75
 });
 
 test('confidenceFromEdge', () => {
@@ -2769,4 +2770,50 @@ test('a full season is unaffected by the baseline fix', () => {
   let scored = 0, games = 0;
   for (const v of Object.values(logs)) for (const g of v) { scored += g.scored; games++; }
   close(r.leagueAvg, scored / games, 1e-9, 'every team qualifies, so nothing changes');
+});
+
+// ----------------------------------------------------------------------------
+test('nba sigma and total sigma are the measured ones', () => {
+  // calibrate-sport.js, 1,231 completed 2025-26 regular-season games, fitted
+  // through coverOutcomes and totalOutcomes rather than against a normal.
+  const cfg = m.sportConfig('nba');
+  close(cfg.sigma, 11.97, 1e-9, 'sigma');
+  close(cfg.totalSigma, 18.5, 1e-9, 'totalSigma');
+  close(cfg.hfa, 1.75, 1e-9, 'hfa');
+});
+
+test('nba cover probabilities track the measured survival curve', () => {
+  // Real survival from those games at HALF-point offsets, which is where every
+  // NBA line sits -- all 1,231 residuals were half points. Comparing at whole
+  // numbers would put the model's push mass against data that has none.
+  const real = { 0.5: 0.483, 2.5: 0.415, 4.5: 0.341, 7.5: 0.266, 9.5: 0.226 };
+  const sigma = m.sportConfig('nba').sigma;
+  for (const [off, want] of Object.entries(real)) {
+    const r = m.coverOutcomes({ predictedMargin: 0, spread: -Number(off), sigma, sport: 'nba' });
+    assert.ok(Math.abs(r.win - want) < 0.02,
+      `offset ${off}: model ${r.win.toFixed(3)} vs measured ${want}`);
+  }
+});
+
+test('the old nba total sigma was the one that mattered', () => {
+  // A regression guard with a number in it: at 15.0 the model put a 20-point
+  // total miss at 8.1% against a real 13.6%. The measured value has to do
+  // materially better at the tail, or it is not worth having changed.
+  const line = 230;
+  const at = (sg) => m.totalOutcomes({ predictedTotal: line, line: line + 20.5,
+                                       sigma: sg, sport: 'nba' }).over;
+  const real = 0.136;
+  assert.ok(Math.abs(at(18.5) - real) < Math.abs(at(15.0) - real) / 2,
+    `measured ${at(18.5).toFixed(3)} must beat old ${at(15.0).toFixed(3)} against ${real}`);
+});
+
+test('nba does not get football key numbers', () => {
+  // 3 and 7 spike in football and mean nothing in basketball. The weights are
+  // gated on the sport and this is the test that keeps it that way.
+  const pmf = m.marginPmf({ mean: 0, sigma: 11.97, sport: 'nba' });
+  const at = (k) => pmf.get(k) || 0;      // marginPmf returns a Map
+  const neighbours = (at(2) + at(4)) / 2;
+  assert.ok(neighbours > 0, 'pmf must have mass around 3');
+  assert.ok(Math.abs(at(3) - neighbours) < neighbours * 0.15,
+    'a 3 must not spike in basketball');
 });

@@ -104,7 +104,38 @@ const SPORTS = {
   // which is counted. It is left here because the other sports share the
   // config shape and removing it would make football the odd one out.
   nfl: { sigma: 10.82, totalSigma: 10.5, hfa: 1.8,  eloPerPoint: 25, k: 20, leanThreshold: 3 },
-  nba: { sigma: 11.5, totalSigma: 15.0, hfa: 2.5,  eloPerPoint: 28, k: 20, leanThreshold: 2.5 },
+  // nba is MEASURED over all 1,231 completed regular-season games of 2025-26
+  // with a closing number, harvested by calibrate-sport.js. It replaces three
+  // guesses, and the note above calling basketball's sigma an unmeasured
+  // placeholder is why.
+  //
+  //                 was    measured   worst miss, before -> after
+  //   sigma         11.5     11.97        2.2  ->  1.2 points
+  //   totalSigma    15.0     18.5         5.6  ->  1.0 points
+  //   hfa            2.5      1.75        measured directly
+  //
+  // Both sigmas are fitted THROUGH the functions that consume them -- through
+  // coverOutcomes and totalOutcomes, on the real closing lines -- not against a
+  // normal. Fitting against a normal first gave 13.01 for the spread, which is
+  // wrong by a point, because basketball runs through the discrete margin PMF
+  // and the two disagree. A parameter fitted on different machinery than the
+  // model uses is not calibrated, it is just a number that fits something else.
+  //
+  // The offsets are half points, because every NBA line sits on one: all 1,231
+  // residuals were half points, so a push is structurally almost impossible and
+  // comparing at whole numbers mixes the model's push mass against real data
+  // that has none.
+  //
+  // totalSigma was the badly wrong one. At 15.0 the model said a 20-point total
+  // miss happens 8.1% of the time; it happens 13.6%.
+  //
+  // hfa only matters where no line exists, but 2.5 is a decade old and home edge
+  // in basketball has shrunk. The season's mean final margin is 1.745 and the
+  // mean closing spread implies 1.900, so the market agrees with the smaller one.
+  //
+  // The total is UNBIASED across a season: mean residual +0.508. One month alone
+  // read -3.345, which looked like a standing under bias and was noise.
+  nba: { sigma: 11.97, totalSigma: 18.5, hfa: 1.75, eloPerPoint: 28, k: 20, leanThreshold: 2.5 },
   mlb: { sigma: 4.4,  totalSigma: 4.4,  hfa: 0.20, eloPerPoint: 4,  k: 4,  fixedSpread: true },
   nhl: { sigma: 2.2,  totalSigma: 2.4,  hfa: 0.25, eloPerPoint: 2,  k: 6,  fixedSpread: true },
 };
