@@ -109,6 +109,13 @@ if (process.env.DATABASE_URL) {
       // picks. Nobody sells that history, so it has to be recorded — from now
       // forward, every couple of hours, for free off the scoreboard.
       await pool.query(`
+        CREATE TABLE IF NOT EXISTS odds_cache (
+          sport TEXT PRIMARY KEY,
+          payload JSONB,
+          fetched_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `);
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS api_quota (
           provider TEXT PRIMARY KEY,
           remaining INTEGER,
@@ -762,7 +769,11 @@ async function getHistoryStats(sport = null, limit = 50) {
 // of the app burns 1 request per sport. Cache odds for 60 minutes.
 // ============================================================================
 const oddsCache = {};
-const ODDS_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
+// Three hours, not one. A spread moves a point in a week; refreshing it hourly
+// spends the month to learn nothing. Sunday morning is when it matters, and the
+// tab is read then, which triggers a fetch anyway once the stored copy ages out.
+// Overridable so it can be shortened on a day that needs it.
+const ODDS_CACHE_TTL_MS = Number(process.env.ODDS_CACHE_MINUTES ?? 180) * 60 * 1000;
 // This TTL is the real spend governor on The Odds API free tier (500 requests
 // per month, ~3 per fetch). It caps cost at ~3 requests/hour/sport no matter
 // how often the frontend asks. It was 5 minutes, which exactly matched the
@@ -2475,6 +2486,49 @@ let lastOddsQuota = { remaining: null, used: null, lastCost: null, at: null };
  */
 const ODDS_QUOTA_RESERVE = Number(process.env.ODDS_QUOTA_RESERVE ?? 12);
 
+/**
+ * The odds response, cached in the database as well as in memory.
+ *
+ * The in-memory cache has a sixty minute TTL and never got to use it. Render's
+ * free tier spins the process down when idle, so the cache died every time the
+ * app went quiet and the next visitor paid for a fresh fetch. That is where
+ * September's 500 went: not on anybody reading the page, but on the app waking
+ * up over and over.
+ *
+ * Postgres survives the spin-down. A cold start now reads the last response from
+ * the table and only calls the paid feed if that copy is older than the TTL.
+ */
+async function loadOddsFromDb(sport, ttlMs) {
+  if (!dbReady || !pool) return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT payload, fetched_at FROM odds_cache WHERE sport = $1`, [sport]);
+    if (!rows.length) return null;
+    const age = Date.now() - new Date(rows[0].fetched_at).getTime();
+    if (age > ttlMs) return null;
+    const games = rows[0].payload;
+    if (!Array.isArray(games)) return null;
+    console.log(`[ODDS] database cache hit for ${sport} ` +
+      `(${Math.round(age / 60000)}m old, ${games.length} games) — no request spent`);
+    return { games, age };
+  } catch (err) {
+    console.warn('[ODDS] db cache read:', err.message);
+    return null;
+  }
+}
+
+async function saveOddsToDb(sport, games) {
+  if (!dbReady || !pool || !Array.isArray(games)) return;
+  try {
+    await pool.query(
+      `INSERT INTO odds_cache (sport, payload, fetched_at) VALUES ($1, $2::jsonb, NOW())
+       ON CONFLICT (sport) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = NOW()`,
+      [sport, JSON.stringify(games)]);
+  } catch (err) {
+    console.warn('[ODDS] db cache write:', err.message);
+  }
+}
+
 async function saveOddsQuota(q) {
   if (!dbReady || !pool || !Number.isFinite(q && q.remaining)) return;
   await pool.query(
@@ -2522,6 +2576,14 @@ async function fetchOdds(sport, { force = false } = {}) {
     const ageSec = Math.round((Date.now() - cached.timestamp) / 1000);
     console.log(`[ODDS] Cache hit for ${sport} (${ageSec}s old, ${cached.data?.length || 0} games)`);
     return cached.data;
+  }
+
+  // Then the database, which outlives this process. Checked before the quota
+  // guard so a fresh stored copy is served even when the allowance is gone.
+  const stored = await loadOddsFromDb(sport, ODDS_CACHE_TTL_MS);
+  if (stored) {
+    oddsCache[sport] = { timestamp: Date.now() - stored.age, data: stored.games };
+    return stored.games;
   }
 
   // Below the reserve, serve whatever is cached rather than spending one of the
@@ -2590,6 +2652,7 @@ async function fetchOdds(sport, { force = false } = {}) {
     const games = response.data || [];
     console.log(`[ODDS] Received ${games.length} ${sport} games with odds`);
     oddsCache[sport] = { timestamp: Date.now(), data: games };
+    saveOddsToDb(sport, games).catch(() => {});
     return games;
 
   } catch (error) {
