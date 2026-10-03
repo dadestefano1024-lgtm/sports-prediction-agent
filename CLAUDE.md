@@ -202,6 +202,49 @@ only two closing totals exist all season, 6.5 and 5.5.
 **MLB is still a guess** — sigma 4.4 and totalSigma 4.4 are untouched, and
 baseball deliberately keeps the plain normal until it is measured.
 
+## The price and the number are ONE signal, not two
+
+Hockey forced a price measurement because its number cannot move, and nobody
+went back and asked the same of the sports where both can. Asked, and the answer
+unifies rather than adds.
+
+Back the side the moneyline moved toward, at the OPENING price, measured in
+PROBABILITY POINTS against the de-vigged price taken (`price-move.js`,
+`nhl-holdout.js`):
+
+| | edge | SD | n |
+|---|---|---|---|
+| NHL, three seasons | +4.29 pts | 4.59 | 2,867 |
+| NBA | +6.77 pts | 4.24 | 978 |
+| NFL | +5.99 pts | 2.45 | 417 |
+
+All three sit near zero at the CLOSE and all three mirror exactly when faded, so
+the edge is in the stale price rather than in forecasting.
+
+**But in NBA the price and the number agree in 800 of 815 games -- 98% -- and
+following either gives an identical edge: +7.03 points against +7.18.** They are
+the same signal. Hockey is the exception only because the puckline is pinned at
+1.5, so the price is the only place a revised opinion can appear. The app
+therefore needs no price signal for football or basketball; the number already
+carries it. NHL is the one that needs it.
+
+**NHL held out properly.** The hypothesis was formed on 2024-25 and 2025-26;
+2023-24 had never been looked at and came in at +3.24 points, 1.97 SD -- right
+direction, right magnitude, and 0.03 SD short of the bar set before looking. Not
+rounded up.
+
+**Unsettled, and the only place price might be independent:** where the NUMBER
+sits still and only the price moves. NBA +3.26 pts (n=227, 0.98 SD), +4.70 at a
+bigger threshold (n=163, 1.20 SD); NFL +8.62 pts (n=87, 1.61 SD). Right sign
+everywhere, underpowered everywhere.
+
+**And ROI is the wrong metric here.** A one-point probability edge pays far more
+ROI on a +200 dog than a -200 favourite, purely from the multiplier. Scored in
+ROI, the hockey effect looked dog-only at +12.66% against -2.37%; scored in
+probability points both sides are positive. The first pass also reported a +2.20%
+"underdog bias" in NHL moneylines that is **noise** -- +2.20% one season, -5.21%
+the next, -1.52% pooled.
+
 ## Why no model built on team performance can be precise
 
 **A team's own record is about 75% noise over half a season.** Measured across 861
