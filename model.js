@@ -1414,6 +1414,34 @@ function buildIntegerPmf({ mean, sigma, lo, hi, weightFor }) {
  * stops moving. Solved by bisection because the relationship is monotone but
  * has no closed form once arbitrary weights are involved.
  */
+/**
+ * KNOWN LIMITATION, found 2 Oct 2026 and NOT yet fixed.
+ *
+ * This centres on the MEDIAN. That was the right call for football: centring the
+ * mean left the key-number weights dragging the distribution toward zero, and at
+ * sigma 10.82 a one-point quantisation costs almost nothing.
+ *
+ * It does not transfer to the low-scoring sports. One goal is a third of hockey's
+ * sigma, so forcing the median onto a requested mean of 1.79 returns a
+ * distribution whose mean is 1.519, and every projected margin from 1.40 to 1.90
+ * prices the -1.5 puckline at exactly 50.000% before jumping to 55.465% at 2.00.
+ * Baseball behaves the same way.
+ *
+ * It is not a solver fault -- a discrete distribution with no mass at zero has
+ * discrete achievable medians, and "median = 1.79" means half the mass each side,
+ * which is 50% by construction. The flaw is that callers pass an expected MARGIN,
+ * which is a mean, and the function treats it as a median.
+ *
+ * Impact: modest but real. MODEL_TRUST is 0.1, and hockey and baseball are
+ * fixed-spread sports where the moneyline and the total matter more than the
+ * margin. But a projection is insensitive across half a goal, which is most of
+ * the range that distinguishes two hockey teams.
+ *
+ * Fixing it means changing shared machinery that football's measured behaviour
+ * rests on, so it wants its own pass with the football numbers re-checked after.
+ * Do not "just centre the mean" without re-running calibrate-keys.js and
+ * frozen-test.js.
+ */
 function marginPmf({ mean, sigma, sport, maxMargin = 70 }) {
   const key = String(sport || '').toLowerCase();
   const weights = MARGIN_WEIGHTS_BY_SPORT[key] || {};

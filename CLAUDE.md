@@ -266,6 +266,31 @@ probability points both sides are positive. The first pass also reported a +2.20
 "underdog bias" in NHL moneylines that is **noise** -- +2.20% one season, -5.21%
 the next, -1.52% pooled.
 
+## Open, and found by checking rather than by a test
+
+**`marginPmf` centres on the MEDIAN, and low-scoring sports need the MEAN.**
+Found 2 Oct 2026 while verifying that hockey and baseball produce sane numbers.
+Asked for a mean margin of 1.79, hockey's pmf comes back with a mean of 1.519,
+and every projection from 1.40 to 1.90 prices the -1.5 puckline at exactly
+50.000% before jumping to 55.465% at 2.00. Baseball the same.
+
+Not a solver fault: a discrete distribution with no mass at zero has discrete
+achievable medians, and "median = 1.79" means half the mass each side, which IS
+50%. The flaw is that callers pass an expected margin -- a mean -- and the
+function treats it as a median. Median-centring was the correct fix for football,
+where it stopped the key-number weights dragging the distribution to zero and
+where one point is a tenth of sigma. One goal is a THIRD of hockey's sigma.
+
+Impact is modest -- MODEL_TRUST is 0.1 and both sports are fixed-spread, so the
+moneyline and total matter more -- but a projection insensitive across half a goal
+covers most of what separates two hockey teams. **Do not "just centre the mean":**
+football's measured behaviour rests on the current choice, so re-run
+`calibrate-keys.js` and `frozen-test.js` after any change.
+
+**NHL and MLB `gamesForFullWeight` (20 and 40) are CHOSEN, not fitted.** The
+football equivalent was swept in `regression-sweep.js` and the optimum was a
+slower handover than the value in use, so these are guesses of the same kind.
+
 ## Why no model built on team performance can be precise
 
 **A team's own record is about 75% noise over half a season.** Measured across 861

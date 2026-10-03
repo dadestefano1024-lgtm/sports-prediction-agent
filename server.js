@@ -834,14 +834,29 @@ const nbaTeamLocations = {
 // NHL TEAM IDS & LOCATIONS
 // ============================================================================
 
+// VERIFIED against ESPN's own team list on 2 Oct 2026. Twenty-eight of the
+// thirty-two ids here were WRONG -- the map had been built on a different id
+// scheme, so ESPN's id 6 is Edmonton while this file called it Boston. Every
+// team's opponent-adjusted rating was therefore another franchise's, and five
+// ids pointed at teams that folded between 1918 and 1942: id 52 returns the
+// St. Louis Eagles, 55 the Montreal Wanderers, 54 the Brooklyn Americans and 53
+// the Philadelphia Quakers.
+//
+// It went unnoticed because nothing read these ids until hockey was given
+// opponent-adjusted ratings, and the lookups still returned REAL schedules --
+// just the wrong team's, which looks like data rather than an error.
+//
+// Arizona relocated to Utah in 2024: 'Coyotes' is gone and 'Mammoth' is the
+// franchise. Re-check this list against
+// site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams whenever a team moves.
 const nhlTeamIds = {
-  'Bruins': 6, 'Sabres': 7, 'Red Wings': 17, 'Panthers': 13, 'Canadiens': 8,
-  'Senators': 9, 'Lightning': 14, 'Maple Leafs': 10, 'Hurricanes': 12, 'Blue Jackets': 29,
-  'Devils': 1, 'Islanders': 2, 'Rangers': 3, 'Flyers': 4, 'Penguins': 5,
-  'Capitals': 15, 'Blackhawks': 16, 'Avalanche': 21, 'Stars': 25, 'Wild': 30,
-  'Predators': 18, 'Blues': 19, 'Jets': 52, 'Ducks': 24, 'Flames': 20,
-  'Oilers': 22, 'Kings': 26, 'Sharks': 28, 'Kraken': 55, 'Canucks': 23,
-  'Golden Knights': 54, 'Coyotes': 53
+  'Bruins': 1, 'Sabres': 2, 'Flames': 3, 'Blackhawks': 4, 'Red Wings': 5,
+  'Oilers': 6, 'Hurricanes': 7, 'Kings': 8, 'Stars': 9, 'Canadiens': 10,
+  'Devils': 11, 'Islanders': 12, 'Rangers': 13, 'Senators': 14, 'Flyers': 15,
+  'Penguins': 16, 'Avalanche': 17, 'Sharks': 18, 'Blues': 19, 'Lightning': 20,
+  'Maple Leafs': 21, 'Canucks': 22, 'Capitals': 23, 'Ducks': 25, 'Panthers': 26,
+  'Predators': 27, 'Jets': 28, 'Blue Jackets': 29, 'Wild': 30,
+  'Golden Knights': 37, 'Kraken': 124292, 'Mammoth': 129764
 };
 
 const nhlTeamLocations = {
@@ -876,7 +891,8 @@ const nhlTeamLocations = {
   'Kraken': { lat: 47.6221, lon: -122.3540, tz: -8 },
   'Canucks': { lat: 49.2778, lon: -123.1089, tz: -8 },
   'Golden Knights': { lat: 36.0909, lon: -115.1833, tz: -8 },
-  'Coyotes': { lat: 33.5318, lon: -112.2611, tz: -7 }
+  // Arizona relocated to Utah in 2024; Delta Center, Salt Lake City.
+  'Mammoth': { lat: 40.7683, lon: -111.9011, tz: -7 }
 };
 
 // ============================================================================
@@ -1572,7 +1588,7 @@ async function fetchGameLogs(sport, seasonYear) {
   await Promise.all(Object.entries(ids).map(async ([nick, id]) => {
     try {
       const r = await cachedGet(
-        `https://site.api.espn.com/apis/site/v2/sports/${path}/teams/${id}/schedule?season=${seasonYear}`,
+        `https://site.api.espn.com/apis/site/v2/sports/${path}/teams/${id}/schedule?season=${seasonYear}&seasontype=2`,
         { timeout: 8000 });
       const out = [];
       for (const e of (r.data && r.data.events) || []) {
@@ -4692,6 +4708,36 @@ async function handleNHLPredictions(res, oddsData) {
     }
 
     const espnOpeningLines = await fetchEspnOpeningLines('nhl');
+
+    // Opponent-adjusted ratings, once for the slate.
+    //
+    // This projected from raw last-five scoring averages, which the football
+    // backtest measured leaning to the UNDERDOG on 83 per cent of games: a team
+    // off a soft schedule looks strong, the market already knows, so the model
+    // disbelieves good favourites. Adjusting brought that to 38 per cent.
+    //
+    // gamesForFullWeight is 20 for an 82-game season. It is CHOSEN, not fitted. The
+    // football equivalent was swept in regression-sweep.js and the optimum there
+    // was a SLOWER handover than the value in use, so this is a guess of the same
+    // kind and should be measured before it is trusted.
+    let nhlRatings = null;
+    try {
+      const seasonYear = Number((slate.season && slate.season.year) || new Date().getFullYear());
+      const [curLogs, priorLogs] = await Promise.all([
+        fetchGameLogs('nhl', seasonYear),
+        fetchGameLogs('nhl', seasonYear - 1),
+      ]);
+      nhlRatings = model.blendSeasonRatings({
+        current: model.opponentAdjustedRatings(curLogs, { iterations: 3, minGames: 3 }),
+        prior: model.opponentAdjustedRatings(priorLogs, { iterations: 3, minGames: 3 }),
+        gamesForFullWeight: 20, priorRegression: 0.5,
+      });
+      const rated = nhlRatings && nhlRatings.ratings ? Object.keys(nhlRatings.ratings).length : 0;
+      console.log(`[NHL] ratings for ${rated} teams` +
+        (nhlRatings ? `, league average ${nhlRatings.leagueAvg.toFixed(1)}` : ''));
+    } catch (err) {
+      console.warn('[NHL] ratings unavailable:', err.message);
+    }
     const goalieMap = await fetchNHLGoalieMap();
     const eventMap = {};
 
@@ -4750,6 +4796,31 @@ async function handleNHLPredictions(res, oddsData) {
           away: goalieMap[awayTeamName] || null
         },
         injuries: { home: homeInjuries, away: awayInjuries },
+        // Opponent-adjusted when the ratings exist; buildGamesFromModel falls
+        // back to raw scoring averages when this is null.
+        projection: (() => {
+          const r = nhlRatings && nhlRatings.ratings;
+          const h = r && r[homeTeamName], a = r && r[awayTeamName];
+          if (!h || !a) return null;
+          return model.projectFromRatings({
+            homeOff: h.offense, homeDef: h.defense,
+            awayOff: a.offense, awayDef: a.defense,
+            leagueAvg: nhlRatings.leagueAvg, sport: 'nhl',
+          });
+        })(),
+        // Why the number moved, by name. These injuries were already being
+        // fetched here and thrown away -- nothing read them.
+        situationFlags: (() => {
+          const outNames = (list) => (list || [])
+            .filter(i => i && i.level === 'out' && !i.longTerm)
+            .map(i => i.player);
+          const f = model.absenceContext({
+            spreadMovement: espnLines ? espnLines.spreadMovement : null,
+            homeOut: outNames(homeInjuries), awayOut: outNames(awayInjuries),
+            homeTeam: homeTeamName, awayTeam: awayTeamName,
+          });
+          return f ? [f] : [];
+        })(),
         odds: odds,
         lineMovement: espnLines,
         sharpSignals: sharpSignals
@@ -4793,6 +4864,36 @@ async function handleMLBPredictions(res, oddsData) {
     }
 
     const espnOpeningLines = await fetchEspnOpeningLines('mlb');
+
+    // Opponent-adjusted ratings, once for the slate.
+    //
+    // This projected from raw last-five scoring averages, which the football
+    // backtest measured leaning to the UNDERDOG on 83 per cent of games: a team
+    // off a soft schedule looks strong, the market already knows, so the model
+    // disbelieves good favourites. Adjusting brought that to 38 per cent.
+    //
+    // gamesForFullWeight is 40 for a 162-game season. It is CHOSEN, not fitted. The
+    // football equivalent was swept in regression-sweep.js and the optimum there
+    // was a SLOWER handover than the value in use, so this is a guess of the same
+    // kind and should be measured before it is trusted.
+    let mlbRatings = null;
+    try {
+      const seasonYear = Number((slate.season && slate.season.year) || new Date().getFullYear());
+      const [curLogs, priorLogs] = await Promise.all([
+        fetchGameLogs('mlb', seasonYear),
+        fetchGameLogs('mlb', seasonYear - 1),
+      ]);
+      mlbRatings = model.blendSeasonRatings({
+        current: model.opponentAdjustedRatings(curLogs, { iterations: 3, minGames: 3 }),
+        prior: model.opponentAdjustedRatings(priorLogs, { iterations: 3, minGames: 3 }),
+        gamesForFullWeight: 40, priorRegression: 0.5,
+      });
+      const rated = mlbRatings && mlbRatings.ratings ? Object.keys(mlbRatings.ratings).length : 0;
+      console.log(`[MLB] ratings for ${rated} teams` +
+        (mlbRatings ? `, league average ${mlbRatings.leagueAvg.toFixed(1)}` : ''));
+    } catch (err) {
+      console.warn('[MLB] ratings unavailable:', err.message);
+    }
     const eventMap = {};
 
     const gamesWithStats = await Promise.all(events.map(async (event) => {
@@ -4859,6 +4960,31 @@ async function handleMLBPredictions(res, oddsData) {
           away: awayPitcher
         },
         injuries: { home: homeInjuries, away: awayInjuries },
+        // Opponent-adjusted when the ratings exist; buildGamesFromModel falls
+        // back to raw scoring averages when this is null.
+        projection: (() => {
+          const r = mlbRatings && mlbRatings.ratings;
+          const h = r && r[homeTeamName], a = r && r[awayTeamName];
+          if (!h || !a) return null;
+          return model.projectFromRatings({
+            homeOff: h.offense, homeDef: h.defense,
+            awayOff: a.offense, awayDef: a.defense,
+            leagueAvg: mlbRatings.leagueAvg, sport: 'mlb',
+          });
+        })(),
+        // Why the number moved, by name. These injuries were already being
+        // fetched here and thrown away -- nothing read them.
+        situationFlags: (() => {
+          const outNames = (list) => (list || [])
+            .filter(i => i && i.level === 'out' && !i.longTerm)
+            .map(i => i.player);
+          const f = model.absenceContext({
+            spreadMovement: espnLines ? espnLines.spreadMovement : null,
+            homeOut: outNames(homeInjuries), awayOut: outNames(awayInjuries),
+            homeTeam: homeTeamName, awayTeam: awayTeamName,
+          });
+          return f ? [f] : [];
+        })(),
         odds: odds,
         lineMovement: espnLines,
         sharpSignals: sharpSignals
