@@ -199,8 +199,29 @@ than doing nothing, wearing five sigma. `calibrate-sport.js` now detects a fixed
 spread and says so. The moneyline and the total are the live markets in hockey;
 only two closing totals exist all season, 6.5 and 5.5.
 
-**MLB is still a guess** — sigma 4.4 and totalSigma 4.4 are untouched, and
-baseball deliberately keeps the plain normal until it is measured.
+**MLB** — 2,430 completed 2026 games, the whole season exactly. Same shape
+problem as hockey and milder: extra innings make a 0-run margin impossible while
+a normal puts **9.9%** of its mass there, and one-run games are the commonest
+single result at 27.5%. The best possible sigma still missed "win by one or more"
+by **7.26 points**; with `MLB_MARGIN_WEIGHTS` the worst miss is 2.84. sigma
+4.4 → 4.12, hfa 0.20 → **0.051** (four times too high — the season mean home
+margin is 0.051 runs and the market agrees at 0.060), totalSigma 4.4 → 4.41.
+Baseball has no empty-net equivalent so it decays smoothly after one. The runline
+is fixed at 1.5, so the harness refuses the stale-line rule here too — base rate
+of that ticket 63.6%.
+
+**Baseball totals can PUSH**, unlike basketball and hockey: 525 games closed at
+8.5 but 491 at 8.0 and 366 at 9.0, so whole numbers are routine.
+
+**All four sports now carry counted margin distributions.** The plain normal is
+what an UNMEASURED sport gets, and `DISCRETE_MARGIN_SPORTS` plus
+`MARGIN_WEIGHTS_BY_SPORT` is where that is decided. A test asserts an unmeasured
+sport still reduces to the curve, so adding one has to be deliberate.
+
+**`totalSigma` was already right in both low-scoring sports** — 2.4 against a
+measured 2.31 in hockey, 4.4 against 4.41 in baseball — and badly wrong in
+basketball, 15.0 against 18.5. Whoever set these got totals right where scoring
+is low and wrong where it is high.
 
 ## The price and the number are ONE signal, not two
 
