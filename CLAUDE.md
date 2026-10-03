@@ -182,6 +182,13 @@ BEST POSSIBLE sigma still missed "win by one or more" by 7.5 points. With
 `NHL_MARGIN_WEIGHTS` the worst miss is 2.2. sigma 2.2 -> 2.94, hfa 0.25 -> 0.13,
 totalSigma 2.4 -> 2.31 (already near right).
 
+**The puckline IS a spread** -- saying "there is no spread in hockey" was wrong.
+What is true is that the NUMBER never moves, so it cannot go stale. What moves is
+the PRICE: a team stays at -1.5 while its moneyline goes -125 to -190. That is
+measured in `nhl-price.js`, which is the hockey analogue of the stale-number rule
+and is scored in units of PROFIT, because a win rate across mixed prices means
+nothing. **Not yet settled -- see the bottom of this section.**
+
 **A FIXED SPREAD CANNOT GO STALE, and the harness reported a five-sigma edge
 before it was taught that.** ESPN carries only -1.5 and +1.5 for hockey across
 all 1,312 games, so the only possible "move" is the favourite flipping sides —
