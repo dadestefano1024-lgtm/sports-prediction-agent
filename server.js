@@ -3303,7 +3303,7 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
     const preseason = Number(g.seasonType) === 1
       ? 'preseason - starters play limited minutes and recent form describes lineups that are not playing'
       : null;
-    const reason = skipReason || g.skipReason || preseason
+    const reason = preseason || skipReason || g.skipReason
       || (started ? 'game already under way - the book is pricing the remainder, not the full game' : null)
       || null;
     // reason states outright that we are declining to project, rather than
