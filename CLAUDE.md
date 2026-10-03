@@ -454,4 +454,50 @@ its name.**
   within 0.005. The tell was a 5-point fit residual that nothing was checking —
   `book-shop.js` now asserts representability per quote.
 
+- **The badge is graded in PROBABILITY points, and the thresholds are measured.**
+  `betRecommendation` used to read `bookValuePts`, a difference of SPREAD
+  points, at 1.0 for "Strong bet" and 0.5 for "Slight edge" -- and
+  `bookConfidence` used the same two cutoffs. On a real 16-game slate that
+  badged "Slight edge" on **9 of 15 games and every one of the nine was a
+  losing bet**, from -0.60% to -1.91%. Two things were wrong with the unit:
+  it ignored the price the better number is sold at (books charge about 2.33
+  probability points for the half-point they hand you), and it treated all
+  spread points as equal when half a point ACROSS 3 is worth 4.65 points and
+  half a point off 2.5 or 6 is worth 1.2-1.9.
+  `model.bookOfferEdge()` now does it properly: de-vig the consensus, solve for
+  the centre that reproduces it, read the fair probability at this book's
+  number, compare to this book's price. Thresholds `BET_LEAN_PTS = 0.75` (the
+  across-book spread of de-vigged prices on the same game is 0.64 points, so
+  below that an edge is inside the noise of its own consensus) and
+  `BET_STRONG_PTS = 2.0` (what a genuine key-number lag nets). They fire rarely
+  on purpose: on that slate the new badge said "Don't bet" on all 15, which is
+  what the independent measurement said too.
+- **`homeEdgePts` means two different things in this codebase.** On
+  `myBook` (server.js) it is `bookLine - consensusLine`, a SPREAD-point
+  difference. On the `priceGame` / `runLineEdge` objects (model.js) it is
+  `(fairProb - rawProb) * 100`, PROBABILITY points. `favouredSide()` takes the
+  first; `runLine.homeEdgePts` is the second. Two units under one name is how
+  the bad badge shipped, and it is why `recommendedBet` now carries
+  `edgeProbPts` and `linePts` rather than reusing `advantagePts`. Check which
+  flavour you have before comparing anything to a threshold.
+- **The `picks.edge` column changed unit on 2 Oct 2026.** Rows before it hold a
+  LINE difference in spread points, from the old rule. Rows after hold
+  probability points. Do not pool them.
+- **A test can agree with itself, and this one did.** The regression test for
+  the median-centring artifact is
+  `bookOfferEdge charges the hold when the book IS the market`, and it only
+  works because it sweeps the KEY NUMBERS -- written at a -10 line alone it
+  passed with the bug still in place, because away from 3 and 7 there is no
+  push atom and the two centrings agree. The test named "does not invent an
+  edge on both sides" is NOT a guard and is labelled so in the file: it passes
+  either way, because the real artifact needed a leave-one-out consensus across
+  nine books and a single-consensus call cannot reproduce it. Both facts were
+  established by putting the bug back and re-running, which is the only way any
+  of this is knowable.
+- **`bestOffer()` shops all nine books but prices them against OUR projection,**
+  which is the input measured and rejected. A best-of-nine edge against the
+  MARKET -- the thing `book-shop.js` measures, worth +0.84 pts inside regulated
+  US apps -- is not wired into the card and would be new work, not a
+  wire-up.
+
 *Last updated: 2 October 2026*

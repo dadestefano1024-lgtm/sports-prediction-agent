@@ -830,12 +830,16 @@
       return 'neutral';
     }
 
-    // A card is worth flagging when the book being bet at is offering a better
-    // NUMBER than the rest of the market. That is a fact about prices. The old
-    // version flagged a model edge of 3% or more, which after measurement is
-    // noise dressed as a recommendation.
+    // A card is worth flagging when the book being bet at has a real edge AFTER
+    // the price -- which is the server's own verdict, so there is one place
+    // that decides. Two earlier versions of this were both wrong: it flagged a
+    // model edge of 3%+, which measurement called noise, and then it flagged
+    // any better NUMBER at all, which ignored what that number costs. Books
+    // charge about 2.33 probability points for the half-point they hand you,
+    // so a better number is routinely a worse bet.
     function hasBookValue(game) {
-      return Number(game.bookValuePts || 0) > 0;
+      const lvl = game.recommendation && game.recommendation.level;
+      return lvl === 'strong' || lvl === 'lean';
     }
 
     // Format a single number for the movement table — handles null, plus signs, etc.
@@ -1194,9 +1198,15 @@
               <div class="header-badges">
                 ${weatherBadge}
                 ${g.inProgress ? '<span class="confidence Low">live</span>' : ''}
-                ${g.bookValuePts > 0
-                  ? `<span class="confidence High">+${g.bookValuePts} pt${g.bookValuePts === 1 ? '' : 's'} at ${(g.myBook && g.myBook.name) || 'your book'}</span>`
-                  : ''}
+                ${(() => {
+                  // Fires on the NET edge after price, and says so in percent.
+                  // It used to fire on any positive line difference and was
+                  // styled green either way, so it read as a recommendation on
+                  // games that lose money -- which, measured, was most of them.
+                  const e = Number(g.bookEdgePts);
+                  if (!Number.isFinite(e) || e < 0.75) return '';
+                  return `<span class="confidence ${e >= 2 ? 'High' : 'Medium'}">+${e.toFixed(1)}% at ${(g.myBook && g.myBook.name) || 'your book'}</span>`;
+                })()}
               </div>
             </div>
             <div class="card-body">

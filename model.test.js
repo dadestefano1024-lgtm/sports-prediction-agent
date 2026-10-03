@@ -1084,28 +1084,148 @@ test('rankPoolPicks orders by win probability and trims to count', () => {
 });
 
 // ----------------------------------------------------------------------------
-test('betRecommendation grades the book advantage, not the model', () => {
-  const strong = m.betRecommendation({ bookValuePts: 1.5, bookName: 'DraftKings', side: 'home' });
+test('betRecommendation grades the PRICE-ADJUSTED edge, not the line difference', () => {
+  const strong = m.betRecommendation({ edgeProbPts: 2.4, bookName: 'DraftKings', side: 'home' });
   assert.equal(strong.level, 'strong');
-  assert.match(strong.reason, /DraftKings is 1\.5 points better/);
+  assert.match(strong.reason, /worth about 2\.4% more than it costs/);
 
-  const lean = m.betRecommendation({ bookValuePts: 0.5, bookName: 'DraftKings' });
+  const lean = m.betRecommendation({ edgeProbPts: 1.0, bookName: 'DraftKings' });
   assert.equal(lean.level, 'lean');
 
-  const none = m.betRecommendation({ bookValuePts: 0, bookName: 'DraftKings' });
-  assert.equal(none.level, 'none');
-  assert.equal(none.label, "Don't bet");
-  assert.match(none.reason, /at the market price/);
+  // The old rule called this "Slight edge" on half a point of line. In
+  // probability terms it is inside the spread between books, so it is not one.
+  const tiny = m.betRecommendation({ edgeProbPts: 0.4, bookName: 'DraftKings' });
+  assert.equal(tiny.level, 'none');
+  assert.match(tiny.reason, /inside the/);
+
+  // And a losing bet must SAY it loses, which the old version never did -- it
+  // said "no edge here" whether you were level or paying over the odds.
+  const bad = m.betRecommendation({ edgeProbPts: -2.4, bookName: 'DraftKings', side: 'home' });
+  assert.equal(bad.level, 'none');
+  assert.equal(bad.label, "Don't bet");
+  assert.match(bad.reason, /costs about 2\.4% more than it is worth/);
 });
 
 test('betRecommendation refuses live and lineless games', () => {
-  assert.equal(m.betRecommendation({ bookValuePts: 3, inProgress: true }).level, 'pass');
-  assert.equal(m.betRecommendation({ bookValuePts: 3, hasLine: false }).level, 'pass');
+  assert.equal(m.betRecommendation({ edgeProbPts: 3, inProgress: true }).level, 'pass');
+  assert.equal(m.betRecommendation({ edgeProbPts: 3, hasLine: false }).level, 'pass');
 });
 
-test('betRecommendation singularises one point', () => {
-  assert.match(m.betRecommendation({ bookValuePts: 1, bookName: 'DK' }).reason, /1 point better/);
-  assert.match(m.betRecommendation({ bookValuePts: 2, bookName: 'DK' }).reason, /2 points better/);
+test('betRecommendation says NO READ rather than no edge when it cannot price', () => {
+  // Failing open is what shipped a 5-point modelling miss as a 5-point edge.
+  const unknown = m.betRecommendation({ edgeProbPts: null, reachable: false, bookName: 'DK' });
+  assert.equal(unknown.level, 'pass');
+  assert.equal(unknown.label, 'No read');
+  assert.match(unknown.reason, /could not be modelled/);
+  assert.equal(m.betRecommendation({ edgeProbPts: 4, reachable: false }).label, 'No read',
+    'an unreachable fit must not be badged however big the number looks');
+});
+
+test('betRecommendation names the line difference as the thing that is NOT the edge', () => {
+  const r = m.betRecommendation({ edgeProbPts: 0.2, linePts: 0.5, bookName: 'DK' });
+  assert.match(r.reason, /the number is 0\.5 better, but the price takes most of that back/);
+});
+
+// ----------------------------------------------------------------------------
+test('bookOfferEdge charges the hold when the book IS the market', () => {
+  // THIS IS THE REGRESSION TEST, and it only works because it sweeps the KEY
+  // NUMBERS. Written at -10 alone it passed with the bug still in place, which
+  // is how a test comes to agree with itself: away from 3 and 7 there is no
+  // push atom, so median and mean centring give the same answer and the test
+  // is blind to the difference.
+  //
+  // Same number, same price as the consensus means the only thing left is the
+  // vig, so BOTH sides must be negative -- about half of a 4.76% hold -- and
+  // the two must sum to exactly minus the hold. Under the old median centring
+  // a -3 line returns -7.46 and +2.70: a fake 2.7-point edge on a bet that is
+  // simply paying the juice.
+  for (const line of [-13.5, -10, -7.5, -7, -6.5, -3.5, -3, -2.5, 0, 2.5, 3, 7, 10]) {
+    const r = m.bookOfferEdge({
+      sport: 'nfl', market: 'spread',
+      consensusLine: line, consensusPriceA: -110, consensusPriceB: -110,
+      bookLine: line, bookPriceA: -110, bookPriceB: -110,
+    });
+    assert.ok(r && r.reachable, 'unreachable at a ' + line + ' line');
+    assert.ok(r.aPts < 0 && r.bPts < 0,
+      'betting into the vig is never +EV, but a ' + line + ' line gave ' +
+      r.aPts + ' / ' + r.bPts);
+    assert.ok(Math.abs(r.aPts - r.bPts) < 0.01,
+      'a symmetric market must be symmetric at ' + line);
+    // Model-free identity: aPts + bPts = 1 - impliedA - impliedB = -hold.
+    assert.ok(Math.abs((r.aPts + r.bPts) + 4.76) < 0.05,
+      'the two sides must sum to minus the hold at ' + line + ', got ' +
+      (r.aPts + r.bPts).toFixed(2));
+  }
+});
+
+test('bookOfferEdge debits the price the better number is sold at', () => {
+  // Half a point better, but paid for. The old line-points rule scored this
+  // +0.5 and badged it; the question is whether the price takes it back.
+  const free = m.bookOfferEdge({
+    sport: 'nfl', market: 'spread',
+    consensusLine: 4, consensusPriceA: -110, consensusPriceB: -110,
+    bookLine: 4.5, bookPriceA: -110, bookPriceB: -110,
+  });
+  const paid = m.bookOfferEdge({
+    sport: 'nfl', market: 'spread',
+    consensusLine: 4, consensusPriceA: -110, consensusPriceB: -110,
+    bookLine: 4.5, bookPriceA: -140, bookPriceB: -110,
+  });
+  assert.ok(paid.aPts < free.aPts - 5,
+    'a much worse price must cost far more than the half-point is worth');
+  assert.ok(paid.aPts < 0, 'the half-point at -140 is a losing bet');
+});
+
+test('bookOfferEdge: the real Dallas @ Houston quotes price sanely', () => {
+  // NOT a regression test, and labelled so nobody trusts it as one: it passes
+  // with the median-centring bug still in place. The artifact it was written
+  // for needed a leave-one-out consensus across nine books -- the flip
+  // depended on WHICH book was held out -- and a single-consensus call does
+  // not reproduce that. What catches the bug is the key-number sweep above and
+  // the representability check below. This is kept only as a plain sanity read
+  // on real numbers.
+  const r = m.bookOfferEdge({
+    sport: 'nfl', market: 'spread',
+    consensusLine: -3, consensusPriceA: -110, consensusPriceB: -110,
+    bookLine: -3, bookPriceA: -105, bookPriceB: -115,
+  });
+  assert.equal(r.reachable, true, 'a -3 line must be priceable at all');
+  assert.ok(!(r.aPts > 0 && r.bPts > 0),
+    'both sides +EV is an arbitrage, got ' + r.aPts + ' / ' + r.bPts);
+  assert.ok(r.aPts < 2 && r.bPts < 2,
+    'no single-book edge that size exists on a -3, got ' + r.aPts + ' / ' + r.bPts);
+});
+
+test('bookOfferEdge reaches the market price it is measured against', () => {
+  // The guard that would have caught the artifact: if the model cannot
+  // reproduce the consensus de-vigged price, the "edge" is that failure.
+  for (const line of [-10, -7.5, -7, -3.5, -3, -2.5, 0, 2.5, 3, 7]) {
+    const r = m.bookOfferEdge({
+      sport: 'nfl', market: 'spread',
+      consensusLine: line, consensusPriceA: -110, consensusPriceB: -110,
+      bookLine: line, bookPriceA: -110, bookPriceB: -110,
+    });
+    assert.ok(r && r.reachable, 'unreachable at a ' + line + ' line');
+  }
+});
+
+test('bookOfferEdge prices totals, where a lower number favours the over', () => {
+  const r = m.bookOfferEdge({
+    sport: 'nfl', market: 'total',
+    consensusLine: 47.5, consensusPriceA: -110, consensusPriceB: -110,
+    bookLine: 46.5, bookPriceA: -110, bookPriceB: -110,
+  });
+  assert.equal(r.reachable, true);
+  assert.ok(r.aPts > r.bPts,
+    'a book posting a lower total gives the OVER the better of it');
+});
+
+test('bookOfferEdge refuses junk instead of guessing', () => {
+  assert.equal(m.bookOfferEdge({ sport: 'nfl', consensusLine: null }), null);
+  assert.equal(m.bookOfferEdge({
+    sport: 'nfl', consensusLine: -3, consensusPriceA: -110, consensusPriceB: -110,
+    bookLine: -3, bookPriceA: NaN, bookPriceB: -110,
+  }), null);
 });
 
 test('poolCandidate flags a drifting spread and ignores a drifting total', () => {

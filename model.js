@@ -2612,7 +2612,134 @@ function rankPoolPicks(candidates, count = 6) {
  * a better NUMBER than the rest of the market. That is a fact about prices
  * rather than a forecast, and it is what this grades.
  */
-function betRecommendation({ bookValuePts = 0, inProgress = false, hasLine = true,
+/**
+ * A book's offer priced against the market, in PROBABILITY points.
+ *
+ * WHY THIS EXISTS. The badge used to be graded on `bookValuePts`, which is a
+ * difference of SPREAD points -- "DraftKings is half a point better than the
+ * market" -- and two things were wrong with that.
+ *
+ *   1. It ignored the price. A book at +4.5/-115 against a consensus 4/-110
+ *      scored +0.5 with no debit for the worse price, and buying a half-point
+ *      at a bad enough price is a worse bet, not a better one. Measured on a
+ *      real 16-game slate: the books that post the better number charge about
+ *      2.33 probability points for it, which is most of what it is worth.
+ *   2. A spread point is not a constant. Half a point ACROSS 3 is worth 4.65
+ *      probability points in the NFL; half a point off 2.5 or 6 is worth
+ *      1.2-1.9. The old thresholds gave those the same badge.
+ *
+ * So the old 1.0-point "Strong bet" sat on bets that lose money: the hold is
+ * 4.46%, which is 2.23 points per side of tax, and one spread point off a
+ * non-key number does not cover it.
+ *
+ * METHOD. De-vig the consensus price to get what the market itself says the
+ * side is worth, solve for the margin centre that reproduces it, then read the
+ * fair probability at THIS BOOK's number and compare it to THIS BOOK's price.
+ * The difference is the edge, and it is in the only unit where a better number
+ * and a better price are commensurable.
+ *
+ * A PUSH REFUNDS, so every probability here is win/(win+loss). (The Pick 6 pool
+ * is the one place a push loses, and the pool line is frozen, so none of this
+ * applies there.)
+ *
+ * IT FAILS CLOSED. If the model cannot reproduce the market's own de-vigged
+ * price, it returns `reachable: false` and no edge. That is not defensive
+ * padding: under the default median centring the push-adjusted cover
+ * probability is a STEP at a key number -- 44.92% for every centre in
+ * [2.80, 2.95], then 55.08% at 3.00 -- so the market's 50.00% was unreachable
+ * at a -3 line and the 5.08-point MISS was reported as a 5.08-point edge, on
+ * both sides of the same game at once. Hence `centre: 'mean'` below, and hence
+ * this guard.
+ *
+ * Side A is home for a spread and the over for a total; the direction of "a
+ * better number" needs no special case because it falls out of the
+ * probability.
+ */
+function bookOfferEdge({
+  sport, market = 'spread',
+  consensusLine, consensusPriceA, consensusPriceB,
+  bookLine, bookPriceA, bookPriceB,
+  sigma, totalSigma,
+} = {}) {
+  const cfg = sportConfig(sport);
+  const sd = market === 'total'
+    ? (Number.isFinite(totalSigma) ? totalSigma : cfg.totalSigma)
+    : (Number.isFinite(sigma) ? sigma : cfg.sigma);
+  if (!Number.isFinite(sd) || sd <= 0) return null;
+  if ([consensusLine, consensusPriceA, consensusPriceB,
+       bookLine, bookPriceA, bookPriceB].some(v => !Number.isFinite(v))) return null;
+
+  const probA = market === 'total'
+    ? (centre, line) => {
+      const pmf = totalPmf({ mean: centre, sigma: sd });
+      let over = 0, push = 0;
+      for (const [t, p] of pmf) {
+        if (t > line) over += p;
+        else if (t === line) push += p;
+      }
+      const under = Math.max(0, 1 - over - push);
+      return (over + under) > 0 ? over / (over + under) : 0.5;
+    }
+    : (centre, line) => {
+      const o = coverOutcomes({ predictedMargin: centre, spread: line,
+                                sigma: sd, sport, centre: 'mean' });
+      const d = o.win + o.loss;
+      return d > 0 ? o.win / d : 0.5;
+    };
+
+  // What the market says side A is worth, with the book's margin taken out.
+  const target = deVigTwoWay(consensusPriceA, consensusPriceB).probA;
+  if (!Number.isFinite(target)) return null;
+
+  // probA rises monotonically with the centre in both markets, so bisection is
+  // exact and needs no grid.
+  let lo = market === 'total' ? Math.max(0, consensusLine - 10 * sd) : -10 * sd;
+  let hi = market === 'total' ? consensusLine + 10 * sd : 10 * sd;
+  for (let i = 0; i < 200; i++) {
+    const mid = (lo + hi) / 2;
+    if (probA(mid, consensusLine) < target) lo = mid; else hi = mid;
+  }
+  const centre = (lo + hi) / 2;
+
+  const reached = probA(centre, consensusLine);
+  if (Math.abs(reached - target) > 0.005) {
+    return { reachable: false, aPts: null, bPts: null,
+             marketProbA: +(target * 100).toFixed(2),
+             reachedProbA: +(reached * 100).toFixed(2) };
+  }
+
+  const fairA = probA(centre, bookLine);
+  return {
+    reachable: true,
+    centre: +centre.toFixed(3),
+    marketProbA: +(target * 100).toFixed(2),
+    aPts: +((fairA - americanToImpliedProb(bookPriceA)) * 100).toFixed(2),
+    bPts: +(((1 - fairA) - americanToImpliedProb(bookPriceB)) * 100).toFixed(2),
+  };
+}
+
+/**
+ * Thresholds, in probability points, both taken from measurement rather than
+ * taste -- which is the whole complaint about the ones they replace.
+ *
+ * LEAN at 0.75: the across-book spread of de-vigged prices on the same game is
+ * 0.64 points, present even where all nine books hold the SAME number. Below
+ * that an estimated edge is inside the noise of the consensus it is measured
+ * against.
+ *
+ * STRONG at 2.0: a genuine key-number lag is the only thing on a real slate
+ * that produces an edge this size -- the half-point across 3 is worth 4.65
+ * points gross and the books charge about 2.33 for it.
+ *
+ * These fire rarely on purpose. Measured over 30 sides of a real NFL slate:
+ * nothing cleared 2.0, and only 2 sides cleared zero at all (one of them by
+ * 0.07 points). A badge that lit up every week was the bug.
+ */
+const BET_STRONG_PTS = 2.0;
+const BET_LEAN_PTS = 0.75;
+
+function betRecommendation({ edgeProbPts = null, reachable = true, linePts = null,
+                             inProgress = false, hasLine = true,
                              bookName = 'your book', side = null } = {}) {
   if (inProgress) {
     return { level: 'pass', label: 'In progress',
@@ -2622,19 +2749,42 @@ function betRecommendation({ bookValuePts = 0, inProgress = false, hasLine = tru
     return { level: 'pass', label: 'No line',
              reason: 'no market price available for this game yet' };
   }
-  const pts = Number(bookValuePts) || 0;
-  if (pts >= 1) {
-    return { level: 'strong', label: 'Strong bet',
-             reason: `${bookName} is ${pts} point${pts === 1 ? '' : 's'} better than the market` +
-                     (side ? ` on the ${side}` : '') };
+  // No read is NOT no edge, and saying "no edge" when the answer is unknown is
+  // how a 5-point modelling miss got shipped as a 5-point edge.
+  if (!reachable || !Number.isFinite(edgeProbPts)) {
+    return { level: 'pass', label: 'No read',
+             reason: `the market price on this game could not be modelled, so no ` +
+                     `edge can be claimed at ${bookName} either way` };
   }
-  if (pts >= 0.5) {
+
+  const pts = Number(edgeProbPts);
+  const where = side ? ` on the ${side}` : '';
+  const show = (n) => Math.abs(n).toFixed(1);
+  // The line difference is worth saying out loud when there is one, because it
+  // is the thing that LOOKS like the edge and usually is not.
+  const lineNote = Number.isFinite(linePts) && linePts > 0
+    ? ` (the number is ${linePts} better, but the price takes most of that back)`
+    : '';
+
+  if (pts >= BET_STRONG_PTS) {
+    return { level: 'strong', label: 'Strong bet',
+             reason: `${bookName}'s price${where} is worth about ${show(pts)}% more ` +
+                     `than it costs` };
+  }
+  if (pts >= BET_LEAN_PTS) {
     return { level: 'lean', label: 'Slight edge',
-             reason: `${bookName} is ${pts} of a point better than the market` +
-                     (side ? ` on the ${side}` : '') };
+             reason: `${bookName}'s price${where} is worth about ${show(pts)}% more ` +
+                     `than it costs — small, but bigger than the spread between books` };
+  }
+  if (pts > 0) {
+    return { level: 'none', label: "Don't bet",
+             reason: `${bookName}${where ? where : ''} is only ${show(pts)}% to the good, ` +
+                     `which is inside the ${BET_LEAN_PTS}% that books differ from each ` +
+                     `other anyway, so it is not an edge${lineNote}` };
   }
   return { level: 'none', label: "Don't bet",
-           reason: `${bookName} is at the market price, so there is no edge here` };
+           reason: `${bookName}'s price${where} costs about ${show(pts)}% more than it ` +
+                   `is worth, so this one loses money${lineNote}` };
 }
 
 /**
@@ -3347,6 +3497,9 @@ module.exports = {
   bestOffer,
   poolEdge,
   betRecommendation,
+  bookOfferEdge,
+  BET_STRONG_PTS,
+  BET_LEAN_PTS,
   situationFlags,
   absenceContext,
   bestBet,

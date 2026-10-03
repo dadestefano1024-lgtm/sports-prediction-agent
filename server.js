@@ -405,8 +405,10 @@ async function savePicksFromGames(sport, games, eventMap) {
       market: bet.market,
       pick: bet.pick,
       line: bet.line,
-      // Points of advantage over the market, which is what was recommended on.
-      edge: bet.advantagePts,
+      // Probability points of edge over the market, which is what was
+      // recommended on. UNIT CHANGED 2 Oct 2026: rows before that date hold a
+      // LINE difference in spread points, from the old rule that ignored price.
+      edge: bet.edgeProbPts,
       confidence: game.confidence,
       // The same signals the pool records, so the two tabs can be compared on
       // equal terms later. This tab already USES injuries and movement; the
@@ -3281,10 +3283,14 @@ async function fetchCommentary(sport, prompt) {
  * the market — which is a fact about prices rather than a prediction, and is
  * the one advantage available to someone with a single account.
  */
-function bookConfidence(points) {
-  if (!Number.isFinite(points) || points <= 0) return 'Low';
-  if (points >= 1) return 'High';
-  if (points >= 0.5) return 'Medium';
+// Graded on the PROBABILITY edge, not the line difference. The old version read
+// spread points with the same 1 / 0.5 cutoffs betRecommendation used, so a
+// half-point bought at a worse price came out "Medium" confidence while
+// actually losing money.
+function bookConfidence(edgeProbPts) {
+  if (!Number.isFinite(edgeProbPts) || edgeProbPts <= 0) return 'Low';
+  if (edgeProbPts >= model.BET_STRONG_PTS) return 'High';
+  if (edgeProbPts >= model.BET_LEAN_PTS) return 'Medium';
   return 'Low';
 }
 
@@ -3380,37 +3386,88 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
     }
     const best = priced.spread || priced.total;
 
-    // Best number advantage this book offers on any side of this game.
+    // Best number advantage this book offers on any side of this game. Kept for
+    // display -- "+0.5 pt at DraftKings" is a true and useful thing to show --
+    // but NO LONGER the thing any verdict is graded on. See below.
     const mb = odds.myBook;
     const bookValue = mb ? Math.max(
       ...[mb.homeEdgePts, mb.awayEdgePts, mb.overEdgePts, mb.underEdgePts]
         .filter(v => Number.isFinite(v)), 0) : 0;
 
-    // The actual bet the advantage points at, structured so it can be stored
-    // and graded rather than only displayed. `line` stays in the home-spread
+    // THE DECISION NUMBER. Every side this book offers, priced against the
+    // market in probability points -- the only unit in which a better NUMBER
+    // and a better PRICE are commensurable.
+    //
+    // This replaces grading on the line difference, which was wrong twice over:
+    // it ignored the price the better number is sold at (measured: books charge
+    // about 2.33 points for the half-point they hand you, most of what it is
+    // worth), and it treated all spread points as equal when half a point
+    // across 3 is worth 4.65 and half a point off 2.5 is worth 1.5. The mean
+    // hold is 4.46%, so 2.23 points per side is the tax to clear, and one line
+    // point off a non-key number does not clear it.
+    const spreadEdge = (mb && spreadUsable && Number.isFinite(mb.spread))
+      ? model.bookOfferEdge({
+        sport, market: 'spread',
+        consensusLine: rawSpread,
+        consensusPriceA: toNum(odds.spreadHomePrice),
+        consensusPriceB: toNum(odds.spreadAwayPrice),
+        bookLine: mb.spread,
+        bookPriceA: toNum(mb.spreadHomePrice),
+        bookPriceB: toNum(mb.spreadAwayPrice),
+      }) : null;
+    const totalEdge = (mb && totalUsable && Number.isFinite(mb.total))
+      ? model.bookOfferEdge({
+        sport, market: 'total',
+        consensusLine: rawTotal,
+        consensusPriceA: toNum(odds.overPrice),
+        consensusPriceB: toNum(odds.underPrice),
+        bookLine: mb.total,
+        bookPriceA: toNum(mb.overPrice),
+        bookPriceB: toNum(mb.underPrice),
+      }) : null;
+
+    const sign = (n) => `${n > 0 ? '+' : ''}${n}`;
+    const edgeSides = [];
+    if (spreadEdge && spreadEdge.reachable && Number.isFinite(mb.spread)) {
+      edgeSides.push(
+        { pts: spreadEdge.aPts, market: 'spread', side: 'home', linePts: mb.homeEdgePts,
+          pick: `${g.homeTeam} ${sign(mb.spread)}`, line: mb.spread },
+        { pts: spreadEdge.bPts, market: 'spread', side: 'away', linePts: mb.awayEdgePts,
+          pick: `${g.awayTeam} ${sign(-mb.spread)}`, line: mb.spread });
+    }
+    if (totalEdge && totalEdge.reachable && Number.isFinite(mb.total)) {
+      edgeSides.push(
+        { pts: totalEdge.aPts, market: 'total', side: 'over', linePts: mb.overEdgePts,
+          pick: `Over ${mb.total}`, line: mb.total },
+        { pts: totalEdge.bPts, market: 'total', side: 'under', linePts: mb.underEdgePts,
+          pick: `Under ${mb.total}`, line: mb.total });
+    }
+    const bestEdge = edgeSides.length
+      ? edgeSides.reduce((a, b) => (b.pts > a.pts ? b : a)) : null;
+    // "Could not be modelled" and "no edge" are different answers, and the
+    // interface must not show the first as the second.
+    const edgeReadable = !!((spreadEdge && spreadEdge.reachable) ||
+                            (totalEdge && totalEdge.reachable));
+
+    // The actual bet the edge points at, structured so it can be stored and
+    // graded rather than only displayed. `line` stays in the home-spread
     // convention for spreads, because that is what gradePick and the closing
     // line capture both assume.
-    const sign = (n) => `${n > 0 ? '+' : ''}${n}`;
     const recommendedBet = (() => {
-      if (!mb || bookValue <= 0 || g.inProgress) return null;
-      const base = { book: mb.name, advantagePts: bookValue };
-      if (mb.homeEdgePts === bookValue && Number.isFinite(mb.spread)) {
-        return { ...base, market: 'spread', side: 'home',
-                 pick: `${g.homeTeam} ${sign(mb.spread)}`, line: mb.spread };
-      }
-      if (mb.awayEdgePts === bookValue && Number.isFinite(mb.spread)) {
-        return { ...base, market: 'spread', side: 'away',
-                 pick: `${g.awayTeam} ${sign(-mb.spread)}`, line: mb.spread };
-      }
-      if (mb.overEdgePts === bookValue && Number.isFinite(mb.total)) {
-        return { ...base, market: 'total', side: 'over',
-                 pick: `Over ${mb.total}`, line: mb.total };
-      }
-      if (mb.underEdgePts === bookValue && Number.isFinite(mb.total)) {
-        return { ...base, market: 'total', side: 'under',
-                 pick: `Under ${mb.total}`, line: mb.total };
-      }
-      return null;
+      if (!mb || g.inProgress || !bestEdge) return null;
+      // Only a side clearing the measured noise floor between books counts. The
+      // old rule fired on any positive line difference at all, which on a real
+      // slate meant most games -- and, measured, meant losing bets.
+      if (!(bestEdge.pts >= model.BET_LEAN_PTS)) return null;
+      return {
+        book: mb.name, market: bestEdge.market, side: bestEdge.side,
+        pick: bestEdge.pick, line: bestEdge.line,
+        // Probability points. The old `advantagePts` on this object held a LINE
+        // difference; the name is retired rather than reused, because two units
+        // under one name is how the bad badge shipped in the first place.
+        edgeProbPts: bestEdge.pts,
+        linePts: Number.isFinite(bestEdge.linePts) ? bestEdge.linePts : null,
+      };
     })();
     const bestBookSide = recommendedBet
       ? (recommendedBet.market === 'spread'
@@ -3518,8 +3575,14 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       // This is the only edge on the live tabs that survived measurement, so it
       // is what the badge now reflects.
       myBook: odds.myBook || null,
+      // bookValuePts is the LINE difference, for display only.
       bookValuePts: bookValue,
-      confidence: bookConfidence(bookValue),
+      // bookEdgePts is the decision number: probability points, after the price
+      // the better number is sold at. null means it could not be modelled,
+      // which is not the same answer as zero.
+      bookEdgePts: bestEdge ? bestEdge.pts : null,
+      bookEdgeReadable: edgeReadable,
+      confidence: bookConfidence(bestEdge ? bestEdge.pts : null),
 
       // A single verdict per game, graded only on the book advantage — the one
       // live input with a measured edge. Line movement is deliberately NOT an
@@ -3545,7 +3608,9 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       // strongly", which always has an answer — and grades a lean separately
       // from an edge so the two can never be read as the same thing.
       recommendation: model.betRecommendation({
-        bookValuePts: bookValue,
+        edgeProbPts: bestEdge ? bestEdge.pts : null,
+        reachable: edgeReadable,
+        linePts: bestEdge && Number.isFinite(bestEdge.linePts) ? bestEdge.linePts : null,
         inProgress: !!g.inProgress,
         hasLine: odds.spread !== null && odds.spread !== undefined,
         bookName: (odds.myBook && odds.myBook.name) || MY_BOOK,
