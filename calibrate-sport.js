@@ -197,25 +197,38 @@ async function oddsFor(id) {
   const movers = rows.filter(r => Number.isFinite(r.open) && Math.abs(r.close - r.open) > 0);
   console.log('');
 
-  // A FIXED SPREAD CANNOT GO STALE, and reporting this rule for one produces a
-  // number that looks spectacular and means nothing.
+  // THE PUCKLINE AND RUNLINE DO MOVE, and this message used to deny it.
   //
-  // Hockey closed at only -1.5 and +1.5 across all 1,312 games, so the only
-  // possible "move" is the favourite flipping sides. And when the market moves
-  // toward a team, that team was the one getting +1.5 at the open -- in 118 of
-  // 118 cases, by construction rather than coincidence. So the rule scored 72.9%
-  // at 4.97 SD against a base rate of 73.3% for ANY +1.5 ticket: slightly worse
-  // than doing nothing, dressed as a five-sigma edge.
+  // What is measured below is ONE provider's primary line, and for hockey and
+  // baseball that is 1.5 almost always. Stating "the spread is FIXED" from that
+  // was reading a property of one feed as a property of the market. Checking
+  // every pre-game provider in the same cached responses: hockey shows 392
+  // readings at -2.5, 216 at +2.5 and 130 at -3.5, at ESPN BET, SugarHouse and
+  // Unibet, and pre-game books disagree with each other on the puckline in 7.4%
+  // of games -- sometimes about WHICH SIDE is favoured. Alternative lines are
+  // real and the owner was right to say so.
+  //
+  // So this reports what it can see and does not generalise. The stale-line rule
+  // still cannot be run on it: the one line available here barely moves, and the
+  // only "move" it can show is the favourite flipping, where the side the market
+  // moved toward is the side that was getting points at the open -- 118 of 118
+  // cases, by construction. That is a base rate, not an edge.
+  //
+  // Measuring the multi-book version needs prices attached to the points, and
+  // ESPN does not carry spreadOdds. Its multi-book MONEYLINES are also too dirty
+  // to substitute: 40% fail a basic vig check, five books post +100 placeholders,
+  // and there are two conflicting DraftKings feeds. That measurement wants The
+  // Odds API, which is the feed bestOffer already uses in production.
   const distinct = new Set(rows.map(r => Math.abs(r.close)));
   if (distinct.size <= 2) {
     const plus = rows.filter(r => r.margin >= -1).length / rows.length;
-    console.log('STALE-LINE RULE: not applicable. The spread is FIXED -- only ' +
-      [...distinct].join(' and ') + ' ever closed, so it cannot go stale.');
-    console.log('  Any "move" is the favourite flipping, and the side the market moves');
-    console.log('  toward is the one that was getting points at the open, by construction.');
-    console.log('  Base rate of that ticket: ' + (plus * 100).toFixed(1) +
-      '% — which is what the rule would report as an edge.');
-    console.log('  The moneyline and the total are the live markets here.');
+    console.log('STALE-LINE RULE: not run. This provider posted only ' +
+      [...distinct].join(' and ') + ', so there is no movement here to measure.');
+    console.log('  That is this FEED, not the market: other books post 2.5 and 3.5,');
+    console.log('  and pre-game books disagree on the puckline in 7.4% of games.');
+    console.log('  The only "move" visible here is the favourite flipping, and the');
+    console.log('  side it flips toward was the one getting points at the open, in');
+    console.log('  118 of 118 cases. Base rate of that ticket: ' + (plus * 100).toFixed(1) + '%.');
   } else if (movers.length > 100) {
     const settle = (r, side) => {
       const c = r.margin + r.open;

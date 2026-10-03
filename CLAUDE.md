@@ -189,8 +189,32 @@ measured in `nhl-price.js`, which is the hockey analogue of the stale-number rul
 and is scored in units of PROFIT, because a win rate across mixed prices means
 nothing. **Not yet settled -- see the bottom of this section.**
 
-**A FIXED SPREAD CANNOT GO STALE, and the harness reported a five-sigma edge
-before it was taught that.** ESPN carries only -1.5 and +1.5 for hockey across
+**THE PUCKLINE AND RUNLINE DO MOVE, and they do reach 2.5.** Danny said so and
+he was right; the file previously claimed they were fixed at 1.5. That claim came
+from measuring ONE provider's primary line and reading it as a property of the
+market — the error this file warns about under "negative findings need the list".
+Checking every pre-game provider in the same cached responses: hockey shows **392
+readings at -2.5, 216 at +2.5, 130 at -3.5** across ESPN BET, SugarHouse and
+Unibet, and pre-game books **disagree with each other on the puckline in 7.4% of
+games**, sometimes about which side is favoured. On baseball there is simply NO
+coverage — the MLB cache holds only DraftKings pre-game — so nothing here
+disputes him.
+
+**The multi-book version could not be measured, and the attempt is instructive.**
+ESPN carries no `spreadOdds`, so the alternative points have no prices attached.
+Substituting the multi-book MONEYLINES fails: 40% of pairs fail a basic vig check
+(a real two-way market sits at 100-112% implied; Bet365 averages 83.1%, Unibet
+82.6%), five books post +100 placeholders, and there are **two conflicting
+DraftKings feeds** — `"Draft Kings"` with a space is clean at 104.3% and
+`"DraftKings"` without is garbage at 85.4%. Gating on a sane vig left 6 books a
+game and a plausible 3.12-point mean spread, but 74-point outliers survived and
+the EV came out +9.73% against a realised -0.29%, because taking the median of
+each side independently does not produce a coherent pair. **The only trustworthy
+figure was that every realised return was negative**, which is what no edge plus
+vig looks like. Doing this properly needs The Odds API, which is the feed
+`bestOffer` already consumes in production.
+
+**AND THE HARNESS REPORTED A FIVE-SIGMA EDGE before it was taught any of this.** ESPN carries only -1.5 and +1.5 for hockey across
 all 1,312 games, so the only possible "move" is the favourite flipping sides —
 and when the market moves toward a team, that team is the one that was getting
 +1.5 at the open, in **118 of 118 cases, by construction**. The rule scored 72.9%
