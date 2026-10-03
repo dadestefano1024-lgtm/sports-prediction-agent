@@ -136,7 +136,29 @@ const SPORTS = {
   // The total is UNBIASED across a season: mean residual +0.508. One month alone
   // read -3.345, which looked like a standing under bias and was noise.
   nba: { sigma: 11.97, totalSigma: 18.5, hfa: 1.75, eloPerPoint: 28, k: 20, leanThreshold: 2.5 },
-  mlb: { sigma: 4.4,  totalSigma: 4.4,  hfa: 0.20, eloPerPoint: 4,  k: 4,  fixedSpread: true },
+  // mlb is MEASURED over all 2,430 completed 2026 regular-season games -- the
+  // whole season, 162 x 30 / 2 exactly.
+  //
+  //                 was    measured
+  //   sigma          4.4     4.12    refitted WITH the counted weights
+  //   totalSigma     4.4     4.41    already right, like hockey's
+  //   hfa           0.20     0.051   the season mean home margin
+  //
+  // Same shape problem as hockey, and milder. Extra innings make a 0-run margin
+  // impossible while a normal puts 9.9% of its mass there, and one-run games are
+  // the commonest single result at 27.5%. The best possible sigma still missed
+  // "win by one or more" by 7.26 points; with MLB_MARGIN_WEIGHTS the worst miss
+  // is 2.84. Unlike hockey there is no bump further out -- baseball has no
+  // empty-net equivalent.
+  //
+  // hfa was four times too high. The season mean home margin is 0.051 runs and
+  // the mean closing spread implies 0.060, so the market agrees it is almost
+  // nothing. It only matters where no line exists.
+  //
+  // NOTE baseball totals sit on WHOLE numbers as well as halves -- 8.5 on 525
+  // games but 8.0 on 491 and 9.0 on 366 -- so unlike basketball and hockey a
+  // total here really can push, and totalOutcomes gives it push mass.
+  mlb: { sigma: 4.12, totalSigma: 4.41, hfa: 0.051, eloPerPoint: 4,  k: 4,  fixedSpread: true },
   // nhl is MEASURED over all 1,312 completed 2025-26 regular-season games.
   //
   //                 was    measured
@@ -1310,9 +1332,35 @@ const NFL_KEY_NUMBER_WEIGHTS = {
  */
 const NHL_MARGIN_WEIGHTS = { 0: 0, 1: 1.616, 2: 0.794, 3: 1.439, 4: 1.039, 5: 0.685, 6: 0.266 };
 
-const MARGIN_WEIGHTS_BY_SPORT = { nfl: NFL_KEY_NUMBER_WEIGHTS, nhl: NHL_MARGIN_WEIGHTS };
+/**
+ * Baseball margins, counted over all 2,430 completed 2026 regular-season games.
+ *
+ *   |margin|   observed   normal   weight
+ *      0          0.0%      9.9%    0.000
+ *      1         27.5%     19.1%    1.439
+ *      2         19.3%     17.4%    1.104
+ *      3         14.0%     15.0%    0.937
+ *      4         10.6%     12.1%    0.878
+ *      5          8.5%      9.2%    0.927
+ *      6          6.6%      6.6%    1.001
+ *
+ * The same structural problem as hockey and milder: extra innings mean a 0-run
+ * margin is impossible, and a normal of the same spread puts 9.9% of its mass
+ * there. One-run games are the commonest single result at 27.5%. Unlike hockey
+ * there is no bump further out -- baseball has no empty-net equivalent, so the
+ * distribution decays smoothly once the spike at one is accounted for.
+ *
+ * The best possible sigma still missed "win by one or more" by 7.26 points
+ * before these, which is the same shape error and the same argument: the runline
+ * is fixed at 1.5, so the only question ever asked is P(win by 2+), and it sits
+ * on the edge of the spike.
+ */
+const MLB_MARGIN_WEIGHTS = { 0: 0, 1: 1.439, 2: 1.104, 3: 0.937, 4: 0.878, 5: 0.927, 6: 1.001 };
 
-const DISCRETE_MARGIN_SPORTS = new Set(['nfl', 'nba', 'nhl']);
+const MARGIN_WEIGHTS_BY_SPORT = { nfl: NFL_KEY_NUMBER_WEIGHTS, nhl: NHL_MARGIN_WEIGHTS,
+                                  mlb: MLB_MARGIN_WEIGHTS };
+
+const DISCRETE_MARGIN_SPORTS = new Set(['nfl', 'nba', 'nhl', 'mlb']);
 
 /**
  * Probability of each integer margin, as a Map from margin to probability.
@@ -3267,6 +3315,7 @@ module.exports = {
   plausibleSpread,
   NFL_KEY_NUMBER_WEIGHTS,
   NHL_MARGIN_WEIGHTS,
+  MLB_MARGIN_WEIGHTS,
   buildIntegerPmf,
   marginPmf,
   totalPmf,

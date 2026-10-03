@@ -570,22 +570,23 @@ test('coverOutcomes: run lines and puck lines never push', () => {
   }
 });
 
-test('baseball still reduces to the plain normal; hockey deliberately does not', () => {
-  // This assertion used to cover both. Hockey now carries counted margin
-  // weights -- no ties, a spike on one goal, three beating two -- so matching a
-  // normal is precisely what it must NOT do. Baseball has not been measured yet
-  // and keeps the curve, which is honest about being a guess.
+test('an UNMEASURED sport reduces to the plain normal; a measured one does not', () => {
+  // This test used to say "baseball reduces to the normal, hockey does not",
+  // which was true when baseball was the unmeasured one. All four real sports
+  // now carry counted distributions, so the thing worth asserting is that the
+  // curve is what you get when nothing has been measured -- and that adding a
+  // sport to the counted set has to be deliberate rather than accidental.
+  const plain = m.coverOutcomes({ predictedMargin: 0.3, spread: -1.5,
+                                  sigma: 4.12, sport: 'other' });
+  close(plain.win, m.coverProbability({ predictedMargin: 0.3, spread: -1.5, sigma: 4.12 }), 1e-9);
+  close(plain.push, 0, 1e-12, 'a continuous curve cannot push');
+
   const mlb = m.coverOutcomes({ predictedMargin: 0.3, spread: -1.5,
                                 sigma: m.sportConfig('mlb').sigma, sport: 'mlb' });
-  close(mlb.win, m.coverProbability({ predictedMargin: 0.3, spread: -1.5,
-                                      sigma: m.sportConfig('mlb').sigma }), 1e-9);
-
-  const nhl = m.coverOutcomes({ predictedMargin: 0.3, spread: -1.5,
-                                sigma: m.sportConfig('nhl').sigma, sport: 'nhl' });
   const asNormal = m.coverProbability({ predictedMargin: 0.3, spread: -1.5,
-                                        sigma: m.sportConfig('nhl').sigma });
-  assert.ok(Math.abs(nhl.win - asNormal) > 0.01,
-    `hockey must diverge from the normal; got ${nhl.win.toFixed(4)} vs ${asNormal.toFixed(4)}`);
+                                        sigma: m.sportConfig('mlb').sigma });
+  assert.ok(Math.abs(mlb.win - asNormal) > 0.01,
+    `baseball must now diverge; got ${mlb.win.toFixed(4)} vs ${asNormal.toFixed(4)}`);
 });
 
 // ----------------------------------------------------------------------------
@@ -2956,4 +2957,66 @@ test('nhl config is the measured one', () => {
   close(cfg.totalSigma, 2.31, 1e-9, 'totalSigma');
   close(cfg.hfa, 0.13, 1e-9, 'hfa');
   assert.equal(cfg.fixedSpread, true, 'the puckline does not move');
+});
+
+// ----------------------------------------------------------------------------
+test('baseball cannot produce a tie either', () => {
+  // Extra innings. A normal of the same spread puts 9.9% of its mass on a 0-run
+  // margin; across 2,430 games of 2026 it happened 0.0% of the time.
+  const pmf = m.marginPmf({ mean: 0.051, sigma: 4.12, sport: 'mlb' });
+  assert.equal(pmf.get(0) || 0, 0);
+  let total = 0;
+  for (const [, p] of pmf) total += p;
+  assert.ok(Math.abs(total - 1) < 1e-6, 'mass must still sum to one');
+});
+
+test('one-run games are the commonest baseball result', () => {
+  const pmf = m.marginPmf({ mean: 0.051, sigma: 4.12, sport: 'mlb' });
+  const at = (k) => (pmf.get(k) || 0) + (pmf.get(-k) || 0);
+  assert.ok(at(1) > at(2) && at(2) > at(3),
+    'baseball decays smoothly after one; it has no empty-net bump like hockey');
+  assert.ok(at(1) > 0.22 && at(1) < 0.33,
+    `one-run games should be near 27.5%, model gives ${(at(1) * 100).toFixed(1)}%`);
+});
+
+test('the runline is priced to the measured curve', () => {
+  // The only question asked of this distribution, the runline being fixed at 1.5.
+  const real = { 1: 0.528, 2: 0.361, 3: 0.262, 4: 0.193 };
+  for (const [k, want] of Object.entries(real)) {
+    const w = m.coverOutcomes({ predictedMargin: 0.051, spread: -(Number(k) - 0.5),
+                                sigma: 4.12, sport: 'mlb' }).win;
+    assert.ok(Math.abs(w - want) < 0.03,
+      `win by ${k}+: model ${w.toFixed(3)} vs measured ${want}`);
+  }
+});
+
+test('mlb config is the measured one', () => {
+  const cfg = m.sportConfig('mlb');
+  close(cfg.sigma, 4.12, 1e-9, 'sigma');
+  close(cfg.totalSigma, 4.41, 1e-9, 'totalSigma');
+  close(cfg.hfa, 0.051, 1e-9, 'hfa');
+  assert.equal(cfg.fixedSpread, true, 'the runline does not move');
+});
+
+test('a baseball total CAN push, unlike basketball and hockey', () => {
+  // 491 games closed at 8.0 and 366 at 9.0 in 2026, so a whole-number total is
+  // routine here and the push is real.
+  const whole = m.totalOutcomes({ predictedTotal: 8.3, line: 8, sigma: 4.41, sport: 'mlb' });
+  assert.ok(whole.push > 0.03, `a whole total must carry push mass, got ${whole.push}`);
+  const half = m.totalOutcomes({ predictedTotal: 8.3, line: 8.5, sigma: 4.41, sport: 'mlb' });
+  assert.equal(half.push, 0, 'and a half-point total must not');
+});
+
+test('every sport that was measured now diverges from a plain normal', () => {
+  // nfl, nba, nhl and mlb all carry counted distributions. Only an unmeasured
+  // sport should reduce to the curve, and the point of this test is that adding
+  // one must be a deliberate act rather than a default.
+  for (const sport of ['nfl', 'nhl', 'mlb']) {
+    const cfg = m.sportConfig(sport);
+    const counted = m.coverOutcomes({ predictedMargin: 0.3, spread: -2.5,
+                                      sigma: cfg.sigma, sport }).win;
+    const asNormal = m.coverProbability({ predictedMargin: 0.3, spread: -2.5, sigma: cfg.sigma });
+    assert.ok(Math.abs(counted - asNormal) > 0.005,
+      `${sport} should not reduce to a normal; ${counted.toFixed(4)} vs ${asNormal.toFixed(4)}`);
+  }
 });
