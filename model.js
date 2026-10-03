@@ -2584,6 +2584,68 @@ function poolCandidate(spreadMovement, totalMovement) {
  * the others were. These are stated as observations rather than edges precisely
  * because they are unvalidated.
  */
+/**
+ * Why did the number move? Names, not counts.
+ *
+ * Asked for explicitly: not to bet ahead of the market -- absences are measured
+ * as fully priced, in football and in basketball -- but to know what a move
+ * MEANT when it is seen. A three-point move with a star ruled out is a different
+ * thing to read than a three-point move with a clean injury report, and the
+ * second is the more interesting of the two.
+ *
+ * situationFlags reports COUNTS and whether a count is unusual for the league.
+ * That is the right shape for baseball, where four men on the IL is routine, and
+ * the wrong shape for basketball, where the whole story is which one. "Three
+ * players out" explains nothing; a name does.
+ *
+ * Deliberately carries no recommendation. nba-rest.js and increment-test.js both
+ * measured the obvious bet here and it is a coin flip, so this says what
+ * happened and stops.
+ */
+function absenceContext({ spreadMovement = null, homeOut = [], awayOut = [],
+                          homeTeam = 'the home side', awayTeam = 'the away side',
+                          minMove = 1.5 } = {}) {
+  const names = (a) => (a || []).filter(Boolean).slice(0, 3);
+  const h = names(homeOut), a = names(awayOut);
+  const moved = Number.isFinite(spreadMovement) ? Math.abs(spreadMovement) : null;
+  const list = (who, arr) => `${arr.join(', ')} out for ${who}`;
+  const both = [h.length ? list(homeTeam, h) : null, a.length ? list(awayTeam, a) : null]
+    .filter(Boolean).join('; ');
+
+  // A move with an absence to point at. The side it hurts is the side missing
+  // people, and where both are missing people it has no side.
+  if (moved !== null && moved >= minMove && (h.length || a.length)) {
+    return {
+      type: 'absence-explains-move', severity: 'medium',
+      against: (h.length && a.length) ? null : (h.length ? 'home' : 'away'),
+      note: `The spread has moved ${moved} pt${moved === 1 ? '' : 's'} and there is an ` +
+            `absence behind it: ${both}. Already in the price — this is the reason, not a bet.`,
+    };
+  }
+
+  // A move with nothing to point at. The more interesting case: whatever drove
+  // it is not in the injury report.
+  if (moved !== null && moved >= minMove) {
+    return {
+      type: 'move-unexplained', severity: 'high', against: null,
+      note: `The spread has moved ${moved} pt${moved === 1 ? '' : 's'} with nobody ruled out. ` +
+            `Whatever moved it is not in the injury report.`,
+    };
+  }
+
+  // Somebody significant out and the number has not reacted. Either it was
+  // priced before the line opened or it has not finished reacting.
+  if ((h.length || a.length) && moved !== null && moved < minMove) {
+    return {
+      type: 'absence-static-line', severity: 'medium',
+      against: (h.length && a.length) ? null : (h.length ? 'home' : 'away'),
+      note: `${both}, and the spread has moved only ${moved} pt${moved === 1 ? '' : 's'}. ` +
+            `Either that was priced before the line opened, or the market has not reacted yet.`,
+    };
+  }
+  return null;
+}
+
 function situationFlags({
   spreadMovement = null, totalMovement = null,
   qbOut = null, qbOutSide = null,
@@ -3145,6 +3207,7 @@ module.exports = {
   poolEdge,
   betRecommendation,
   situationFlags,
+  absenceContext,
   bestBet,
   poolCandidate,
   rankPoolPicks,

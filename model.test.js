@@ -2817,3 +2817,58 @@ test('nba does not get football key numbers', () => {
   assert.ok(Math.abs(at(3) - neighbours) < neighbours * 0.15,
     'a 3 must not spike in basketball');
 });
+
+// ----------------------------------------------------------------------------
+test('absenceContext explains a move by naming who is out', () => {
+  const r = m.absenceContext({
+    spreadMovement: -3, awayOut: ['Giannis Antetokounmpo'],
+    homeTeam: 'Heat', awayTeam: 'Bucks',
+  });
+  assert.equal(r.type, 'absence-explains-move');
+  assert.equal(r.against, 'away', 'it is bad news for the side missing people');
+  assert.match(r.note, /Giannis Antetokounmpo out for Bucks/);
+  assert.match(r.note, /3 pts/);
+  // No recommendation: absences are measured as priced in both sports.
+  assert.match(r.note, /not a bet/);
+});
+
+test('a move with a clean injury report is the interesting case', () => {
+  const r = m.absenceContext({ spreadMovement: 3.5, homeOut: [], awayOut: [] });
+  assert.equal(r.type, 'move-unexplained');
+  assert.equal(r.severity, 'high', 'louder than an explained move');
+  assert.equal(r.against, null, 'an unexplained move has no side');
+  assert.match(r.note, /not in the injury report/);
+});
+
+test('somebody out and the line has not reacted', () => {
+  const r = m.absenceContext({
+    spreadMovement: 0.5, homeOut: ['Jimmy Butler'], homeTeam: 'Heat',
+  });
+  assert.equal(r.type, 'absence-static-line');
+  assert.equal(r.against, 'home');
+  assert.match(r.note, /priced before the line opened|has not reacted/);
+});
+
+test('absences on both sides carry no side', () => {
+  const r = m.absenceContext({
+    spreadMovement: -2, homeOut: ['A'], awayOut: ['B'],
+    homeTeam: 'H', awayTeam: 'A',
+  });
+  assert.equal(r.against, null);
+  assert.match(r.note, /out for H; .*out for A/);
+});
+
+test('absenceContext stays quiet when there is nothing to say', () => {
+  assert.equal(m.absenceContext({ spreadMovement: 0.5 }), null);
+  assert.equal(m.absenceContext({ spreadMovement: null, homeOut: ['A'] }), null,
+    'no movement figure means no claim about the market reacting');
+  assert.equal(m.absenceContext({}), null);
+});
+
+test('absenceContext names at most three, so a long IL cannot flood the card', () => {
+  const r = m.absenceContext({
+    spreadMovement: 3, awayOut: ['A', 'B', 'C', 'D', 'E'], awayTeam: 'T',
+  });
+  assert.match(r.note, /A, B, C out for T/);
+  assert.ok(!/D|E/.test(r.note));
+});

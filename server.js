@@ -4634,6 +4634,22 @@ async function handleNBAPredictions(res, oddsData) {
         },
         travel: travelData,
         injuries: { home: homeInjuries, away: awayInjuries },
+        // Why the number moved, by name. Asked for explicitly -- not to bet
+        // ahead of the market, since nba-rest.js measured absences as fully
+        // priced, but so a three-point move can be read rather than guessed at.
+        // The loudest case is a move with a CLEAN injury report, because
+        // whatever drove that is not in the feed.
+        situationFlags: (() => {
+          const outNames = (list) => (list || [])
+            .filter(i => i && i.level === 'out' && !i.longTerm)
+            .map(i => i.player);
+          const f = model.absenceContext({
+            spreadMovement: espnLines ? espnLines.spreadMovement : null,
+            homeOut: outNames(homeInjuries), awayOut: outNames(awayInjuries),
+            homeTeam: homeTeamName, awayTeam: awayTeamName,
+          });
+          return f ? [f] : [];
+        })(),
         odds: odds,
         lineMovement: espnLines,
         sharpSignals: sharpSignals
