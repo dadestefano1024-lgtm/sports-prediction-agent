@@ -158,6 +158,43 @@ Kansas City at Miami read 17-16 against a market of 47.
 
 ---
 
+## Other sports: measured, not guessed
+
+The non-football sigmas were all placeholders, and model.js said so. Measured
+with `calibrate-sport.js`, which uses ESPN only and caches, so re-running costs
+nothing.
+
+**NBA** — 1,231 completed 2025-26 games. sigma 11.5 -> 11.97, totalSigma
+15.0 -> **18.5** (the one that mattered: at 15.0 the model put a 20-point total
+miss at 8.1% against a real 13.6%), hfa 2.5 -> **1.75**. Fit both sigmas THROUGH
+the functions that consume them, at half-point offsets, because every NBA line
+sits on a half point and all 1,231 residuals did too. Fitting against a normal
+first gave 13.01, which is wrong by a point. The stale-line rule transfers and is
+**stronger than football**: 62.1% at 2+ points, n=435, 5.03 SD, all seven months
+positive. Back-to-backs and rest are fully priced (`nba-rest.js`).
+
+**NHL** — 1,312 completed games, and the sigma was the least of it. **The SHAPE
+was wrong.** Hockey has had no ties since 2005 and a normal puts 14.2% of its
+mass on a 0-goal margin; overtime makes every extra-time game a one-goal game, so
+43.2% of the season ends by one; and three-goal margins beat two-goal ones, 23.1%
+to 17.5%, because a team trailing by one pulls its goalie. Before counting, the
+BEST POSSIBLE sigma still missed "win by one or more" by 7.5 points. With
+`NHL_MARGIN_WEIGHTS` the worst miss is 2.2. sigma 2.2 -> 2.94, hfa 0.25 -> 0.13,
+totalSigma 2.4 -> 2.31 (already near right).
+
+**A FIXED SPREAD CANNOT GO STALE, and the harness reported a five-sigma edge
+before it was taught that.** ESPN carries only -1.5 and +1.5 for hockey across
+all 1,312 games, so the only possible "move" is the favourite flipping sides —
+and when the market moves toward a team, that team is the one that was getting
++1.5 at the open, in **118 of 118 cases, by construction**. The rule scored 72.9%
+at 4.97 SD against a base rate of **73.3% for any +1.5 ticket**: slightly worse
+than doing nothing, wearing five sigma. `calibrate-sport.js` now detects a fixed
+spread and says so. The moneyline and the total are the live markets in hockey;
+only two closing totals exist all season, 6.5 and 5.5.
+
+**MLB is still a guess** — sigma 4.4 and totalSigma 4.4 are untouched, and
+baseball deliberately keeps the plain normal until it is measured.
+
 ## Why no model built on team performance can be precise
 
 **A team's own record is about 75% noise over half a season.** Measured across 861

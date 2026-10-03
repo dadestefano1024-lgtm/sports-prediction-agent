@@ -137,7 +137,23 @@ const SPORTS = {
   // read -3.345, which looked like a standing under bias and was noise.
   nba: { sigma: 11.97, totalSigma: 18.5, hfa: 1.75, eloPerPoint: 28, k: 20, leanThreshold: 2.5 },
   mlb: { sigma: 4.4,  totalSigma: 4.4,  hfa: 0.20, eloPerPoint: 4,  k: 4,  fixedSpread: true },
-  nhl: { sigma: 2.2,  totalSigma: 2.4,  hfa: 0.25, eloPerPoint: 2,  k: 6,  fixedSpread: true },
+  // nhl is MEASURED over all 1,312 completed 2025-26 regular-season games.
+  //
+  //                 was    measured
+  //   sigma          2.2     2.94    refitted WITH the counted weights
+  //   totalSigma     2.4     2.31    the one number that was already right
+  //   hfa           0.25     0.13    the season mean home margin
+  //
+  // sigma only means anything alongside NHL_MARGIN_WEIGHTS. Without them the
+  // best possible sigma still missed "win by one or more" by 7.5 points; with
+  // them the worst miss across the thresholds that matter is 2.2. The shape was
+  // the problem, not the parameter.
+  //
+  // The puckline is fixed at 1.5 and ESPN carries only -1.5 and +1.5, so the
+  // spread market has no granularity at all -- the moneyline and the total are
+  // the live markets in hockey. Only two closing totals exist in the whole
+  // season, 6.5 on 746 games and 5.5 on 563.
+  nhl: { sigma: 2.94, totalSigma: 2.31, hfa: 0.13, eloPerPoint: 2,  k: 6,  fixedSpread: true },
 };
 
 /** Kelly fractions at or below this are treated as no edge at all. */
@@ -1260,7 +1276,43 @@ const NFL_KEY_NUMBER_WEIGHTS = {
 };
 
 /** Sports whose margins are integers, so a whole-number line can push. */
-const DISCRETE_MARGIN_SPORTS = new Set(['nfl', 'nba']);
+/**
+ * Hockey margins, counted. Observed share divided by what a normal of the same
+ * spread would give, over all 1,312 completed 2025-26 regular-season games.
+ *
+ *   |margin|   observed   normal   weight
+ *      0          0.0%     14.2%    0.000
+ *      1         43.2%     26.7%    1.616
+ *      2         17.5%     22.1%    0.794
+ *      3         23.1%     16.1%    1.439
+ *      4         10.7%     10.3%    1.039
+ *      5          4.0%      5.8%    0.685
+ *      6          0.8%      2.9%    0.266
+ *
+ * Two structural facts a smooth curve cannot express, and they are not small:
+ *
+ *   A TIE IS IMPOSSIBLE. There have been none since 2005, and a normal puts
+ *   14.2% of its mass there. That mass has to go somewhere, and it goes mostly
+ *   to one.
+ *
+ *   OVERTIME MAKES ONE-GOAL GAMES. Every game decided in overtime or a shootout
+ *   is a one-goal game by rule, and 43.2% of games end that way.
+ *
+ *   AND THREE BEATS TWO -- 23.1% against 17.5% -- because of the empty net. A
+ *   team trailing by one pulls its goalie, and the goal that follows turns a
+ *   two-goal game into a three-goal one. No unimodal curve produces that.
+ *
+ * It matters because the puckline is fixed at 1.5, so the only question ever
+ * asked of this distribution is P(win by 2+), which sits exactly on the edge of
+ * the spike. Before this, the best possible sigma still missed "win by 1 or
+ * more" by 7.5 percentage points -- a shape error that no single parameter can
+ * fix, which is the whole argument for counting it.
+ */
+const NHL_MARGIN_WEIGHTS = { 0: 0, 1: 1.616, 2: 0.794, 3: 1.439, 4: 1.039, 5: 0.685, 6: 0.266 };
+
+const MARGIN_WEIGHTS_BY_SPORT = { nfl: NFL_KEY_NUMBER_WEIGHTS, nhl: NHL_MARGIN_WEIGHTS };
+
+const DISCRETE_MARGIN_SPORTS = new Set(['nfl', 'nba', 'nhl']);
 
 /**
  * Probability of each integer margin, as a Map from margin to probability.
@@ -1316,7 +1368,7 @@ function buildIntegerPmf({ mean, sigma, lo, hi, weightFor }) {
  */
 function marginPmf({ mean, sigma, sport, maxMargin = 70 }) {
   const key = String(sport || '').toLowerCase();
-  const weights = key === 'nfl' ? NFL_KEY_NUMBER_WEIGHTS : {};
+  const weights = MARGIN_WEIGHTS_BY_SPORT[key] || {};
   const weightFor = (m) => Object.prototype.hasOwnProperty.call(weights, Math.abs(m))
     ? weights[Math.abs(m)] : 1;
   const build = (centre) => buildIntegerPmf({
@@ -3214,6 +3266,7 @@ module.exports = {
   SPREAD_LIMITS,
   plausibleSpread,
   NFL_KEY_NUMBER_WEIGHTS,
+  NHL_MARGIN_WEIGHTS,
   buildIntegerPmf,
   marginPmf,
   totalPmf,

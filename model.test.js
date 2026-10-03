@@ -563,11 +563,29 @@ test('coverOutcomes always partitions the space', () => {
 });
 
 test('coverOutcomes: run lines and puck lines never push', () => {
+  // Still true for both: 1.5 is a half point, so no integer margin lands on it.
   for (const sport of ['mlb', 'nhl']) {
     const o = m.coverOutcomes({ predictedMargin: 0.3, spread: -1.5, sigma: m.sportConfig(sport).sigma, sport });
     close(o.push, 0, 1e-12, `${sport} cannot push on 1.5`);
-    close(o.win, m.coverProbability({ predictedMargin: 0.3, spread: -1.5, sigma: m.sportConfig(sport).sigma }), 1e-9);
   }
+});
+
+test('baseball still reduces to the plain normal; hockey deliberately does not', () => {
+  // This assertion used to cover both. Hockey now carries counted margin
+  // weights -- no ties, a spike on one goal, three beating two -- so matching a
+  // normal is precisely what it must NOT do. Baseball has not been measured yet
+  // and keeps the curve, which is honest about being a guess.
+  const mlb = m.coverOutcomes({ predictedMargin: 0.3, spread: -1.5,
+                                sigma: m.sportConfig('mlb').sigma, sport: 'mlb' });
+  close(mlb.win, m.coverProbability({ predictedMargin: 0.3, spread: -1.5,
+                                      sigma: m.sportConfig('mlb').sigma }), 1e-9);
+
+  const nhl = m.coverOutcomes({ predictedMargin: 0.3, spread: -1.5,
+                                sigma: m.sportConfig('nhl').sigma, sport: 'nhl' });
+  const asNormal = m.coverProbability({ predictedMargin: 0.3, spread: -1.5,
+                                        sigma: m.sportConfig('nhl').sigma });
+  assert.ok(Math.abs(nhl.win - asNormal) > 0.01,
+    `hockey must diverge from the normal; got ${nhl.win.toFixed(4)} vs ${asNormal.toFixed(4)}`);
 });
 
 // ----------------------------------------------------------------------------
@@ -2871,4 +2889,71 @@ test('absenceContext names at most three, so a long IL cannot flood the card', (
   });
   assert.match(r.note, /A, B, C out for T/);
   assert.ok(!/D|E/.test(r.note));
+});
+
+// ----------------------------------------------------------------------------
+test('hockey cannot produce a tie', () => {
+  // No NHL ties since 2005, and a normal of the same spread puts 14.2% of its
+  // mass on a 0-goal margin. Counted weights have to remove it entirely.
+  const pmf = m.marginPmf({ mean: 0.13, sigma: 2.94, sport: 'nhl' });
+  assert.equal(pmf.get(0) || 0, 0, 'a 0-goal margin must be impossible');
+  let total = 0;
+  for (const [, p] of pmf) total += p;
+  assert.ok(Math.abs(total - 1) < 1e-6, 'and the mass must still sum to one');
+});
+
+test('overtime piles hockey margins on exactly one goal', () => {
+  // 43.2% of the 2025-26 season ended by one goal, because every overtime and
+  // shootout game is a one-goal game by rule.
+  const pmf = m.marginPmf({ mean: 0.13, sigma: 2.94, sport: 'nhl' });
+  const one = (pmf.get(1) || 0) + (pmf.get(-1) || 0);
+  assert.ok(one > 0.35 && one < 0.50,
+    `one-goal games should be near 43%, model gives ${(one * 100).toFixed(1)}%`);
+  const two = (pmf.get(2) || 0) + (pmf.get(-2) || 0);
+  assert.ok(one > two * 2, 'and must dwarf two-goal games');
+});
+
+test('three-goal margins beat two-goal ones, because of the empty net', () => {
+  // 23.1% against 17.5% in the real season. A team trailing by one pulls its
+  // goalie and the goal that follows turns a two into a three. No unimodal
+  // curve produces that, which is why the weights are counted rather than fitted.
+  const pmf = m.marginPmf({ mean: 0.13, sigma: 2.94, sport: 'nhl' });
+  const at = (k) => (pmf.get(k) || 0) + (pmf.get(-k) || 0);
+  assert.ok(at(3) > at(2), `three (${at(3).toFixed(3)}) must exceed two (${at(2).toFixed(3)})`);
+});
+
+test('the puckline is priced to the measured survival curve', () => {
+  // The only question ever asked of this distribution, since the puckline is
+  // fixed at 1.5: P(win by 2+). Real figures from 1,312 games.
+  const real = { 1: 0.522, 2: 0.301, 3: 0.213, 4: 0.085 };
+  for (const [k, want] of Object.entries(real)) {
+    const w = m.coverOutcomes({ predictedMargin: 0.13, spread: -(Number(k) - 0.5),
+                                sigma: 2.94, sport: 'nhl' }).win;
+    assert.ok(Math.abs(w - want) < 0.03,
+      `win by ${k}+: model ${w.toFixed(3)} vs measured ${want}`);
+  }
+});
+
+test('the counted weights beat any possible sigma without them', () => {
+  // The argument for counting at all: before the weights, the BEST sigma still
+  // missed "win by one or more" by 7.5 points, because the shape was wrong.
+  const real = 0.522;
+  const withW = m.coverOutcomes({ predictedMargin: 0.13, spread: -0.5,
+                                  sigma: 2.94, sport: 'nhl' }).win;
+  let bestWithout = 1;
+  for (let sg = 1.5; sg <= 4.5; sg += 0.05) {
+    const w = m.coverOutcomes({ predictedMargin: 0.13, spread: -0.5,
+                                sigma: sg, sport: 'other' }).win;
+    bestWithout = Math.min(bestWithout, Math.abs(w - real));
+  }
+  assert.ok(Math.abs(withW - real) < bestWithout,
+    `counted ${Math.abs(withW - real).toFixed(3)} must beat the best uncounted ${bestWithout.toFixed(3)}`);
+});
+
+test('nhl config is the measured one', () => {
+  const cfg = m.sportConfig('nhl');
+  close(cfg.sigma, 2.94, 1e-9, 'sigma');
+  close(cfg.totalSigma, 2.31, 1e-9, 'totalSigma');
+  close(cfg.hfa, 0.13, 1e-9, 'hfa');
+  assert.equal(cfg.fixedSpread, true, 'the puckline does not move');
 });

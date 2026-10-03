@@ -196,7 +196,27 @@ async function oddsFor(id) {
   // ---- does the stale-line rule transfer? ---------------------------------
   const movers = rows.filter(r => Number.isFinite(r.open) && Math.abs(r.close - r.open) > 0);
   console.log('');
-  if (movers.length > 100) {
+
+  // A FIXED SPREAD CANNOT GO STALE, and reporting this rule for one produces a
+  // number that looks spectacular and means nothing.
+  //
+  // Hockey closed at only -1.5 and +1.5 across all 1,312 games, so the only
+  // possible "move" is the favourite flipping sides. And when the market moves
+  // toward a team, that team was the one getting +1.5 at the open -- in 118 of
+  // 118 cases, by construction rather than coincidence. So the rule scored 72.9%
+  // at 4.97 SD against a base rate of 73.3% for ANY +1.5 ticket: slightly worse
+  // than doing nothing, dressed as a five-sigma edge.
+  const distinct = new Set(rows.map(r => Math.abs(r.close)));
+  if (distinct.size <= 2) {
+    const plus = rows.filter(r => r.margin >= -1).length / rows.length;
+    console.log('STALE-LINE RULE: not applicable. The spread is FIXED -- only ' +
+      [...distinct].join(' and ') + ' ever closed, so it cannot go stale.');
+    console.log('  Any "move" is the favourite flipping, and the side the market moves');
+    console.log('  toward is the one that was getting points at the open, by construction.');
+    console.log('  Base rate of that ticket: ' + (plus * 100).toFixed(1) +
+      '% — which is what the rule would report as an edge.');
+    console.log('  The moneyline and the total are the live markets here.');
+  } else if (movers.length > 100) {
     const settle = (r, side) => {
       const c = r.margin + r.open;
       if (Math.abs(c) < 1e-9) return 0;
