@@ -418,7 +418,40 @@ its name.**
   had lost 26 tracked files, `README.md` among them, and `git ls-files --deleted`
   is the question to ask before `git log --diff-filter=D`.
 - Never push without Danny's say-so; push = deploy.
-- Never spend odds-API quota casually. Check `/api/health` first — it reports
-  `quotaRemaining` without spending one.
+- Never spend odds-API quota casually, and **know what each probe costs.**
+  `/api/health` does **not** report quota — it carries `status`, `sport`,
+  `failing`, `checks`, `skipped`, `note`, `configured`, `tookMs`, `timestamp`,
+  `cached`, `ageMs` and nothing else. This file said it reported
+  `quotaRemaining` "without spending one" and that was simply wrong.
+  The route that does report it is `/api/debug/odds/:sport`, and it costs
+  **3 credits a call** — it bypasses the cache with a live
+  `axios.get` and asks for `markets=h2h,spreads,totals`, and The Odds API bills
+  per market. Measured 2 Oct 2026: a single probe moved used 12 -> 15 and
+  returned `lastCallCost 3`. So checking the quota three times costs more than
+  a slate of predictions, which are served from `odds_cache` for free.
+- **Line shopping is a tax cut, not an edge.** Measured 2 Oct 2026 on a real
+  16-game NFL slate, nine books, leave-one-out consensus (`book-shop.js`):
+  the mean hold is 4.46%, so 2.23 pts per side is the tax. Betting DraftKings
+  blind costs -2.36 pts; the best of all nine books is -0.82; the best of the
+  four regulated US apps is -1.52. So shopping is worth **+0.84 pts** inside
+  regulated US books and **+1.54** if offshore counts. It never manufactures a
+  bet: **0 of 30** regulated sides cleared break-even, and 2 of 30 across all
+  nine, both at Bovada and one of those +0.07 pts. And the gain is one book --
+  LowVig.ag is reduced-juice (-103/-107), holds the best side 17 of 30 times
+  and delivers +1.12 of the +1.54 alone. That is "use a cheaper book", not
+  "shop nine books every week". Unlike the stale-line rule this needs no
+  holdout: a better price on the same bet is better by arithmetic, not by
+  prediction.
+- **`marginPmf` centring has now bitten twice. Price with `centre: 'mean'`.**
+  The default is `'median'`, which is right for a LINE and wrong for anything
+  that reads a probability off the curve. Under median centring the
+  push-adjusted P(home covers -3) is a STEP: 44.92% for every centre in
+  [2.80, 2.95], then 55.08% at 3.00 — 10.16 points per 0.01 of centre, because
+  the whole atom at margin 3 crosses the median at once. The market's 50.00% is
+  unreachable, missed by 5.08 pts. That manufactured a +5.08 pt edge on
+  Houston -3 and +4.10 on Dallas +3 **in the same game**: a 9-point arbitrage
+  that does not exist. Mean centring moves 0.04 pts per 0.01 and reaches 50% to
+  within 0.005. The tell was a 5-point fit residual that nothing was checking —
+  `book-shop.js` now asserts representability per quote.
 
-*Last updated: 26 September 2026*
+*Last updated: 2 October 2026*
