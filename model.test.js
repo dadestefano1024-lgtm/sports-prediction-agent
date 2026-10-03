@@ -3020,3 +3020,55 @@ test('every sport that was measured now diverges from a plain normal', () => {
       `${sport} should not reduce to a normal; ${counted.toFixed(4)} vs ${asNormal.toFixed(4)}`);
   }
 });
+
+// ----------------------------------------------------------------------------
+test('a LINE is a median: betting the market own number is 50/50', () => {
+  // The property median-centring exists for, and the default must not move it.
+  // poolEdge asks what the market's own number implies, and the answer has to be
+  // that there is no edge in it.
+  for (const line of [1.5, 2.5, 3.5, 6.5, 7.5, 10.5, 13.5]) {
+    const r = m.coverOutcomes({ predictedMargin: line, spread: -line,
+                                sigma: 10.82, sport: 'nfl' });
+    const below = 1 - r.win - r.push;
+    assert.ok(Math.abs(r.win - below) < 0.001,
+      `line ${line}: ${(r.win * 100).toFixed(2)}% vs ${(below * 100).toFixed(2)}%`);
+  }
+});
+
+test('a PROJECTION is a mean, and centre:mean honours it exactly', () => {
+  // The default gets this wrong by up to 0.83 points in football, because it
+  // treats the expectation as a median. Projections go through centre:'mean'.
+  for (const [sport, sigma] of [['nfl', 10.82], ['nhl', 2.94], ['mlb', 4.12]]) {
+    for (const want of [0.5, 1.4, 1.79, 3.5, 7.5]) {
+      const pmf = m.marginPmf({ mean: want, sigma, sport, centre: 'mean' });
+      let mu = 0;
+      for (const [v, p] of pmf) mu += v * p;
+      assert.ok(Math.abs(mu - want) < 0.01,
+        `${sport} asked ${want}, pmf mean ${mu.toFixed(3)}`);
+    }
+  }
+});
+
+test('the median target is blind across a goal; the mean target is not', () => {
+  // The bug this fixes. With integer support, P(m>=2) - P(m<=1) is the same
+  // expression for a requested 1.40 and 1.90, so the median solver cannot tell
+  // them apart and every hockey projection in that range priced identically.
+  const at = (margin, centre) => m.coverOutcomes({
+    predictedMargin: margin, spread: -1.5, sigma: 2.94, sport: 'nhl', centre }).win;
+  assert.ok(Math.abs(at(1.4, 'median') - at(1.9, 'median')) < 1e-9,
+    'the median target is blind across that range — this documents the defect');
+  assert.ok(at(1.9, 'mean') - at(1.4, 'mean') > 0.05,
+    'the mean target must separate them by several points');
+  // and it must be monotone, which a blind solver cannot be
+  let prev = 0;
+  for (const x of [1.4, 1.6, 1.8, 2.0, 2.2]) {
+    const v = at(x, 'mean');
+    assert.ok(v > prev, `must rise with the projection: ${x} gave ${v.toFixed(4)}`);
+    prev = v;
+  }
+});
+
+test('centre only accepts the two it knows', () => {
+  assert.throws(() => m.marginPmf({ mean: 1, sigma: 3, sport: 'nhl', centre: 'mode' }),
+    /median.*mean/);
+});

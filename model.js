@@ -1135,7 +1135,14 @@ function priceGame({
       trust,
       kellyFraction,
       probFor: (pt) => {
-        const o = coverOutcomes({ predictedMargin, spread: pt, sigma: cfg.sigma, sport });
+        // centre: 'mean' because predictedMargin HERE is a projection -- an
+        // expectation from projectFromRatings. The default treats it as a
+        // median, which cost up to 0.83 points in football and made every
+        // hockey projection between 1.40 and 1.90 price the puckline
+        // identically. poolEdge keeps the default on purpose: there the input
+        // is the market's own number, and a LINE is a median.
+        const o = coverOutcomes({ predictedMargin, spread: pt, sigma: cfg.sigma,
+                                  sport, centre: 'mean' });
         // The away side wins exactly when the home side does not.
         return which === 'home' ? o : { win: o.loss, push: o.push, loss: o.win };
       },
@@ -1414,45 +1421,51 @@ function buildIntegerPmf({ mean, sigma, lo, hi, weightFor }) {
  * stops moving. Solved by bisection because the relationship is monotone but
  * has no closed form once arbitrary weights are involved.
  */
-/**
- * KNOWN LIMITATION, found 2 Oct 2026 and NOT yet fixed.
- *
- * This centres on the MEDIAN. That was the right call for football: centring the
- * mean left the key-number weights dragging the distribution toward zero, and at
- * sigma 10.82 a one-point quantisation costs almost nothing.
- *
- * It does not transfer to the low-scoring sports. One goal is a third of hockey's
- * sigma, so forcing the median onto a requested mean of 1.79 returns a
- * distribution whose mean is 1.519, and every projected margin from 1.40 to 1.90
- * prices the -1.5 puckline at exactly 50.000% before jumping to 55.465% at 2.00.
- * Baseball behaves the same way.
- *
- * It is not a solver fault -- a discrete distribution with no mass at zero has
- * discrete achievable medians, and "median = 1.79" means half the mass each side,
- * which is 50% by construction. The flaw is that callers pass an expected MARGIN,
- * which is a mean, and the function treats it as a median.
- *
- * Impact: modest but real. MODEL_TRUST is 0.1, and hockey and baseball are
- * fixed-spread sports where the moneyline and the total matter more than the
- * margin. But a projection is insensitive across half a goal, which is most of
- * the range that distinguishes two hockey teams.
- *
- * Fixing it means changing shared machinery that football's measured behaviour
- * rests on, so it wants its own pass with the football numbers re-checked after.
- * Do not "just centre the mean" without re-running calibrate-keys.js and
- * frozen-test.js.
- */
-function marginPmf({ mean, sigma, sport, maxMargin = 70 }) {
+function marginPmf({ mean, sigma, sport, maxMargin = 70, centre = 'median' }) {
   const key = String(sport || '').toLowerCase();
   const weights = MARGIN_WEIGHTS_BY_SPORT[key] || {};
   const weightFor = (m) => Object.prototype.hasOwnProperty.call(weights, Math.abs(m))
     ? weights[Math.abs(m)] : 1;
-  const build = (centre) => buildIntegerPmf({
-    mean: centre, sigma, lo: -maxMargin, hi: maxMargin, weightFor,
+  const build = (c) => buildIntegerPmf({
+    mean: c, sigma, lo: -maxMargin, hi: maxMargin, weightFor,
   });
+  if (centre !== 'median' && centre !== 'mean') {
+    throw new Error("centre must be 'median' or 'mean'");
+  }
   if (!Object.keys(weights).length) return build(mean);
 
-  // Balanced on the MEDIAN, not the mean.
+  // CENTRE ON THE MEAN when the caller is handing over an expectation.
+  //
+  // A projection is an expected margin. Treating it as a median gets it wrong by
+  // up to 0.83 points in football and, worse, is INSENSITIVE in the low-scoring
+  // sports: the median target uses strict inequalities around `mean`, so with
+  // integer support `P(m >= 2) - P(m <= 1)` is literally the same expression for
+  // a requested 1.40 and a requested 1.90, and the solver cannot tell them apart.
+  // Every hockey projection between 1.40 and 1.90 therefore priced the -1.5
+  // puckline at exactly 50.000%.
+  //
+  // The PMF mean is continuous in the shift, so bisecting on it has no such
+  // blind spot.
+  if (centre === 'mean') {
+    const muOf = (pmf) => {
+      let mu = 0;
+      for (const [m, p] of pmf) mu += m * p;
+      return mu;
+    };
+    let lo = mean - 4 * sigma, hi = mean + 4 * sigma;
+    for (let i = 0; i < 80; i++) {
+      const mid = (lo + hi) / 2;
+      if (muOf(build(mid)) < mean) lo = mid; else hi = mid;
+    }
+    return build((lo + hi) / 2);
+  }
+
+  // THE DEFAULT: balanced on the MEDIAN, because that is what a LINE is.
+  //
+  // poolEdge asks this what the market's own number implies, and the property it
+  // needs is that betting that number is 50/50 -- which is a statement about the
+  // median, not the mean. It holds exactly: the gap between the two sides is
+  // 0.00 at every line from 1.5 to 13.5. Do not change this default.
   //
   // Centring the mean was tried first and did not fix it: the mean landed
   // exactly on target and the dog still won by 5.4 points at 7.5, because a
@@ -1514,7 +1527,7 @@ function totalPmf({ mean, sigma }) {
  *
  * Falls back to the smooth curve for sports whose lines cannot push.
  */
-function coverOutcomes({ predictedMargin, spread, sigma, sport }) {
+function coverOutcomes({ predictedMargin, spread, sigma, sport, centre = 'median' }) {
   if (!Number.isFinite(predictedMargin)) throw new Error('predictedMargin must be finite');
   if (!Number.isFinite(spread)) throw new Error('spread must be finite');
   const key = String(sport || '').toLowerCase();
@@ -1524,7 +1537,7 @@ function coverOutcomes({ predictedMargin, spread, sigma, sport }) {
     return { win, push: 0, loss: 1 - win };
   }
 
-  const pmf = marginPmf({ mean: predictedMargin, sigma, sport: key });
+  const pmf = marginPmf({ mean: predictedMargin, sigma, sport: key , centre });
   const threshold = -spread;            // home covers when margin > -spread
   let win = 0, push = 0;
   for (const [m, p] of pmf) {

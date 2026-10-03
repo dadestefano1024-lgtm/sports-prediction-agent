@@ -266,26 +266,31 @@ probability points both sides are positive. The first pass also reported a +2.20
 "underdog bias" in NHL moneylines that is **noise** -- +2.20% one season, -5.21%
 the next, -1.52% pooled.
 
-## Open, and found by checking rather than by a test
+## A line is a median; a projection is a mean
 
-**`marginPmf` centres on the MEDIAN, and low-scoring sports need the MEAN.**
-Found 2 Oct 2026 while verifying that hockey and baseball produce sane numbers.
-Asked for a mean margin of 1.79, hockey's pmf comes back with a mean of 1.519,
-and every projection from 1.40 to 1.90 prices the -1.5 puckline at exactly
-50.000% before jumping to 55.465% at 2.00. Baseball the same.
+`marginPmf` and `coverOutcomes` take `centre`, and the two callers want different
+things. Getting this wrong was a real defect, found 2 Oct 2026 by checking that
+hockey produced sane numbers rather than by any test.
 
-Not a solver fault: a discrete distribution with no mass at zero has discrete
-achievable medians, and "median = 1.79" means half the mass each side, which IS
-50%. The flaw is that callers pass an expected margin -- a mean -- and the
-function treats it as a median. Median-centring was the correct fix for football,
-where it stopped the key-number weights dragging the distribution to zero and
-where one point is a tenth of sigma. One goal is a THIRD of hockey's sigma.
+**`centre: 'median'` is the DEFAULT and `poolEdge` keeps it.** It asks what the
+market's own number implies, and the property it needs is that betting that
+number is 50/50 — a statement about the median. It holds exactly: the gap between
+the two sides is 0.00 at every line from 1.5 to 13.5.
 
-Impact is modest -- MODEL_TRUST is 0.1 and both sports are fixed-spread, so the
-moneyline and total matter more -- but a projection insensitive across half a goal
-covers most of what separates two hockey teams. **Do not "just centre the mean":**
-football's measured behaviour rests on the current choice, so re-run
-`calibrate-keys.js` and `frozen-test.js` after any change.
+**`centre: 'mean'` is what `priceGame` uses**, because a projection from
+`projectFromRatings` is an expectation. The default treated it as a median, which
+was wrong by up to 0.83 points in football and, far worse, BLIND in the
+low-scoring sports: the median target uses strict inequalities around the
+requested value, so with integer support `P(m>=2) - P(m<=1)` is the same
+expression for 1.40 and 1.90 and the solver could not tell them apart. Every
+hockey projection in that range priced the -1.5 puckline at exactly 50.000%.
+Mean-centred it steps 48.3 / 51.1 / 53.9 / 56.7 and the mean error is 0.0000 in
+all three counted sports.
+
+**Verified non-regressive before shipping**, as the old note here demanded:
+`frozen-test.js` returns byte-identical numbers (54.1% on 690 games), and
+`poolEdge` still gives 50.0% when the pool number equals the market on a half
+point, 50.0% for half a point of daylight and 52.3% for a point and a half.
 
 **NHL and MLB `gamesForFullWeight` (20 and 40) are CHOSEN, not fitted.** The
 football equivalent was swept in `regression-sweep.js` and the optimum was a
