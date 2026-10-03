@@ -73,6 +73,7 @@ Each cost real work. Numbers, not opinions.
 | Rest advantage (3+ days) | 50.9% (0.23 SD) | `increment-test.js` |
 | Wind / cold / roof / short week / divisional | none clears three gates; wind has 41 games, cold 28, so unmeasured rather than disproven | `increment-test.js` |
 | West-coast team travelling east for a 1pm kickoff — the most-cited travel effect in football | 63 games. Fading the traveller 49.2%, backing them 47.6%. The market expected home by 0.33 and the road team won by 0.17, so the jet-lagged side slightly OUTPERFORMED the line — the point estimate is backwards | `increment-test.js` |
+| **NBA back-to-backs and rest** | Fully priced. Fading the tired side at the close is 49.2% over 301 games (-0.29 SD); away-tired 49.4%, home-tired 49.0%. A 3-in-4 looks real at 54.4% until the mirror is checked -- backing away against a tired HOME team is 49.3%, so it is asymmetric and therefore noise. Rest advantage of a day is 49.8%. And the totals run the wrong way: games with one tired side landed **1.78 points ABOVE** the line, not below | `nba-rest.js` |
 | Totals (stale-line rule) | 50.8–54.3%, seasons disagree (49.5 vs 53.2) | `stale-totals-pool.js` |
 | Correlation between covers in a week | variance ratio 0.97 = independent, so multiplying the six is correct | `week-correlation.js` |
 | More confidence in last season | `priorRegression=1` is the WORST setting: 11.772 vs 11.066 | `regression-sweep.js` |
@@ -137,6 +138,12 @@ has been looked up by three hundred people with money on it.
 
 This is why the one thing that works is not a fact about football at all. It is a
 fact about a PRICE: holding a number the market has moved away from.
+
+**The famous effects have their point estimates BACKWARDS.** Three times now:
+the west-coast early kickoff (the travelling team beat the line), NBA fatigue on
+the total (it went up, not down), and the public-money bucket in football (the
+most profitable to follow, not fade). Well known does not mean priced -- it means
+slightly over-priced, because everybody has heard of it.
 
 **And the sharpest form of it: REACTING to movement works, ANTICIPATING it does
 not.** Backing the side the market moved toward, at a number it has left behind,
