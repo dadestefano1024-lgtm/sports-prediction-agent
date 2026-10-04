@@ -368,6 +368,20 @@
     .board-best .bb-book { color: #8b949e; }
     .board-best .bb-cost { color: #d29922; font-weight: 600; }
     .board-best .bb-cost.bb-level { color: #8b949e; font-weight: 400; }
+    /* The Shop tab. Same price block as above, with a game title over it. */
+    .shop-head { font-size: 12px; color: #8b949e; border: 1px solid #21262d;
+                 border-radius: 6px; background: #10151c; padding: 9px 12px;
+                 margin-bottom: 12px; }
+    .shop-head strong { color: #d29922; }
+    .shop-card { margin-bottom: 14px; }
+    .shop-title { display: flex; justify-content: space-between; align-items: baseline;
+                  gap: 10px; font-size: 13px; font-weight: 600; color: #c9d1d9;
+                  margin-bottom: 5px; }
+    .shop-sport { font-size: 10px; font-weight: 400; color: #6e7681;
+                  letter-spacing: 0.5px; }
+    .shop-edge { font-size: 11px; font-weight: 600; color: #fff; background: #1f6feb;
+                 padding: 2px 8px; border-radius: 3px; white-space: nowrap; }
+    .shop-nobet { font-size: 11px; color: #6e7681; white-space: nowrap; }
     /* The odds board: three columns, label then open then current. */
     .ob { border: 1px solid #21262d; border-radius: 6px; background: #10151c;
           overflow: hidden; margin-bottom: 12px; }
@@ -675,6 +689,7 @@
     <button class="tab" onclick="switchTab('nhl', this)">🏒 NHL</button>
     <button class="tab" onclick="switchTab('nfl', this)">🏈 NFL</button>
     <button class="tab" onclick="switchTab('mlb', this)">⚾ MLB</button>
+    <button class="tab" onclick="switchTab('shop', this)">🏷️ Shop</button>
     <button class="tab" onclick="switchTab('pool', this)">🎯 Pick 6</button>
     <button class="tab" onclick="switchTab('history', this)">📊 History</button>
   </div>
@@ -729,6 +744,78 @@
     }
     let historyFilter = null; // null = all, 'nba', 'nhl', 'mlb'
 
+    // THE SHOP TAB. Every game you have loaded, ranked by the best price on
+    // the board, with what your own book costs you on that same bet.
+    //
+    // Why this is a tab and not part of the game cards: the board answers
+    // "should I bet this", and measured at one book the honest answer is no
+    // essentially every week -- all nine books average between -1.23% and
+    // -2.48% across a slate, because you always pay the hold. This answers a
+    // different question, "where should I place the bet I am placing
+    // anyway", and that one has a real answer on every game: the best price
+    // beats DraftKings by 0.4% to 3.5%, median 1.58%. Mixing the two into
+    // one card made every card argue with itself.
+    //
+    // Spends NO quota. It reads whatever is already in `cache`, because the
+    // nine books per game were downloaded with the predictions and were
+    // being thrown away.
+    function renderShop() {
+      const rows = [];
+      for (const sport of Object.keys(cache)) {
+        const d = cache[sport];
+        for (const g of (d && d.games) || []) {
+          if (g.bestOffer && g.bestOffer.pick) rows.push({ sport, g });
+        }
+      }
+      rows.sort((a, b) => b.g.bestOffer.pts - a.g.bestOffer.pts);
+
+      const content = document.getElementById('content');
+      if (!rows.length) {
+        const loaded = Object.keys(cache);
+        content.innerHTML = '<div class="no-games">' + (loaded.length
+          ? 'No book quotes in the loaded data yet. The paid odds feed supplies them.'
+          : 'Load a sport first &mdash; open NFL, NBA, NHL or MLB and click Fetch Predictions. '
+            + 'This tab then reads that same data, so it costs nothing extra.')
+          + '</div>';
+        return;
+      }
+
+      const price = (n) => (n > 0 ? '+' : '') + n;
+      const gaps = rows.map(r => r.g.bestOffer.gapPts).filter(v => Number.isFinite(v)).sort((a, b) => a - b);
+      const median = gaps.length ? gaps[Math.floor(gaps.length / 2)] : null;
+
+      content.innerHTML =
+        (median !== null
+          ? '<div class="shop-head">' + rows.length + ' games &middot; your book costs you a median of '
+            + '<strong>' + median.toFixed(2) + '%</strong> on the best bet available. '
+            + 'That is a price difference, not a prediction.</div>'
+          : '')
+        + rows.map(({ sport, g }) => {
+          const b = g.bestOffer;
+          const m = b.mine;
+          const tag = b.pts >= 0.75
+            ? '<span class="shop-edge">edge +' + b.pts.toFixed(2) + '%</span>'
+            : '<span class="shop-nobet">no bet &middot; ' + (b.pts >= 0 ? '+' : '') + b.pts.toFixed(2) + '%</span>';
+          const cost = (m && Number.isFinite(b.gapPts) && b.gapPts > 0.25)
+            ? '<span class="bb-cost">costs you ' + b.gapPts.toFixed(2) + '%</span>'
+            : '<span class="bb-cost bb-level">level with the board</span>';
+          const yours = m
+            ? '<div class="bb-row"><span class="bb-lab">Your book</span>'
+              + '<span><span class="bb-pick">' + m.pick + '</span> '
+              + '<span class="bb-book">' + price(m.price) + ' at ' + m.book + '</span><br>'
+              + cost + '</span></div>'
+            : '';
+          return '<div class="shop-card">'
+            + '<div class="shop-title"><span>' + g.awayTeam + ' @ ' + g.homeTeam
+            + ' <span class="shop-sport">' + sport.toUpperCase() + '</span></span>' + tag + '</div>'
+            + '<div class="board-best"><div class="bb-row">'
+            + '<span class="bb-lab">Best of ' + b.books + ' books</span>'
+            + '<span><span class="bb-pick">' + b.pick + '</span> '
+            + '<span class="bb-book">' + price(b.price) + ' at ' + b.book + '</span></span></div>'
+            + yours + '</div></div>';
+        }).join('');
+    }
+
     function switchTab(sport, el) {
       currentSport = sport;
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -736,6 +823,14 @@
 
       const fetchBtn = document.getElementById('fetch-btn');
       const refreshInfo = document.getElementById('refresh-info');
+
+      if (sport === 'shop') {
+        // Reads the already-fetched data, so no button and no quota.
+        fetchBtn.style.display = 'none';
+        refreshInfo.textContent = 'Best price on the board, and what your book costs you';
+        renderShop();
+        return;
+      }
 
       if (sport === 'pool') {
         fetchBtn.style.display = 'none';
@@ -1225,44 +1320,6 @@
             </div>
             <div class="card-body">
               ${opts.extraFor ? opts.extraFor(g) : ''}
-              ${(() => {
-                // BEST ON THE BOARD. Renders on every game that has quotes,
-                // independent of whether there is a verdict -- which is the
-                // point. At one book an honest verdict is "don't bet" almost
-                // every week (measured: all nine books average between -1.23%
-                // and -2.48%, because you always pay the hold), so a card
-                // driven only by the verdict says nothing fifteen times over.
-                // The gap between the best price on the board and this book's
-                // runs 0.4% to 3.5% on those same games, and it is arithmetic
-                // on prices sitting there right now rather than a prediction,
-                // so it is worth stating plainly.
-                const b = g.bestOffer;
-                if (!b || !b.pick) return '';
-                const price = (n) => (n > 0 ? '+' : '') + n;
-                const m = b.mine;
-                // Same side at both books, so the two lines are the same bet.
-                // Anything under a quarter point is called level rather than
-                // dressed up as a saving.
-                const cost = (m && Number.isFinite(b.gapPts) && b.gapPts > 0.25)
-                  ? `<span class="bb-cost">costs you ${b.gapPts.toFixed(2)}%</span>`
-                  : `<span class="bb-cost bb-level">level with the board</span>`;
-                const yours = m
-                  ? `<div class="bb-row">
-                       <span class="bb-lab">Your book</span>
-                       <span><span class="bb-pick">${m.pick}</span>
-                         <span class="bb-book">${price(m.price)} at ${m.book}</span>
-                         ${cost}</span>
-                     </div>`
-                  : '';
-                return `<div class="board-best">
-                  <div class="bb-row">
-                    <span class="bb-lab">Best of ${b.books} books</span>
-                    <span><span class="bb-pick">${b.pick}</span>
-                      <span class="bb-book">${price(b.price)} at ${b.book}</span></span>
-                  </div>
-                  ${yours}
-                </div>`;
-              })()}
               ${(() => {
                 // Show the best available side, not just whether an edge
                 // exists. A lean is styled differently from an edge on purpose:
