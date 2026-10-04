@@ -509,15 +509,24 @@ its name.**
   confident card either. What it does buy is the gap: the best price on the
   board beats DraftKings by 0.00% to 3.45% on the same bet, median 1.58%, which
   is arithmetic on prices sitting there now rather than a prediction.
-   computes it -- one centre fit per game, then a
-  lookup per book -- and  is deliberately reported on the SAME SIDE as
-  , or the card would be comparing two different bets. The card renders it
-  on every game regardless of whether anything clears the bet threshold.
+  `model.bestMarketOffer()` computes it -- one centre fit per game, then a
+  lookup per book -- and `mine` is deliberately reported on the SAME SIDE
+  as `best`, or the card would be comparing two different bets. The card
+  renders it on every game regardless of whether anything clears the bet
+  threshold.
 - **Two of my own tests for it failed because they only looked at one side.**
   bestMarketOffer ranks both sides of every book; the configs were built from
   the home side alone, and the real winner was a book's away side. Pin the
   other side out of contention with an unplayable price when testing
   price-versus-number, and verify a config numerically BEFORE writing the
   assertion.
+
+- **Do not put backticks in a `python -c` string on this machine.** Bash runs
+  command substitution on them inside double quotes, so ``model.foo()`` and
+  ``mine`` were silently deleted from this file by the commit that added them,
+  leaving sentences starting mid-clause. This is the same family as the heredoc
+  mangling above: write the patch to a .py file and run it, which is what the
+  Working-with-the-file rule already says and what I keep skipping for
+  "small" edits.
 
 *Last updated: 3 October 2026*
