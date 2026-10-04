@@ -1220,6 +1220,112 @@ test('bookOfferEdge prices totals, where a lower number favours the over', () =>
     'a book posting a lower total gives the OVER the better of it');
 });
 
+test('bestMarketOffer takes the best price on the board, not the best number', () => {
+  // Book C posts the WORSE number at a much better price: half a point across
+  // 3 costs about 4.65 probability points, -118 to +105 buys about 5.35, so C
+  // is the better bet. Anything ranking on the number alone picks A or B.
+  //
+  // The B-side prices are -200 on purpose. The first version of this test left
+  // them playable and FAILED, because the function -- correctly -- ranks both
+  // sides of every book and the real winner was A's away side at +3/-102. The
+  // test had been written looking at one side only. Pinning the other side out
+  // of contention is what makes this a test of price-versus-number.
+  const r = m.bestMarketOffer({
+    sport: 'nfl', market: 'spread',
+    consensusLine: -3, consensusPriceA: -110, consensusPriceB: -110,
+    quotes: [
+      { book: 'A', point: -3, priceA: -118, priceB: -200 },
+      { book: 'B', point: -3, priceA: -115, priceB: -200 },
+      { book: 'C', point: -3.5, priceA: 105, priceB: -200 },
+    ],
+    myBook: 'A',
+  });
+  assert.equal(r.reachable, true);
+  assert.equal(r.best.book, 'C', 'the better PRICE beats the better number here');
+  assert.equal(r.best.side, 'A');
+  assert.equal(r.books, 3);
+  assert.ok(r.gapPts > 0, 'the board beats my book, got ' + r.gapPts);
+});
+
+test('bestMarketOffer compares your book on the SAME side', () => {
+  // Otherwise the two lines on the card are two different bets and "costs you
+  // 5.3%" would be comparing a home bet against an away one. Same point at
+  // both books, one strictly cheaper, so the contract is tested without
+  // leaning on key-number arithmetic.
+  const r = m.bestMarketOffer({
+    sport: 'nfl', market: 'spread',
+    consensusLine: 4, consensusPriceA: -110, consensusPriceB: -110,
+    quotes: [
+      { book: 'Mine', point: 4, priceA: -130, priceB: -130 },
+      { book: 'Other', point: 4, priceA: -105, priceB: -105 },
+    ],
+    myBook: 'Mine',
+  });
+  assert.equal(r.best.book, 'Other');
+  assert.equal(r.mine.book, 'Mine');
+  assert.equal(r.mine.side, r.best.side, 'mine must be the same side as best');
+  assert.equal(r.mine.point, r.best.point, 'and here the same number too');
+  assert.ok(Math.abs(r.gapPts - (r.best.pts - r.mine.pts)) < 0.011,
+    'gapPts must be best minus mine');
+  assert.ok(r.gapPts > 5, 'a 25-cent gap both sides is worth more than 5 points');
+});
+
+test('bestMarketOffer reports no mine when your book is not on the board', () => {
+  const r = m.bestMarketOffer({
+    sport: 'nfl', market: 'spread',
+    consensusLine: -7, consensusPriceA: -110, consensusPriceB: -110,
+    quotes: [{ book: 'Other', point: -7, priceA: -110, priceB: -110 }],
+    myBook: 'Missing',
+  });
+  assert.equal(r.mine, null);
+  assert.equal(r.gapPts, null, 'no gap can be claimed against a book that is absent');
+});
+
+test('bestMarketOffer never reports a positive edge on a vig-only board', () => {
+  // Every book identical to the consensus: the only thing on offer is the
+  // hold, so the best of them is still negative. This is the key-number sweep
+  // again, and it is what catches a centring regression here.
+  for (const line of [-10, -7, -3.5, -3, 0, 3, 7]) {
+    const r = m.bestMarketOffer({
+      sport: 'nfl', market: 'spread',
+      consensusLine: line, consensusPriceA: -110, consensusPriceB: -110,
+      quotes: [
+        { book: 'A', point: line, priceA: -110, priceB: -110 },
+        { book: 'B', point: line, priceA: -110, priceB: -110 },
+      ],
+      myBook: 'A',
+    });
+    assert.ok(r && r.reachable, 'unreachable at ' + line);
+    assert.ok(r.best.pts < 0,
+      'a board with no value cannot produce a bet at ' + line + ', got ' + r.best.pts);
+    assert.ok(Math.abs(r.gapPts) < 0.011, 'identical books cannot differ at ' + line);
+  }
+});
+
+test('bestMarketOffer prices a total board', () => {
+  const r = m.bestMarketOffer({
+    sport: 'nfl', market: 'total',
+    consensusLine: 47.5, consensusPriceA: -110, consensusPriceB: -110,
+    quotes: [
+      { book: 'A', point: 47.5, priceA: -110, priceB: -110 },
+      { book: 'B', point: 46.5, priceA: -110, priceB: -110 },
+    ],
+    myBook: 'A',
+  });
+  assert.equal(r.reachable, true);
+  assert.equal(r.market, 'total');
+  assert.equal(r.best.book, 'B', 'a lower total is the better of it for the over');
+  assert.equal(r.best.side, 'A', 'side A of a total is the OVER');
+});
+
+test('bestMarketOffer refuses an empty or unpriceable board', () => {
+  assert.equal(m.bestMarketOffer({ sport: 'nfl', quotes: [] }), null);
+  assert.equal(m.bestMarketOffer({
+    sport: 'nfl', consensusLine: -3, consensusPriceA: -110, consensusPriceB: -110,
+    quotes: [{ book: 'A', point: -3, priceA: NaN, priceB: -110 }], myBook: 'A',
+  }), null, 'a board of unreadable prices is not a board');
+});
+
 test('bookOfferEdge refuses junk instead of guessing', () => {
   assert.equal(m.bookOfferEdge({ sport: 'nfl', consensusLine: null }), null);
   assert.equal(m.bookOfferEdge({

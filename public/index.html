@@ -354,6 +354,20 @@
       font-size: 11px; color: #58a6ff; margin-top: 5px;
       padding-top: 5px; border-top: 1px solid #21262d;
     }
+    /* Best price on the board. Deliberately plain -- it is a price fact on
+       every game, not a verdict on any of them, so it must not borrow the
+       colour of the bet badges. The cost line goes amber only when this book
+       is actually giving something away. */
+    .board-best { border: 1px solid #21262d; border-radius: 6px; background: #10151c;
+                  padding: 9px 12px; margin-bottom: 12px; font-size: 12px; }
+    .board-best .bb-row { display: flex; justify-content: space-between; gap: 10px; }
+    .board-best .bb-row + .bb-row { margin-top: 5px; padding-top: 5px;
+                                    border-top: 1px solid #1b2127; }
+    .board-best .bb-lab { color: #8b949e; flex: 0 0 auto; }
+    .board-best .bb-pick { color: #c9d1d9; font-weight: 600; }
+    .board-best .bb-book { color: #8b949e; }
+    .board-best .bb-cost { color: #d29922; font-weight: 600; }
+    .board-best .bb-cost.bb-level { color: #8b949e; font-weight: 400; }
     /* The odds board: three columns, label then open then current. */
     .ob { border: 1px solid #21262d; border-radius: 6px; background: #10151c;
           overflow: hidden; margin-bottom: 12px; }
@@ -1211,6 +1225,44 @@
             </div>
             <div class="card-body">
               ${opts.extraFor ? opts.extraFor(g) : ''}
+              ${(() => {
+                // BEST ON THE BOARD. Renders on every game that has quotes,
+                // independent of whether there is a verdict -- which is the
+                // point. At one book an honest verdict is "don't bet" almost
+                // every week (measured: all nine books average between -1.23%
+                // and -2.48%, because you always pay the hold), so a card
+                // driven only by the verdict says nothing fifteen times over.
+                // The gap between the best price on the board and this book's
+                // runs 0.4% to 3.5% on those same games, and it is arithmetic
+                // on prices sitting there right now rather than a prediction,
+                // so it is worth stating plainly.
+                const b = g.bestOffer;
+                if (!b || !b.pick) return '';
+                const price = (n) => (n > 0 ? '+' : '') + n;
+                const m = b.mine;
+                // Same side at both books, so the two lines are the same bet.
+                // Anything under a quarter point is called level rather than
+                // dressed up as a saving.
+                const cost = (m && Number.isFinite(b.gapPts) && b.gapPts > 0.25)
+                  ? `<span class="bb-cost">costs you ${b.gapPts.toFixed(2)}%</span>`
+                  : `<span class="bb-cost bb-level">level with the board</span>`;
+                const yours = m
+                  ? `<div class="bb-row">
+                       <span class="bb-lab">Your book</span>
+                       <span><span class="bb-pick">${m.pick}</span>
+                         <span class="bb-book">${price(m.price)} at ${m.book}</span>
+                         ${cost}</span>
+                     </div>`
+                  : '';
+                return `<div class="board-best">
+                  <div class="bb-row">
+                    <span class="bb-lab">Best of ${b.books} books</span>
+                    <span><span class="bb-pick">${b.pick}</span>
+                      <span class="bb-book">${price(b.price)} at ${b.book}</span></span>
+                  </div>
+                  ${yours}
+                </div>`;
+              })()}
               ${(() => {
                 // Show the best available side, not just whether an edge
                 // exists. A lean is styled differently from an edge on purpose:

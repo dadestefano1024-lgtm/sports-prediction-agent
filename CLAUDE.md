@@ -500,4 +500,24 @@ its name.**
   US apps -- is not wired into the card and would be new work, not a
   wire-up.
 
-*Last updated: 2 October 2026*
+- **The board shows the best price on the board, not a verdict.** Priced at one
+  book an honest verdict is "don't bet" essentially every week -- measured, all
+  nine books average between -1.23% and -2.48% across a slate, because at a
+  single book you always pay the hold, and that is structural rather than a
+  threshold choice. Reading all nine books only moves the badge from 0 of 15
+  games to 1 of 15, and that one is offshore, so shopping does NOT buy back a
+  confident card either. What it does buy is the gap: the best price on the
+  board beats DraftKings by 0.00% to 3.45% on the same bet, median 1.58%, which
+  is arithmetic on prices sitting there now rather than a prediction.
+   computes it -- one centre fit per game, then a
+  lookup per book -- and  is deliberately reported on the SAME SIDE as
+  , or the card would be comparing two different bets. The card renders it
+  on every game regardless of whether anything clears the bet threshold.
+- **Two of my own tests for it failed because they only looked at one side.**
+  bestMarketOffer ranks both sides of every book; the configs were built from
+  the home side alone, and the real winner was a book's away side. Pin the
+  other side out of contention with an unplayable price when testing
+  price-versus-number, and verify a config numerically BEFORE writing the
+  assertion.
+
+*Last updated: 3 October 2026*

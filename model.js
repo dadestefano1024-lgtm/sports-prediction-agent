@@ -2613,6 +2613,72 @@ function rankPoolPicks(candidates, count = 6) {
  * rather than a forecast, and it is what this grades.
  */
 /**
+ * The margin (or total) distribution the market itself is implying.
+ *
+ * Shared by bookOfferEdge and bestMarketOffer so there is one place that
+ * decides how a market price becomes a distribution -- including the guard.
+ * Two copies of that guard is how one of them comes to disagree with the
+ * other.
+ *
+ * Side A is home for a spread and the over for a total.
+ *
+ * Returns `probAt(line)`, the PUSH-ADJUSTED probability of side A at any line,
+ * so a caller can price every book off one fit instead of refitting per book.
+ */
+function fitMarketCentre({
+  sport, market = 'spread',
+  consensusLine, consensusPriceA, consensusPriceB,
+  sigma, totalSigma,
+} = {}) {
+  const cfg = sportConfig(sport);
+  const sd = market === 'total'
+    ? (Number.isFinite(totalSigma) ? totalSigma : cfg.totalSigma)
+    : (Number.isFinite(sigma) ? sigma : cfg.sigma);
+  if (!Number.isFinite(sd) || sd <= 0) return null;
+  if ([consensusLine, consensusPriceA, consensusPriceB]
+      .some(v => !Number.isFinite(v))) return null;
+
+  const probA = market === 'total'
+    ? (centre, line) => {
+      const pmf = totalPmf({ mean: centre, sigma: sd });
+      let over = 0, push = 0;
+      for (const [t, p] of pmf) {
+        if (t > line) over += p;
+        else if (t === line) push += p;
+      }
+      const under = Math.max(0, 1 - over - push);
+      return (over + under) > 0 ? over / (over + under) : 0.5;
+    }
+    : (centre, line) => {
+      // centre: 'mean' is load-bearing. The default median centring turns this
+      // into a step at a key number and the market's own price becomes
+      // unreachable -- see bookOfferEdge below.
+      const o = coverOutcomes({ predictedMargin: centre, spread: line,
+                                sigma: sd, sport, centre: 'mean' });
+      const d = o.win + o.loss;
+      return d > 0 ? o.win / d : 0.5;
+    };
+
+  const target = deVigTwoWay(consensusPriceA, consensusPriceB).probA;
+  if (!Number.isFinite(target)) return null;
+
+  let lo = market === 'total' ? Math.max(0, consensusLine - 10 * sd) : -10 * sd;
+  let hi = market === 'total' ? consensusLine + 10 * sd : 10 * sd;
+  for (let i = 0; i < 200; i++) {
+    const mid = (lo + hi) / 2;
+    if (probA(mid, consensusLine) < target) lo = mid; else hi = mid;
+  }
+  const centre = (lo + hi) / 2;
+  const reached = probA(centre, consensusLine);
+
+  return {
+    reachable: Math.abs(reached - target) <= 0.005,
+    centre, marketProbA: target, reachedProbA: reached,
+    probAt: (line) => probA(centre, line),
+  };
+}
+
+/**
  * A book's offer priced against the market, in PROBABILITY points.
  *
  * WHY THIS EXISTS. The badge used to be graded on `bookValuePts`, which is a
@@ -2661,60 +2727,86 @@ function bookOfferEdge({
   bookLine, bookPriceA, bookPriceB,
   sigma, totalSigma,
 } = {}) {
-  const cfg = sportConfig(sport);
-  const sd = market === 'total'
-    ? (Number.isFinite(totalSigma) ? totalSigma : cfg.totalSigma)
-    : (Number.isFinite(sigma) ? sigma : cfg.sigma);
-  if (!Number.isFinite(sd) || sd <= 0) return null;
-  if ([consensusLine, consensusPriceA, consensusPriceB,
-       bookLine, bookPriceA, bookPriceB].some(v => !Number.isFinite(v))) return null;
-
-  const probA = market === 'total'
-    ? (centre, line) => {
-      const pmf = totalPmf({ mean: centre, sigma: sd });
-      let over = 0, push = 0;
-      for (const [t, p] of pmf) {
-        if (t > line) over += p;
-        else if (t === line) push += p;
-      }
-      const under = Math.max(0, 1 - over - push);
-      return (over + under) > 0 ? over / (over + under) : 0.5;
-    }
-    : (centre, line) => {
-      const o = coverOutcomes({ predictedMargin: centre, spread: line,
-                                sigma: sd, sport, centre: 'mean' });
-      const d = o.win + o.loss;
-      return d > 0 ? o.win / d : 0.5;
-    };
-
-  // What the market says side A is worth, with the book's margin taken out.
-  const target = deVigTwoWay(consensusPriceA, consensusPriceB).probA;
-  if (!Number.isFinite(target)) return null;
-
-  // probA rises monotonically with the centre in both markets, so bisection is
-  // exact and needs no grid.
-  let lo = market === 'total' ? Math.max(0, consensusLine - 10 * sd) : -10 * sd;
-  let hi = market === 'total' ? consensusLine + 10 * sd : 10 * sd;
-  for (let i = 0; i < 200; i++) {
-    const mid = (lo + hi) / 2;
-    if (probA(mid, consensusLine) < target) lo = mid; else hi = mid;
-  }
-  const centre = (lo + hi) / 2;
-
-  const reached = probA(centre, consensusLine);
-  if (Math.abs(reached - target) > 0.005) {
+  if ([bookLine, bookPriceA, bookPriceB].some(v => !Number.isFinite(v))) return null;
+  const fit = fitMarketCentre({ sport, market, consensusLine,
+                                consensusPriceA, consensusPriceB, sigma, totalSigma });
+  if (!fit) return null;
+  if (!fit.reachable) {
     return { reachable: false, aPts: null, bPts: null,
-             marketProbA: +(target * 100).toFixed(2),
-             reachedProbA: +(reached * 100).toFixed(2) };
+             marketProbA: +(fit.marketProbA * 100).toFixed(2),
+             reachedProbA: +(fit.reachedProbA * 100).toFixed(2) };
   }
-
-  const fairA = probA(centre, bookLine);
+  const fairA = fit.probAt(bookLine);
   return {
     reachable: true,
-    centre: +centre.toFixed(3),
-    marketProbA: +(target * 100).toFixed(2),
+    centre: +fit.centre.toFixed(3),
+    marketProbA: +(fit.marketProbA * 100).toFixed(2),
     aPts: +((fairA - americanToImpliedProb(bookPriceA)) * 100).toFixed(2),
     bPts: +(((1 - fairA) - americanToImpliedProb(bookPriceB)) * 100).toFixed(2),
+  };
+}
+
+/**
+ * The best offer on the whole board, and what your own book costs you on it.
+ *
+ * WHY THE CARD NEEDS THIS. Priced at one book, an honest verdict is "don't
+ * bet" essentially every week -- measured, every one of nine books is between
+ * -1.23% and -2.48% on average across a slate, because at a single book you
+ * are always paying the hold. A card that says "don't bet" fifteen times is
+ * correct and useless. But the SAME games carry a +2% to +4% difference
+ * between the best price on the board and your own, which is arithmetic on
+ * prices sitting there right now, not a prediction. That is the thing worth
+ * showing.
+ *
+ * `mine` is deliberately reported on the SAME SIDE as `best`, because the
+ * message is "this exact bet is cheaper over there" -- comparing your book's
+ * best side against a different side of the game would be comparing two
+ * different bets.
+ *
+ * One fit per game, then a lookup per book, so this is cheap enough to run on
+ * a live request. Quotes are {book, point, priceA, priceB} where A is home for
+ * a spread and the over for a total; team names and pick text are the caller's
+ * job, so this stays a pricing function.
+ */
+function bestMarketOffer({
+  sport, market = 'spread',
+  consensusLine, consensusPriceA, consensusPriceB,
+  quotes, myBook = null,
+  sigma, totalSigma,
+} = {}) {
+  if (!Array.isArray(quotes) || !quotes.length) return null;
+  const fit = fitMarketCentre({ sport, market, consensusLine,
+                                consensusPriceA, consensusPriceB, sigma, totalSigma });
+  if (!fit) return null;
+  if (!fit.reachable) return { reachable: false, best: null, mine: null, gapPts: null };
+
+  const priced = [];
+  for (const q of quotes) {
+    if (!q || !Number.isFinite(q.point)) continue;
+    if (!Number.isFinite(q.priceA) || !Number.isFinite(q.priceB)) continue;
+    const fairA = fit.probAt(q.point);
+    priced.push(
+      { book: q.book, point: q.point, side: 'A', price: q.priceA,
+        pts: +((fairA - americanToImpliedProb(q.priceA)) * 100).toFixed(2) },
+      { book: q.book, point: q.point, side: 'B', price: q.priceB,
+        pts: +(((1 - fairA) - americanToImpliedProb(q.priceB)) * 100).toFixed(2) });
+  }
+  if (!priced.length) return null;
+
+  const best = priced.reduce((a, b) => (b.pts > a.pts ? b : a));
+  const name = String(myBook || '').toLowerCase();
+  // The same side at your book, so the two lines are the same bet.
+  const mine = name
+    ? priced.find(o => String(o.book || '').toLowerCase() === name && o.side === best.side) || null
+    : null;
+  return {
+    reachable: true,
+    market,
+    best,
+    mine,
+    // Positive means the board beats your book on this bet.
+    gapPts: mine ? +(best.pts - mine.pts).toFixed(2) : null,
+    books: new Set(priced.map(o => o.book)).size,
   };
 }
 
@@ -3498,6 +3590,8 @@ module.exports = {
   poolEdge,
   betRecommendation,
   bookOfferEdge,
+  bestMarketOffer,
+  fitMarketCentre,
   BET_STRONG_PTS,
   BET_LEAN_PTS,
   situationFlags,

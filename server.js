@@ -3449,6 +3449,65 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
     const edgeReadable = !!((spreadEdge && spreadEdge.reachable) ||
                             (totalEdge && totalEdge.reachable));
 
+    // BEST ON THE BOARD. Priced at one book an honest verdict is "don't bet"
+    // essentially every week -- measured, all nine books sit between -1.23%
+    // and -2.48% on average, because at a single book you always pay the hold.
+    // A card that says "don't bet" fifteen times is correct and useless. The
+    // same games carry a 0.4% to 3.5% gap between the best price on the board
+    // and this book's, which is arithmetic on prices sitting there now rather
+    // than a prediction, so it is the thing worth showing.
+    //
+    // Costs nothing extra: these quotes are already in the payload.
+    const bestOffer = (() => {
+      if (!mb) return null;
+      const pickText = (market, side, point) => {
+        if (market === 'total') return side === 'A' ? `Over ${point}` : `Under ${point}`;
+        return side === 'A' ? `${g.homeTeam} ${sign(point)}`
+                            : `${g.awayTeam} ${sign(-point)}`;
+      };
+      const shape = (r) => {
+        if (!r || !r.reachable || !r.best) return null;
+        return {
+          market: r.market, books: r.books,
+          book: r.best.book, point: r.best.point, price: r.best.price,
+          pts: r.best.pts, side: r.best.side,
+          pick: pickText(r.market, r.best.side, r.best.point),
+          mine: r.mine ? {
+            book: r.mine.book, point: r.mine.point, price: r.mine.price,
+            pts: r.mine.pts, pick: pickText(r.market, r.mine.side, r.mine.point),
+          } : null,
+          gapPts: r.gapPts,
+        };
+      };
+      const sq = (odds.spreadQuotes || [])
+        .filter(q => model.plausibleSpread(sport, q.point))
+        .map(q => ({ book: q.book, point: q.point,
+                     priceA: toNum(q.homePrice), priceB: toNum(q.awayPrice) }));
+      const tq = (odds.totalQuotes || [])
+        .filter(q => Number.isFinite(q.point) && q.point > 0)
+        .map(q => ({ book: q.book, point: q.point,
+                     priceA: toNum(q.overPrice), priceB: toNum(q.underPrice) }));
+      const sOff = (spreadUsable && sq.length) ? shape(model.bestMarketOffer({
+        sport, market: 'spread',
+        consensusLine: rawSpread,
+        consensusPriceA: toNum(odds.spreadHomePrice),
+        consensusPriceB: toNum(odds.spreadAwayPrice),
+        quotes: sq, myBook: mb.name,
+      })) : null;
+      const tOff = (totalUsable && tq.length) ? shape(model.bestMarketOffer({
+        sport, market: 'total',
+        consensusLine: rawTotal,
+        consensusPriceA: toNum(odds.overPrice),
+        consensusPriceB: toNum(odds.underPrice),
+        quotes: tq, myBook: mb.name,
+      })) : null;
+      // The spread is the market the card is about; a total only takes over
+      // when it is the better bet by a clear margin, so the line does not
+      // flip between markets on noise.
+      if (sOff && tOff) return (tOff.pts > sOff.pts + 0.5) ? tOff : sOff;
+      return sOff || tOff;
+    })();
+
     // The actual bet the edge points at, structured so it can be stored and
     // graded rather than only displayed. `line` stays in the home-spread
     // convention for spreads, because that is what gradePick and the closing
@@ -3582,6 +3641,10 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       // which is not the same answer as zero.
       bookEdgePts: bestEdge ? bestEdge.pts : null,
       bookEdgeReadable: edgeReadable,
+      // The best price on the whole board for this game, and what this book
+      // costs you on that same bet. Shown whether or not anything clears the
+      // bet threshold, because it is true and useful either way.
+      bestOffer,
       confidence: bookConfidence(bestEdge ? bestEdge.pts : null),
 
       // A single verdict per game, graded only on the book advantage — the one
