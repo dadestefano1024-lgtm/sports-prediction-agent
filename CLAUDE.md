@@ -74,7 +74,7 @@ Each cost real work. Numbers, not opinions.
 | Wind / cold / roof / short week / divisional | none clears three gates; wind has 41 games, cold 28, so unmeasured rather than disproven | `increment-test.js` |
 | West-coast team travelling east for a 1pm kickoff — the most-cited travel effect in football | 63 games. Fading the traveller 49.2%, backing them 47.6%. The market expected home by 0.33 and the road team won by 0.17, so the jet-lagged side slightly OUTPERFORMED the line — the point estimate is backwards | `increment-test.js` |
 | **NBA back-to-backs and rest** | Fully priced. Fading the tired side at the close is 49.2% over 301 games (-0.29 SD); away-tired 49.4%, home-tired 49.0%. A 3-in-4 looks real at 54.4% until the mirror is checked -- backing away against a tired HOME team is 49.3%, so it is asymmetric and therefore noise. Rest advantage of a day is 49.8%. And the totals run the wrong way: games with one tired side landed **1.78 points ABOVE** the line, not below | `nba-rest.js` |
-| Totals (stale-line rule) | 50.8–54.3%, seasons disagree (49.5 vs 53.2) | `stale-totals-pool.js` |
+| Totals (stale-line rule) | 51.4% at move>=1 over 401 bets, **+0.55 SD**; 50.8–54.3% across buckets, seasons disagree (49.5 vs 53.2); and **always taking the over scores 50.6%**, so most of what is left is that. Re-measured with pushes as LOSSES, which is this pool's rule, and the answer did not move | `stale-totals-pool.js` |
 | Correlation between covers in a week | variance ratio 0.97 = independent, so multiplying the six is correct | `week-correlation.js` |
 | More confidence in last season | `priorRegression=1` is the WORST setting: 11.772 vs 11.066 | `regression-sweep.js` |
 | **Using only this season's data, rebuilt weekly** | Worse than the blend in EVERY bucket and far worse than the market. Even at weeks 14-18 with thirteen games in hand: this-year-only 13.476, blend 12.102, market 10.122 | `regression-sweep.js` |
@@ -82,6 +82,22 @@ Each cost real work. Numbers, not opinions.
 | **An EPA-per-play model** (nflverse play-by-play, opponent-blended, scale fitted on 2023 and tested on 2024-25) | **0.67 points better than the points model** — 10.405 MAE against 11.07 — and still loses to the closing line at 9.807 and even the opening line at 9.939. Kill criterion met: no bet in it as a game-predictor | `epa-build.js`, `epa-test.js` |
 | Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
 | Backing home at every opener (the drift itself) | +0.228 CLV, which is below the ~0.25 needed to clear the vig, and the win rate is 49.0% | `epa-test.js`, `frozen-test.js` |
+
+**Two ways to get the totals answer wrong, both of which happened on 7 Oct 2026.**
+
+1. **"It does not clear the vig" is not a reason in the Pick 6.** The pool has no
+   price: six legs, all must win, so the only question is which six are likeliest
+   and a 51.4% leg beats a 50.0% one. `rankPoolPicks` and `poolEdge` both used to
+   justify demoting totals that way. Danny caught it and was right. The reason
+   that holds is the one in the table: +0.55 SD is a coin flip, one season was
+   negative, and half of it is "take the over". The comments now say that
+   instead, because as written they invited deleting the demotion.
+2. **`winProb` on a total is NOT comparable to `winProb` on a spread.** They are
+   the same arithmetic over different evidence, and the payload says so --
+   `tested: false` on every total, `tested: true` on every spread. Reading the
+   win-probability column alone makes four Unders at 52.5% look better than five
+   of the six spread picks at 50.0%, and that comparison is meaningless. Quote
+   the measured figure (51.4%) or quote neither.
 
 **The one live candidate:** fading a team starting a backup QB. 59.2% on 201 bets
 (2.61 SD), and 58.4% vs the move's 37.7% on the 77 games where the two disagree.
