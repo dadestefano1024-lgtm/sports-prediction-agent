@@ -2454,9 +2454,17 @@ function poolEdge({ sport, poolSpread, poolAwaySpread = null, marketSpread,
       deadProb: 0,
       overlapProb: 0,
       bothLay: false,
-      // The same arithmetic as the spread without the evidence: a stale total
-      // was measured at 51.4% over 401 bets against 55.4% for a stale spread,
-      // under the 52.4% needed to break even. A fair price, not a shown edge.
+      // The same arithmetic as the spread without the evidence. Re-measured on
+      // the pool's own terms (pushes as losses): 51.4% over 401 bets, +0.55 SD,
+      // against 55.4% over 325 for a stale spread. The earlier note here said
+      // the problem was that 51.4% is "under the 52.4% needed to break even" --
+      // that is a -110 bet's threshold and a pool has no price, so it was the
+      // wrong objection. The real one is that +0.55 SD is a coin flip, 2024
+      // alone was 49.5%, and always taking the over scores 50.6%.
+      //
+      // Which means winProb here is honest arithmetic and NOT comparable to the
+      // spread's winProb, however similar the two look side by side. Quote this
+      // number only with that attached.
       tested: false,
     };
   }
@@ -2535,11 +2543,24 @@ function rankPoolPicks(candidates, count = 6) {
     .filter(c => c && Number.isFinite(c.winProb))
     .slice()
     .sort((a, b) => {
-      // Tested before untested. A stale spread has a holdout season behind it
-      // (55.4% over 325 bets); a stale total was measured at 51.4% over 401 and
-      // does not clear the vig. Sorting them together on win probability alone
-      // let the untested one win on an accounting difference, which is exactly
-      // backwards. Probability still decides within each group.
+      // Tested before untested, and the REASON matters because the old one was
+      // wrong for this tab. It used to say a stale total "does not clear the
+      // vig" -- true of a bet, irrelevant to a pool, which has no vig and only
+      // cares which six legs are likeliest. Danny spotted that and was right
+      // about it.
+      //
+      // The reason that does hold, re-measured on this pool's own terms
+      // (stale-totals-pool.js, pushes counted as LOSSES because here they are):
+      // following a stale total is 51.4% over 401 bets at +0.55 SD, which is
+      // not distinguishable from a coin flip; 2024 on its own was 49.5%, so it
+      // fails the every-season gate; and "always take the over" scores 50.6%,
+      // so almost all of it is that. A stale spread is 55.4% over 325 bets with
+      // a holdout season behind it.
+      //
+      // So a total is not demoted for being a total. It is demoted because its
+      // model probability is arithmetic with no measurement behind it, and
+      // sorting it against a tested number on that figure alone lets the
+      // unevidenced one win. Probability still decides within each group.
       const at = a.tested === false ? 1 : 0;
       const bt = b.tested === false ? 1 : 0;
       if (at !== bt) return at - bt;
