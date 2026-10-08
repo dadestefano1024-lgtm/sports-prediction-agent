@@ -442,7 +442,12 @@ async function gradePendingPicks() {
       SELECT DISTINCT espn_game_id, sport
       FROM picks
       WHERE result IS NULL AND espn_game_id IS NOT NULL
-      AND game_time < NOW()
+      -- NULL game_time must NOT hide a pick: the comparison game_time < NOW()
+      -- evaluates to NULL for those rows and is never true, so 27 pool picks
+      -- going back to 20 Sep 2026 could never be graded. The real guard against
+      -- grading a game early is the completed check below, which reads ESPN's
+      -- own status; game_time is only here to keep the query small.
+      AND (game_time IS NULL OR game_time < NOW())
       LIMIT 50;
     `);
 
@@ -4071,7 +4076,7 @@ async function savePoolPicks(sport, best, gamesById) {
         espn_game_id: b.gameId || null,
         home_team: g.homeTeam || (b.matchup || '').split(' @ ')[1] || 'Home',
         away_team: g.awayTeam || (b.matchup || '').split(' @ ')[0] || 'Away',
-        game_time: g.startTime ? new Date(g.startTime) : null,
+        game_time: model.pickGameTime(g),
         market: b.market === 'total' ? 'total' : 'spread',
         pick: b.pick,
         // The POOL number, which is what the bet actually settles against —
@@ -4223,7 +4228,11 @@ app.post('/api/pool/:sport', async (req, res) => {
       });
 
       const label = `${awayFull} @ ${homeFull}`;
-      games.push({ id: event.id, matchup: label, gameTime: new Date(event.date).toLocaleString(),
+      // startTime is the RAW ISO date and is what gets stored; gameTime is the
+      // display string and must never be parsed back -- doing so shifts the
+      // kickoff by the timezone. See model.pickGameTime.
+      games.push({ id: event.id, matchup: label, startTime: event.date,
+        gameTime: new Date(event.date).toLocaleString(),
                    marketSpread, marketTotal, marketFrom, bookDisagreement,
                    spread: edge.spread, total: edge.total });
       const early = kicksOffBeforeSunday(event.date);

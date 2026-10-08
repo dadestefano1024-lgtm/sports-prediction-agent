@@ -1127,6 +1127,47 @@ test('betRecommendation names the line difference as the thing that is NOT the e
 });
 
 // ----------------------------------------------------------------------------
+test('pickGameTime prefers the raw ISO over the display string', () => {
+  // THE REGRESSION. The pool POST builds games with both: startTime is the raw
+  // event.date, gameTime is new Date(...).toLocaleString(). Parsing the display
+  // string back shifts the kickoff by the timezone, so the ISO must win.
+  const iso = '2026-10-11T17:00:00Z';
+  const g = { id: '1', startTime: iso, gameTime: '10/11/2026, 12:00:00 PM' };
+  assert.equal(m.pickGameTime(g).toISOString(), '2026-10-11T17:00:00.000Z');
+});
+
+test('pickGameTime reads every shape the app actually builds', () => {
+  const want = '2026-10-11T17:00:00.000Z';
+  for (const g of [
+    { startTime: '2026-10-11T17:00:00Z' },          // the sport boards
+    { date: '2026-10-11T17:00:00Z' },               // a raw ESPN event
+    { commenceTime: '2026-10-11T17:00:00Z' },       // the odds feed
+    { startTime: new Date('2026-10-11T17:00:00Z') },// already a Date
+  ]) {
+    assert.equal(m.pickGameTime(g).toISOString(), want, JSON.stringify(g));
+  }
+});
+
+test('pickGameTime returns null rather than an Invalid Date', () => {
+  // An Invalid Date handed to a timestamp column is how game_time became NULL,
+  // and a NULL game_time made 27 picks permanently ungradeable. Fail visibly.
+  for (const g of [null, undefined, 'nonsense', {}, { startTime: '' },
+                   { startTime: 'not a date' }, { startTime: null }]) {
+    assert.equal(m.pickGameTime(g), null, JSON.stringify(g));
+  }
+});
+
+test('pickGameTime still salvages a display-only game', () => {
+  // Worse than the ISO by up to a timezone, but the grader only asks whether
+  // the game is in the past, and an hour of error cannot hurt that while NULL
+  // hides the pick for ever. So the fallback stays.
+  const g = { id: '1', gameTime: '10/11/2026, 12:00:00 PM' };
+  const t = m.pickGameTime(g);
+  assert.ok(t instanceof Date && !Number.isNaN(t.getTime()),
+    'a display string is better than nothing');
+  assert.equal(t.toISOString().slice(0, 10), '2026-10-11', 'and lands on the right day');
+});
+
 test('bookOfferEdge charges the hold when the book IS the market', () => {
   // THIS IS THE REGRESSION TEST, and it only works because it sweeps the KEY
   // NUMBERS. Written at -10 alone it passed with the bug still in place, which

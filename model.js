@@ -2284,6 +2284,33 @@ function poolMarketNumber({ consensus = null, book = null, espn = null } = {}) {
   return { value: null, from: null, bookDisagreement: 0 };
 }
 
+/**
+ * The kickoff time of a game object, as something a database can store.
+ *
+ * THIS EXISTS BECAUSE THE FIELD IS NOT CALLED THE SAME THING TWICE. The pool
+ * POST builds its games with `gameTime: new Date(event.date).toLocaleString()`
+ * -- a LOCALISED DISPLAY STRING -- while savePoolPicks read `g.startTime`,
+ * which those objects do not have. So every Pick 6 pick was saved with
+ * game_time NULL, and gradePendingPicks filtered on `game_time < NOW()`, where
+ * NULL < NOW() is NULL and never true. 27 picks going back to 20 Sep 2026 were
+ * invisible to the grader forever. Two survivable bugs that together silently
+ * deleted the pool's whole record.
+ *
+ * Prefers the raw ISO field, because `new Date('10/11/2026, 1:30:00 PM')` is
+ * locale-dependent parsing and is the thing that should never have been the
+ * stored value. Returns null rather than an Invalid Date, since an Invalid Date
+ * handed to a timestamp column is how the NULL got there in the first place.
+ */
+function pickGameTime(game) {
+  if (!game || typeof game !== 'object') return null;
+  for (const v of [game.startTime, game.date, game.commenceTime, game.gameTime]) {
+    if (v === null || v === undefined || v === '') continue;
+    const d = v instanceof Date ? v : new Date(v);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
 function mergePoolLines(stored, sent) {
   const out = {};
   const isNum = (v) => v !== null && v !== undefined && v !== '' &&
@@ -3638,6 +3665,7 @@ module.exports = {
   movementSincePosted,
   gradePoolPick,
   mergePoolLines,
+  pickGameTime,
   poolMarketNumber,
   NFL_TOTAL_PMF,
   totalResidualSurvival,

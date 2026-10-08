@@ -83,6 +83,30 @@ Each cost real work. Numbers, not opinions.
 | Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
 | Backing home at every opener (the drift itself) | +0.228 CLV, which is below the ~0.25 needed to clear the vig, and the win rate is 49.0% | `epa-test.js`, `frozen-test.js` |
 
+**The Pick 6 record was empty for three weeks and nothing reported an error.**
+Found 7 Oct 2026 when Danny said the history was not working. 27 picks going
+back to 20 Sep had `result` NULL and no score. Two survivable bugs multiplying:
+
+1. The pool POST builds its games with `gameTime: new Date(event.date)
+   .toLocaleString()` -- a localised DISPLAY string -- and no `startTime`.
+   `savePoolPicks` read `g.startTime`, so `game_time` was saved NULL every time.
+2. `gradePendingPicks` filtered on `game_time < NOW()`. For a NULL that
+   comparison is NULL, never true, so those rows were never even SELECTED. Not
+   mis-graded: invisible.
+
+Either alone would have been cosmetic. Together they silently deleted the record
+of the one tab with a measured edge, while every count still looked plausible
+(24-24 with 40 "pending"). The giveaway was that every pending row had
+`game_time` NULL and every one had an `espn_game_id`.
+
+Fixed by `model.pickGameTime()` (prefers the raw ISO, falls back through
+date/commenceTime/gameTime, returns null instead of an Invalid Date), by adding
+`startTime: event.date` to the POST's games, and by changing the filter to
+`(game_time IS NULL OR game_time < NOW())` -- the completed check against ESPN's
+own status was always the real guard, game_time only keeps the query small.
+**Never let a nullable column gate a work queue.** A row that cannot be selected
+cannot be reported as stuck.
+
 **Two ways to get the totals answer wrong, both of which happened on 7 Oct 2026.**
 
 1. **"It does not clear the vig" is not a reason in the Pick 6.** The pool has no
