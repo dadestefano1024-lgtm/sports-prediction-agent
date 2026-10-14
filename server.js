@@ -1177,6 +1177,24 @@ function sweepHttpCache() {
 }
 setInterval(sweepHttpCache, HTTP_CACHE_TTL_MS).unref?.();
 
+// predictionCache had a TTL for READS and no eviction, so a stale payload for
+// every week asked for stayed resident for the life of the process. Bounded by
+// key (nfl:1..18 plus the three other sports, so ~22) and each entry is only
+// tens of KB, which is why this is housekeeping and not the cause of anything
+// -- but a cache that never deletes is not a cache.
+function sweepPredictionCache() {
+  const now = Date.now();
+  let dropped = 0;
+  for (const key of Object.keys(predictionCache)) {
+    if ((now - predictionCache[key].timestamp) >= PREDICTION_CACHE_TTL_MS) {
+      delete predictionCache[key];
+      dropped++;
+    }
+  }
+  if (dropped) console.log(`[CACHE] dropped ${dropped} expired prediction payload(s)`);
+  return dropped;
+}
+
 async function cachedGet(url, options) {
   const hit = httpCache[url];
   if (hit && (Date.now() - hit.timestamp) < HTTP_CACHE_TTL_MS) {
@@ -5233,6 +5251,44 @@ app.get('/api/debug/odds/:sport', async (req, res) => {
 //
 // A liveness probe must never depend on somebody else's uptime. Point the
 // platform at this one.
+// Memory, so the next "exceeded its memory limit" email is diagnosable instead
+// of a guessing game. Costs nothing -- no odds API, no database, no network.
+//
+// How to read it: rss is what Render measures against the instance limit.
+// heapUsed climbing steadily between restarts is a leak; heapUsed flat and high
+// means the instance is simply too small. heapLimitMb says whether V8 even
+// knows about the container limit -- unflagged it reads the HOST's memory, which
+// is why start now passes --max-old-space-size=192.
+//
+// 192 is measured, not chosen: V8 reports heap_size_limit = flag + 192 MB, so
+// 192 yields a 384 MB ceiling and leaves ~128 MB of the 512 MB instance for
+// everything that is not heap. The flag 384 would have permitted a 576 MB heap
+// on a 512 MB box -- the same bug, smaller. At idle this app holds 17 MB.
+app.get('/api/debug/memory', (req, res) => {
+  const m = process.memoryUsage();
+  const mb = (n) => +(n / 1048576).toFixed(1);
+  const sizeOf = (o) => {
+    try { return mb(Buffer.byteLength(JSON.stringify(o) || '')); } catch (e) { return null; }
+  };
+  const cache = (o) => ({ entries: Object.keys(o || {}).length, approxMb: sizeOf(o) });
+  res.json({
+    uptimeSec: Math.round(process.uptime()),
+    rssMb: mb(m.rss),
+    heapUsedMb: mb(m.heapUsed),
+    heapTotalMb: mb(m.heapTotal),
+    externalMb: mb(m.external),
+    arrayBuffersMb: mb(m.arrayBuffers),
+    heapLimitMb: mb(require('v8').getHeapStatistics().heap_size_limit),
+    caches: {
+      httpCache: cache(httpCache),
+      predictionCache: cache(predictionCache),
+      oddsCache: cache(oddsCache),
+      espnOddsCache: cache(espnOddsCache),
+      injuryCache: cache(injuryCache),
+    },
+  });
+});
+
 app.get('/healthz', (req, res) => {
   res.status(200).json({ ok: true, uptimeSec: Math.round(process.uptime()) });
 });
@@ -5769,25 +5825,37 @@ app.post('/api/grade', async (req, res) => {
 // No outer guard is needed — gradePendingPicks() already returns early when
 // !dbReady, and registering unconditionally means grading self-heals if the
 // database connects late.
-setInterval(() => {
-  gradePendingPicks().catch(e => console.error('[GRADE_JOB]', e.message));
-}, 60 * 60 * 1000);
+// Every repeating job runs behind a guard. Without one, a run that outlasts its
+// own interval is joined by the next and the two hold two sets of payloads --
+// a memory climb that looks exactly like a leak. None of these is known to have
+// overlapped; the guard costs one boolean.
+const jobRunning = {};
+const once = (name, fn) => () => {
+  if (jobRunning[name]) {
+    console.log(`[JOB] ${name} still running, skipping this tick`);
+    return;
+  }
+  jobRunning[name] = true;
+  Promise.resolve()
+    .then(fn)
+    .catch(e => console.error(`[${name}]`, e.message))
+    .finally(() => { jobRunning[name] = false; });
+};
+
+setInterval(once('GRADE_JOB', gradePendingPicks), 60 * 60 * 1000);
+setInterval(sweepPredictionCache, PREDICTION_CACHE_TTL_MS).unref?.();
 
 // Closing lines every 10 minutes. The window in captureClosingLines is 30
 // minutes wide, so every qualifying game is seen at least once before it
 // starts. This only works because the service runs on a Starter instance and
 // stays awake — on a free instance that spins down after 15 minutes idle,
 // nothing would be running at kickoff and CLV would need an external trigger.
-setInterval(() => {
-  captureClosingLines().catch(e => console.error('[CLV_JOB]', e.message));
-}, 10 * 60 * 1000);
+setInterval(once('CLV_JOB', captureClosingLines), 10 * 60 * 1000);
 
 // Line history every two hours. Frequent enough to show a Thursday injury
 // moving a number, sparse enough that a week of football is a few dozen rows
 // per game, and free because it reads the scoreboard rather than the paid feed.
-setInterval(() => {
-  captureLineSnapshot('nfl').catch(e => console.error('[LINE_HISTORY]', e.message));
-}, 2 * 60 * 60 * 1000);
+setInterval(once('LINE_HISTORY', () => captureLineSnapshot('nfl')), 2 * 60 * 60 * 1000);
 setTimeout(() => {
   captureLineSnapshot('nfl').catch(e => console.error('[LINE_HISTORY]', e.message));
 }, 60000);

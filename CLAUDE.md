@@ -83,6 +83,31 @@ Each cost real work. Numbers, not opinions.
 | Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
 | Backing home at every opener (the drift itself) | +0.228 CLV, which is below the ~0.25 needed to clear the vig, and the win rate is 49.0% | `epa-test.js`, `frozen-test.js` |
 
+**Render OOM: V8 did not know the container limit.** 14 Oct 2026, a 502 and a
+"exceeded its memory limit" email. `start` was a bare `node server.js`, and V8
+sizes its old space from what it thinks the HOST has -- 4,288 MB unflagged on
+the dev laptop -- so the heap can pass 512 MB without V8 ever feeling pressure
+and Render kills the container first. It reads exactly like a leak and is not
+one. `start` now passes `--max-old-space-size=192`.
+
+**192 is measured.** V8 reports `heap_size_limit = flag + 192 MB`, so 192 gives
+a 384 MB ceiling and leaves ~128 MB of the 512 MB Starter instance for
+everything that is not heap (measured at 37 MB idle). The obvious first guess,
+384, would have permitted a 576 MB heap on a 512 MB box -- the same bug,
+smaller. This app holds 17 MB of heap at idle, so the ceiling is a guardrail
+and not a target.
+
+**`/api/debug/memory` makes the next one diagnosable** -- rss, heapUsed,
+heapTotal, heapLimit and every cache's entry count and size. Free: no odds API,
+no database, no network. Read it as: heapUsed climbing steadily between
+restarts is a leak; heapUsed flat and high means the instance is too small and
+the answer is the plan, not the code. **The caches were checked and cleared of
+suspicion** -- all eight are keyed by sport or `nfl:1..18`, so ~22 entries, tens
+of KB each. Two real defects were found on the way and fixed anyway:
+`predictionCache` had a read TTL and never deleted, and none of the three
+repeating jobs had a re-entrancy guard, so a slow run could be joined by the
+next.
+
 **The Pick 6 record was empty for three weeks and nothing reported an error.**
 Found 7 Oct 2026 when Danny said the history was not working. 27 picks going
 back to 20 Sep had `result` NULL and no score. Two survivable bugs multiplying:
