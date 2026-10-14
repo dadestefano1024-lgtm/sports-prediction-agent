@@ -83,6 +83,33 @@ Each cost real work. Numbers, not opinions.
 | Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
 | Backing home at every opener (the drift itself) | +0.228 CLV, which is below the ~0.25 needed to clear the vig, and the win rate is 49.0% | `epa-test.js`, `frozen-test.js` |
 
+**The recorded W/L was wrong, and the CLV was measuring a sign error.** Found
+14 Oct 2026 from Danny asking what CLV was. `gradePick` documents that `line` is
+a HOME spread; `savePoolPicks` stored `b.poolLine`, the PICKED side's own number,
+which on an away pick carries the opposite sign. The cover was then tested
+against a threshold off by TWICE the line. 7 of 42 settled spread picks graded
+wrong, every one an away pick -- a New England pick that won 29-26 outright was
+recorded a loss. `/api/regrade` corrected 8 of 93; the record went 43W-48L-2P ->
+46W-43L-4P and the pool 27-34-1 -> 30-31-3 (49.2%).
+
+**The same defect was already fixed once, in the FORMULA** -- gradePick's own
+comment says it "systematically marked winning away bets as losses and is most
+of why the spread record read 39%" -- and it came straight back through the
+DATA. So grading now reads the PICK TEXT (`model.gradeSpreadFromText`), which
+cannot have a convention: "Las Vegas Raiders +5" means the Raiders getting five
+whoever is home, and it is the string the reader was shown. The column is only a
+fallback.
+
+**The CLV could not be backfilled, and was excluded instead.** A regrade fixes
+`result`, not `line_at_pick`, so the -2.05 pool figure did not budge. The pick
+text recovers a home spread for an ordinary game but NOT for a both-lay one,
+where the pool lays points both ways and homeLine and awayLine are not
+negatives of each other -- a blanket flip would repair most rows and silently
+corrupt those. `POOL_CLV_VALID_FROM` therefore drops pool rows older than the
+fix and reports `excludedPreFix` so the smaller sample is visible.
+**The stale-line premise is still UNTESTED** -- every CLV number quoted for it
+so far was this artifact, and it starts accruing honestly from the week-5 card.
+
 **Render OOM: V8 did not know the container limit.** 14 Oct 2026, a 502 and a
 "exceeded its memory limit" email. `start` was a bare `node server.js`, and V8
 sizes its old space from what it thinks the HOST has -- 4,288 MB unflagged on

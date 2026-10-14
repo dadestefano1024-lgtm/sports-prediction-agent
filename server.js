@@ -5464,6 +5464,16 @@ app.get('/api/health', async (req, res) => {
  *
  * The columns and the capture job already existed. Nothing read them.
  */
+// Pool rows written before this instant stored line_at_pick as the PICKED
+// side's number instead of a home spread, so comparing them with closing_line
+// measures the sign error and nothing else. They are EXCLUDED rather than
+// negated: the pick text recovers a home spread for an ordinary game but NOT
+// for a both-lay one, where the pool lays points both ways and homeLine and
+// awayLine are not negatives of each other, so a blanket flip would repair most
+// rows and silently corrupt those. The count is reported so the exclusion is
+// visible rather than a quietly smaller sample.
+const POOL_CLV_VALID_FROM = '2026-10-14T18:00:00Z';
+
 async function getClvStats(sport, source = null) {
   if (!dbReady || !pool) return null;
   const params = [];
@@ -5474,11 +5484,15 @@ async function getClvStats(sport, source = null) {
     where += ` AND COALESCE(source, 'recommendation') = $${params.length}`;
   }
 
-  const { rows } = await pool.query(
+  const { rows: allRows } = await pool.query(
     `SELECT sport, pick, home_team, away_team, line_at_pick, closing_line, result,
-            COALESCE(source, 'recommendation') AS src
+            created_at, COALESCE(source, 'recommendation') AS src
        FROM picks ${where}`, params);
-  if (!rows.length) return { picks: 0 };
+  const cutoff = new Date(POOL_CLV_VALID_FROM);
+  const preFix = (r) => r.src === 'pool' && r.created_at && new Date(r.created_at) < cutoff;
+  const excludedPreFix = allRows.filter(preFix).length;
+  const rows = allRows.filter(r => !preFix(r));
+  if (!rows.length) return { picks: 0, excludedPreFix };
 
   // Which side was taken, decided by name rather than by comparing two columns
   // that are written from the same value and are therefore always equal.
@@ -5519,7 +5533,7 @@ async function getClvStats(sport, source = null) {
     bump(r.src || 'recommendation', movedToward);
   }
   const n = beat + worse + level;
-  if (!n) return { picks: 0, unresolvedSide: unknown };
+  if (!n) return { picks: 0, unresolvedSide: unknown, excludedPreFix };
   const bySource = {};
   for (const [k, o] of Object.entries(per)) {
     bySource[k] = {
@@ -5534,6 +5548,8 @@ async function getClvStats(sport, source = null) {
   return {
     picks: n,
     unresolvedSide: unknown,
+    // Pool rows from before the home-spread fix, left out on purpose.
+    excludedPreFix,
     beatClose: beat,
     worseThanClose: worse,
     level,
