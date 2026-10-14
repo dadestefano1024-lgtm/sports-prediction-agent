@@ -1142,6 +1142,68 @@ const MISGRADED = [
   ['Baltimore Ravens -3',       'Dallas Cowboys',       'Baltimore Ravens',      31, 34, 'push'],
 ];
 
+test('slateSunday files a whole NFL week on one Sunday', () => {
+  // Thursday, Sunday and Monday night all belong to the same card.
+  for (const d of ['2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09',
+                   '2026-10-10', '2026-10-11', '2026-10-12']) {
+    assert.equal(m.slateSunday(d + 'T12:00:00Z'), '2026-10-11', d);
+  }
+  // Tuesday rolls on to the next slate.
+  assert.equal(m.slateSunday('2026-10-13T12:00:00Z'), '2026-10-18');
+  // "Nearest Sunday" would have filed a Wednesday under the slate ALREADY
+  // played (3 days back vs 4 forward), which is the trap this avoids.
+  assert.notEqual(m.slateSunday('2026-10-07T12:00:00Z'), '2026-10-04');
+  assert.equal(m.slateSunday('nonsense'), null);
+  assert.equal(m.slateSunday(null), null);
+});
+
+test('latestCardPerWeek keeps the last run before kickoff, not every pick ever ranked', () => {
+  // The real week-5 shape: four save runs, nine rows, a six-pick card.
+  const row = (id, at, pick) => ({ id, created_at: at, pick, result: 'loss', game_time: null });
+  const rows = [
+    row(737, '2026-10-07T23:50:00.000Z', 'Indianapolis Colts +3'),
+    row(741, '2026-10-09T22:45:00.000Z', 'Washington Commanders -3'),
+    row(791, '2026-10-11T10:29:00.000Z', 'Minnesota Vikings -2'),
+    row(798, '2026-10-11T14:11:08.960Z', 'Tennessee Titans +8'),
+    row(799, '2026-10-11T14:11:09.068Z', 'Las Vegas Raiders +5'),
+    row(800, '2026-10-11T14:11:09.164Z', 'Green Bay Packers +3'),
+    row(801, '2026-10-11T14:11:09.463Z', 'Jacksonville Jaguars -7'),
+    row(802, '2026-10-11T14:11:09.578Z', 'Arizona Cardinals +6'),
+    row(803, '2026-10-11T14:11:09.685Z', 'New York Jets -2'),
+  ];
+  const card = m.latestCardPerWeek(rows);
+  assert.equal(card.length, 6, 'a six-pick card, not nine rows');
+  assert.deepEqual(card.map(r => r.id).sort((a, b) => a - b), [798, 799, 800, 801, 802, 803]);
+});
+
+test('latestCardPerWeek keeps one card for EACH week', () => {
+  const row = (id, at) => ({ id, created_at: at, pick: 'X +1', result: 'win' });
+  const card = m.latestCardPerWeek([
+    row(1, '2026-10-04T15:00:00.000Z'),   // slate 4 Oct
+    row(2, '2026-10-04T15:00:00.500Z'),
+    row(3, '2026-10-11T15:00:00.000Z'),   // slate 11 Oct
+    row(4, '2026-10-11T15:00:00.500Z'),
+  ]);
+  assert.equal(card.length, 4, 'both weeks counted, neither week doubled');
+});
+
+test('latestCardPerWeek prefers a real kickoff over when the row was written', () => {
+  // A card saved on Tuesday for the FOLLOWING Sunday. Keyed on created_at alone
+  // that Tuesday rolls to the next slate; the kickoff puts it where it belongs.
+  const rows = [
+    { id: 1, created_at: '2026-10-13T12:00:00Z', game_time: '2026-10-18T17:00:00Z', result: 'win', pick: 'A +1' },
+    { id: 2, created_at: '2026-10-13T12:00:01Z', game_time: '2026-10-18T17:00:00Z', result: 'loss', pick: 'B +1' },
+  ];
+  assert.equal(m.latestCardPerWeek(rows).length, 2);
+  assert.equal(m.slateSunday(rows[0].game_time), '2026-10-18');
+});
+
+test('latestCardPerWeek is safe on nothing', () => {
+  assert.deepEqual(m.latestCardPerWeek([]), []);
+  assert.deepEqual(m.latestCardPerWeek(null), []);
+  assert.deepEqual(m.latestCardPerWeek([{ id: 1 }]), [], 'a row with no created_at cannot be placed');
+});
+
 test('gradeSpreadFromText gets all seven misgraded away picks right', () => {
   for (const [pick, home, away, hs, as, truth] of MISGRADED) {
     assert.equal(

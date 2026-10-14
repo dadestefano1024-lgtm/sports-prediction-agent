@@ -5577,9 +5577,21 @@ async function getPoolStats(sport) {
   const params = [];
   let where = "WHERE COALESCE(source, 'recommendation') = 'pool'";
   if (sport) { params.push(sport); where += ` AND sport = $${params.length}`; }
-  const { rows } = await pool.query(
-    `SELECT market, result, edge FROM picks ${where}`, params);
-  if (!rows.length) return { picks: 0, clv: await getClvStats(sport, 'pool') };
+  const { rows: allRows } = await pool.query(
+    `SELECT market, result, edge, created_at, game_time, espn_game_id, pick
+       FROM picks ${where}`, params);
+  if (!allRows.length) return { picks: 0, clv: await getClvStats(sport, 'pool') };
+
+  // ONE CARD PER WEEK. savePoolPicks writes the current top six on every run
+  // and only clears ungraded rows for the games in the NEW six, so a pick that
+  // was ranked on Wednesday and dropped out by Sunday keeps its row. Week 5
+  // held NINE rows from four runs for a six-pick card, which inflates the
+  // sample and makes a 6-0 impossible to evaluate -- the record was not the
+  // card. Danny picks on Sunday morning, so the card that counts is the last
+  // run before kickoff; the earlier runs stay in the table and are reported as
+  // supersededRows rather than silently dropped.
+  const rows = model.latestCardPerWeek(allRows);
+  const supersededRows = allRows.length - rows.length;
 
   const graded = rows.filter(r => r.result);
   const wins = graded.filter(r => r.result === 'win').length;
@@ -5597,6 +5609,10 @@ async function getPoolStats(sport) {
   return {
     clv,
     picks: rows.length,
+    // Rows from earlier runs of the same week, kept in the table but not
+    // counted. A non-zero number here is normal: the card was re-ranked as the
+    // market moved.
+    supersededRows,
     pending: rows.length - settled,
     settled,
     wins,

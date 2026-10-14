@@ -83,6 +83,38 @@ Each cost real work. Numbers, not opinions.
 | Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
 | Backing home at every opener (the drift itself) | +0.228 CLV, which is below the ~0.25 needed to clear the vig, and the win rate is 49.0% | `epa-test.js`, `frozen-test.js` |
 
+**The pool record was not the card.** Found 14 Oct 2026 in a full sanity check.
+`savePoolPicks` writes the current top six on every run, and the DELETE before
+it only clears ungraded rows for the games in the NEW six -- so a pick ranked on
+Wednesday that drops out by Sunday keeps its row. Week 5 held **nine rows from
+four save runs** (7 Oct, 9 Oct, and twice on the 11th) for a six-pick card. The
+record was every pick ever ranked, which inflates the sample and makes a 6-0
+impossible to evaluate.
+
+`model.latestCardPerWeek()` now counts the LAST run before kickoff, because
+Danny picks Sunday morning. Earlier runs stay in the table and are reported as
+`supersededRows` rather than silently dropped. Week 5 reads 2-4 -- the card he
+would actually have entered: Jets -2 and Packers +3 in, Raiders +5, Jaguars -7,
+Cardinals +6 and Titans +8 out.
+
+**`model.slateSunday()` is the week key, and "nearest Sunday" is wrong.** A
+Wednesday is three days after the previous Sunday and four before the next, so
+nearest would file a card under the slate already played. The rule is: Monday
+maps BACK one day, every other day maps FORWARD to the next Sunday. That puts a
+Thursday kickoff, a Sunday kickoff and a Monday-nighter on one card.
+
+**`new Date(null)` is the EPOCH, not an Invalid Date** -- it filed a null
+kickoff under 4 Jan 1970 until a test caught it. Same family as `Number(null)`
+being 0, which caused the missing-score bug in `gradeSpreadFromText` the same
+evening. Guard null, undefined and '' explicitly before any Date or Number
+coercion; `isFinite`/`isNaN` will not do it for you.
+
+**The full sanity check is `scratchpad/sanity.js`** -- it regrades every settled
+pick from its own text, lists stuck pending rows, finds duplicates,
+reconstructs each week's card and checks the stored line against the pick text.
+Run it after any change to grading or recording. On 14 Oct it returned 93/93
+grading agreement, 0 pending, 2 duplicates (removed via `/api/dedupe`, 93 -> 91).
+
 **The recorded W/L was wrong, and the CLV was measuring a sign error.** Found
 14 Oct 2026 from Danny asking what CLV was. `gradePick` documents that `line` is
 a HOME spread; `savePoolPicks` stored `b.poolLine`, the PICKED side's own number,

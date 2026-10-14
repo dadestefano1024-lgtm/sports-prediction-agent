@@ -2322,6 +2322,81 @@ function poolMarketNumber({ consensus = null, book = null, espn = null } = {}) {
  *
  * Returns { side, handicap } or null when the text cannot be trusted.
  */
+/**
+ * The Sunday a slate belongs to, so a Thursday game, a Sunday game and a Monday
+ * night game all land on one card.
+ *
+ * Monday maps BACK to the Sunday before it; every other day maps FORWARD to the
+ * next Sunday on or after. That one rule works for both of the things it is
+ * asked about: a kickoff (Thu 8 Oct, Sun 11 Oct and Mon 12 Oct all give Sun 11
+ * Oct) and the moment a card was saved (entered Wed 7 Oct gives Sun 11 Oct, and
+ * a Monday-morning save for a Monday-night game gives the same Sunday rather
+ * than the next one). "Nearest Sunday" would NOT work -- a Wednesday is three
+ * days after the previous Sunday and four before the next, so it would file a
+ * card under the slate that had already been played.
+ */
+function slateSunday(when) {
+  // new Date(null) is the EPOCH, not an Invalid Date, so a null kickoff would
+  // file a card under 4 Jan 1970 instead of refusing. Same coercion trap as
+  // Number(null) being 0, which has now bitten three times in one session.
+  if (when === null || when === undefined || when === '') return null;
+  const d = when instanceof Date ? new Date(when.getTime()) : new Date(when);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = d.getUTCDay();                 // 0 Sun ... 6 Sat
+  const shift = day === 1 ? -1 : (day === 0 ? 0 : 7 - day);
+  d.setUTCDate(d.getUTCDate() + shift);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * ONE CARD PER WEEK: the rows of the last save run before kickoff.
+ *
+ * WHY. savePoolPicks writes the current top six every time the pool endpoint
+ * runs, and the DELETE before it only clears ungraded rows for the games in the
+ * NEW six. So a game that was in the six on Wednesday and dropped out by Sunday
+ * keeps its row, and the record accumulates every pick that was ever ranked
+ * rather than the card actually played. Week 5 held NINE rows from four runs --
+ * 7 Oct, 9 Oct, and twice on the 11th -- for a six-pick card, which makes a
+ * 6-0 impossible to evaluate and inflates the sample.
+ *
+ * Danny picks on Sunday morning, so the card that counts is the LAST run before
+ * kickoff. Earlier runs are kept in the table, just not counted.
+ *
+ * A run is rows written within `runGapMs` of each other; savePoolPicks writes
+ * all six inside a second, and runs are hours or days apart.
+ */
+function latestCardPerWeek(rows, { runGapMs = 120000 } = {}) {
+  const usable = (rows || []).filter(r => r && r.created_at);
+  if (!usable.length) return [];
+  const sorted = usable.slice().sort((a, b) =>
+    new Date(a.created_at) - new Date(b.created_at));
+
+  // cluster into save runs
+  const runs = [];
+  let cur = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = new Date(sorted[i].created_at) - new Date(sorted[i - 1].created_at);
+    if (gap > runGapMs) { runs.push(cur); cur = []; }
+    cur.push(sorted[i]);
+  }
+  runs.push(cur);
+
+  // one card per slate, the latest run wins
+  const best = new Map();
+  for (const run of runs) {
+    // Prefer a real kickoff; fall back to when the run was saved. game_time was
+    // NULL on every pool row written before 14 Oct 2026, which is why the
+    // fallback has to exist.
+    const kick = run.map(r => r.game_time).filter(Boolean).sort()[0];
+    const wk = slateSunday(kick || run[0].created_at);
+    if (!wk) continue;
+    const at = new Date(run[run.length - 1].created_at).getTime();
+    const prev = best.get(wk);
+    if (!prev || at > prev.at) best.set(wk, { at, run });
+  }
+  return [...best.values()].flatMap(v => v.run);
+}
+
 function pickHandicap({ pick, home_team: homeTeam, away_team: awayTeam } = {}) {
   const m = String(pick || '').trim().match(/^(.*?)\s*([+-]\d+(?:\.\d+)?)$/);
   if (!m) return null;
@@ -3728,6 +3803,8 @@ module.exports = {
   mergePoolLines,
   pickGameTime,
   pickHandicap,
+  slateSunday,
+  latestCardPerWeek,
   gradeSpreadFromText,
   poolMarketNumber,
   NFL_TOTAL_PMF,
