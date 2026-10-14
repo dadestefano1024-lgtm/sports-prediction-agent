@@ -4,7 +4,7 @@
   "description": "AI-powered sports betting predictions",
   "main": "server.js",
   "scripts": {
-    "start": "node --max-old-space-size=192 server.js",
+    "start": "node --max-old-space-size=256 server.js",
     "test": "node --test model.test.js parser.test.js",
     "analyse": "node frozen-test.js && node increment-test.js && node reach.js"
   },

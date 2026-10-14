@@ -1177,6 +1177,43 @@ const HTTP_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 // key per game per sport. The previous day's multi-megabyte payloads were
 // retained forever, which on a long-lived instance is a slow leak rather than a
 // cache.
+// THE CACHE WAS BOUNDED ONLY BY TIME, AND THAT WAS NOT A BOUND.
+//
+// Several fetchers are per TEAM -- /teams/{id}/schedule, /roster, /depthcharts
+// -- so one predictions run touches well over a hundred distinct URLs at around
+// 250 KB each. Measured on the live service 113 seconds after a restart:
+// 192 entries, 47.3 MB, heapUsed already 87.8 MB and climbing. With a 10-minute
+// TTL and a sweep on the same 10-minute interval, the worst case holds twenty
+// minutes of fetches, which is how a 192 MB old-space ceiling got hit and V8
+// aborted with exit 134.
+//
+// So: a hard cap on entries AND on bytes, oldest evicted first, swept every
+// minute. Both overridable, because the right number depends on the instance.
+const HTTP_CACHE_MAX_ENTRIES = Number(process.env.HTTP_CACHE_MAX_ENTRIES ?? 80);
+const HTTP_CACHE_MAX_BYTES = Number(process.env.HTTP_CACHE_MAX_MB ?? 24) * 1048576;
+
+/** Approximate bytes, measured ONCE at insert. */
+function httpCacheBytes() {
+  let total = 0;
+  for (const k of Object.keys(httpCache)) total += httpCache[k].bytes || 0;
+  return total;
+}
+
+/** Evict oldest-first until both caps are satisfied. */
+function evictHttpCache() {
+  const keys = Object.keys(httpCache)
+    .sort((a, b) => httpCache[a].timestamp - httpCache[b].timestamp);
+  let total = httpCacheBytes();
+  let i = 0, dropped = 0;
+  while (i < keys.length &&
+         ((keys.length - i) > HTTP_CACHE_MAX_ENTRIES || total > HTTP_CACHE_MAX_BYTES)) {
+    total -= httpCache[keys[i]].bytes || 0;
+    delete httpCache[keys[i]];
+    i++; dropped++;
+  }
+  return dropped;
+}
+
 function sweepHttpCache() {
   const now = Date.now();
   let dropped = 0;
@@ -1186,10 +1223,13 @@ function sweepHttpCache() {
       dropped++;
     }
   }
-  if (dropped) console.log(`[CACHE] dropped ${dropped} expired entries`);
+  dropped += evictHttpCache();
+  if (dropped) console.log(`[CACHE] dropped ${dropped}; now ${Object.keys(httpCache).length} entries, ` +
+    `${(httpCacheBytes() / 1048576).toFixed(1)} MB`);
   return dropped;
 }
-setInterval(sweepHttpCache, HTTP_CACHE_TTL_MS).unref?.();
+// Every minute, not every ten. A cache swept on its own TTL can hold two TTLs.
+setInterval(sweepHttpCache, 60 * 1000).unref?.();
 
 // predictionCache had a TTL for READS and no eviction, so a stale payload for
 // every week asked for stayed resident for the life of the process. Bounded by
@@ -1218,7 +1258,16 @@ async function cachedGet(url, options) {
 
   inFlightRequests[url] = axios.get(url, options)
     .then(response => {
-      httpCache[url] = { timestamp: Date.now(), data: response.data };
+      // Size measured once, here, so evictHttpCache and the memory endpoint can
+      // both read it without re-serialising the whole cache.
+      let bytes = 0;
+      try { bytes = Buffer.byteLength(JSON.stringify(response.data) || ''); }
+      catch (e) { bytes = 0; }
+      httpCache[url] = { timestamp: Date.now(), data: response.data, bytes };
+      // Enforced on insert, not left to the sweep. One predictions run touches
+      // over a hundred per-team URLs in seconds, so a minute of grace is long
+      // enough to blow the heap ceiling and abort.
+      evictHttpCache();
       delete inFlightRequests[url];
       return { data: response.data };
     })
@@ -5293,6 +5342,15 @@ app.get('/api/debug/memory', (req, res) => {
     try { return mb(Buffer.byteLength(JSON.stringify(o) || '')); } catch (e) { return null; }
   };
   const cache = (o) => ({ entries: Object.keys(o || {}).length, approxMb: sizeOf(o) });
+  // httpCache is NOT measured with sizeOf. That is what this did first, and on
+  // a 47 MB cache it allocated a 47 MB string on every poll -- a diagnostic
+  // that worsened the condition it was diagnosing, while I polled it repeatedly
+  // chasing exit 134. Entries carry their own byte count now.
+  const tracked = (o) => {
+    let t = 0;
+    for (const k of Object.keys(o || {})) t += (o[k] && o[k].bytes) || 0;
+    return { entries: Object.keys(o || {}).length, approxMb: mb(t) };
+  };
   res.json({
     uptimeSec: Math.round(process.uptime()),
     rssMb: mb(m.rss),
@@ -5302,7 +5360,9 @@ app.get('/api/debug/memory', (req, res) => {
     arrayBuffersMb: mb(m.arrayBuffers),
     heapLimitMb: mb(require('v8').getHeapStatistics().heap_size_limit),
     caches: {
-      httpCache: cache(httpCache),
+      httpCache: { ...tracked(httpCache),
+                   maxEntries: HTTP_CACHE_MAX_ENTRIES,
+                   maxMb: +(HTTP_CACHE_MAX_BYTES / 1048576).toFixed(1) },
       predictionCache: cache(predictionCache),
       oddsCache: cache(oddsCache),
       espnOddsCache: cache(espnOddsCache),

@@ -158,12 +158,28 @@ luck and not method. Check `/api/debug/memory` on the running service, never the
 laptop. The first guess of 384 would have permitted a 576 MB heap on a 512 MB
 box on the laptop's arithmetic -- the same bug, smaller.
 
-**Confirmed not a leak**, 14 Oct 2026, ten minutes of samples after the deploy:
-rss steady at 120-130 MB of 512, heapUsed flat at 28-38 MB, every cache in
-single digits (http 3, prediction 0, odds 1, espnOdds 1, injury 1). The service
-uses about a quarter of what it is allowed, so the OOM was the unbounded heap
-letting a transient spike run past the container limit before any GC pressure --
-not growth. No instance upgrade needed.
+**"Confirmed not a leak" WAS WRONG, and the way it was wrong is the lesson.**
+Ten minutes of samples gave rss 120-130 MB and heapUsed flat at 28-38 MB with
+every cache in single digits -- measured on a service that had just restarted
+and was serving nobody. An idle window cannot clear a cache of suspicion. The
+flag then turned a container OOM-kill into a V8 abort (**exit 134**), which is
+worse: 192 MB was BELOW what the app needs at peak, so it died sooner.
+
+**`httpCache` was the leak, and it was bounded only by time.** Several fetchers
+are per TEAM -- `/teams/{id}/schedule`, `/roster`, `/depthcharts` -- so one
+predictions run touches well over a hundred distinct URLs at ~250 KB each.
+Measured on the live service 113 seconds after a restart: **192 entries, 47.3 MB,
+heapUsed 87.8 and climbing.** A 10-minute TTL swept on a 10-minute interval
+holds twenty minutes of fetches. Now capped at `HTTP_CACHE_MAX_ENTRIES` (80) and
+`HTTP_CACHE_MAX_MB` (24), oldest evicted first, **enforced on insert** rather
+than by the sweep -- a run fills it within seconds, so a minute of grace is
+enough to abort. Proven on 200 inserts of 250 KB: 50 MB offered, 80 entries and
+19.5 MB kept. Sweep moved to every 60s. Flag raised 192 -> 256.
+
+**And the diagnostic made it worse.** `/api/debug/memory` reported cache size
+with `JSON.stringify` of the whole cache, allocating a 47 MB string on every
+poll -- while I polled it repeatedly chasing the abort. Entries now carry their
+own byte count. **A memory probe must not allocate.**
 
 **`/api/debug/memory` makes the next one diagnosable** -- rss, heapUsed,
 heapTotal, heapLimit and every cache's entry count and size. Free: no odds API,
