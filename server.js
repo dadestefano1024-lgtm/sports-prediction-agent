@@ -543,6 +543,20 @@ function gradePick(pick, homeScore, awayScore) {
   if (isNaN(line)) return null;
 
   if (pick.market === 'spread') {
+    // THE TEXT FIRST. The pick string says which side and what handicap, and it
+    // does not depend on the `line` column's convention -- which has now been
+    // wrong twice. savePoolPicks stored poolLine, which on an AWAY pick is the
+    // away side's own number, where this function wants a HOME spread. That
+    // graded 7 of 42 settled spread picks wrong, every one an away pick,
+    // including a New England pick that won 29-26 outright and was recorded a
+    // loss. The text is also the string the reader was shown, so grading
+    // anything else is grading something they never saw.
+    //
+    // Falls through to the column when the text cannot be parsed, so nothing
+    // that worked before stops working.
+    const fromText = model.gradeSpreadFromText(pick, homeScore, awayScore);
+    if (fromText) return fromText;
+
     // pick.pick contains text like "Lakers -5.5" or "Celtics +3.5"
     // Determine which team was picked: if pick contains home team name, picked home
     const side = pickedSide(pick);
@@ -4099,12 +4113,20 @@ async function savePoolPicks(sport, best, gamesById) {
         pick: b.pick,
         // The POOL number, which is what the bet actually settles against —
         // not the market number it was scored against.
-        line: b.poolLine,
+        // The pool's number as a HOME SPREAD, which is the convention gradePick
+        // and closing_line both use. b.poolLine is the PICKED side's own number,
+        // so on an away pick it carries the opposite sign -- storing it raw is
+        // what broke both the grading and the CLV. A total has no sides, so
+        // poolLine is already right there.
+        line: (b.market === 'total' || !Number.isFinite(b.homeLine))
+          ? b.poolLine : b.homeLine,
         edge: b.gap,
         confidence: b.tested === false ? 'untested' : null,
         predicted_home: null,
         predicted_away: null,
-        line_at_pick: b.poolLine,
+        // Compared against closing_line, which is a home spread. Same reason.
+        line_at_pick: (b.market === 'total' || !Number.isFinite(b.homeLine))
+          ? b.poolLine : b.homeLine,
         source: 'pool',
         // The signals that were TRUE when this pick was made, so the question
         // of whether they predict anything becomes answerable later. The

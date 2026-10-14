@@ -1127,6 +1127,78 @@ test('betRecommendation names the line difference as the thing that is NOT the e
 });
 
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// The seven settled picks the app graded WRONG, every one an away pick, found
+// by grading each from its own text and comparing with the stored result. These
+// are real rows and real scores, kept as the regression set.
+const MISGRADED = [
+  // pick,                      home,                   away,                   hs, as, truth
+  ['Miami Dolphins +11',        'Minnesota Vikings',    'Miami Dolphins',        15, 10, 'win'],
+  ['New England Patriots +7',   'Buffalo Bills',        'New England Patriots',  26, 29, 'win'],
+  ['Arizona Cardinals +9',      'San Francisco 49ers',  'Arizona Cardinals',     36, 30, 'win'],
+  ['Indianapolis Colts +7',     'Kansas City Chiefs',   'Indianapolis Colts',    33, 30, 'win'],
+  ['Seattle Seahawks -7',       'Washington Commanders', 'Seattle Seahawks',     33, 31, 'loss'],
+  ['New York Jets +7',          'Detroit Lions',        'New York Jets',         31, 24, 'push'],
+  ['Baltimore Ravens -3',       'Dallas Cowboys',       'Baltimore Ravens',      31, 34, 'push'],
+];
+
+test('gradeSpreadFromText gets all seven misgraded away picks right', () => {
+  for (const [pick, home, away, hs, as, truth] of MISGRADED) {
+    assert.equal(
+      m.gradeSpreadFromText({ pick, home_team: home, away_team: away }, hs, as),
+      truth, `${pick} with ${away} ${as} @ ${home} ${hs}`);
+  }
+});
+
+test('gradeSpreadFromText grades home picks too, and a push is a push', () => {
+  const g = (pick, hs, as) => m.gradeSpreadFromText(
+    { pick, home_team: 'Houston Texans', away_team: 'Dallas Cowboys' }, hs, as);
+  assert.equal(g('Houston Texans -3', 24, 17), 'win',  'won by 7, laying 3');
+  assert.equal(g('Houston Texans -3', 24, 21), 'push', 'won by exactly 3');
+  assert.equal(g('Houston Texans -3', 24, 23), 'loss', 'won by 1, laying 3');
+  assert.equal(g('Dallas Cowboys +3', 24, 21), 'push', 'the other side of the same push');
+  assert.equal(g('Dallas Cowboys +3', 24, 23), 'win',  'lost by 1, getting 3');
+});
+
+test('gradeSpreadFromText handles the both-lay games, where the sign trick fails', () => {
+  // The pool lays 2 on BOTH sides, so homeLine and awayLine are both -2 and
+  // negating a stored line would be wrong. The text is unambiguous regardless.
+  const g = (pick, hs, as) => m.gradeSpreadFromText(
+    { pick, home_team: 'New Orleans Saints', away_team: 'Minnesota Vikings' }, hs, as);
+  assert.equal(g('Minnesota Vikings -2', 20, 24), 'win',  'away won by 4, laying 2');
+  assert.equal(g('Minnesota Vikings -2', 20, 22), 'push', 'away won by exactly 2');
+  assert.equal(g('Minnesota Vikings -2', 20, 21), 'loss', 'away won by 1, laying 2');
+  assert.equal(g('New Orleans Saints -2', 24, 20), 'win', 'and the home side of a both-lay');
+  // A one-point game loses BOTH sides, which is the trap the card warns about.
+  assert.equal(g('Minnesota Vikings -2', 21, 22), 'loss');
+  assert.equal(g('New Orleans Saints -2', 22, 21), 'loss');
+});
+
+test('pickHandicap refuses rather than guesses', () => {
+  const teams = { home_team: 'Houston Texans', away_team: 'Dallas Cowboys' };
+  // No sign: "Over 43" would otherwise parse as a team called Over.
+  assert.equal(m.pickHandicap({ pick: 'Over 43', ...teams }), null);
+  assert.equal(m.pickHandicap({ pick: 'Under 43', ...teams }), null);
+  // A team on neither side of this game.
+  assert.equal(m.pickHandicap({ pick: 'Chicago Bears +3', ...teams }), null);
+  // Junk.
+  for (const pick of ['', null, undefined, 'Houston Texans', '+3', 'nonsense']) {
+    assert.equal(m.pickHandicap({ pick, ...teams }), null, JSON.stringify(pick));
+  }
+  // And it names the side it found.
+  assert.deepEqual(m.pickHandicap({ pick: 'Dallas Cowboys +4.5', ...teams }),
+    { side: 'away', handicap: 4.5 });
+  assert.deepEqual(m.pickHandicap({ pick: 'Houston Texans -4.5', ...teams }),
+    { side: 'home', handicap: -4.5 });
+});
+
+test('gradeSpreadFromText abstains without a score, rather than inventing one', () => {
+  const pick = { pick: 'Dallas Cowboys +3', home_team: 'Houston Texans', away_team: 'Dallas Cowboys' };
+  for (const [hs, as] of [[null, 21], [21, null], [undefined, undefined], ['x', 3]]) {
+    assert.equal(m.gradeSpreadFromText(pick, hs, as), null, `${hs}/${as}`);
+  }
+});
+
 test('pickGameTime prefers the raw ISO over the display string', () => {
   // THE REGRESSION. The pool POST builds games with both: startTime is the raw
   // event.date, gameTime is new Date(...).toLocaleString(). Parsing the display

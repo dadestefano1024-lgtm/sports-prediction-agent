@@ -2301,6 +2301,67 @@ function poolMarketNumber({ consensus = null, book = null, espn = null } = {}) {
  * stored value. Returns null rather than an Invalid Date, since an Invalid Date
  * handed to a timestamp column is how the NULL got there in the first place.
  */
+/**
+ * The handicap a pick actually took, read off the PICK TEXT.
+ *
+ * WHY NOT THE `line` COLUMN. Because its convention has now been wrong twice.
+ * gradePick needs a HOME spread; savePoolPicks stored `poolLine`, which for an
+ * AWAY pick is the away side's own number. The two differ by sign on every game
+ * where the pool does not lay points both ways, so gradePick tested against a
+ * threshold off by twice the line -- and 7 of 42 settled spread picks were
+ * graded wrong, every one of them an away pick. New England won 29-26 outright
+ * and was recorded a loss.
+ *
+ * The text does not have this problem. "Las Vegas Raiders +5" means the Raiders
+ * getting five whoever is at home, and it is also the string the reader sees, so
+ * grading it any other way is grading something they were never shown.
+ *
+ * The sign is REQUIRED. Without it "Over 43" parses as a team called Over on 43,
+ * and a pick of exactly zero would be ambiguous anyway; both return null so the
+ * caller falls back to the column.
+ *
+ * Returns { side, handicap } or null when the text cannot be trusted.
+ */
+function pickHandicap({ pick, home_team: homeTeam, away_team: awayTeam } = {}) {
+  const m = String(pick || '').trim().match(/^(.*?)\s*([+-]\d+(?:\.\d+)?)$/);
+  if (!m) return null;
+  const team = m[1].trim();
+  const handicap = parseFloat(m[2]);
+  if (!team || !Number.isFinite(handicap)) return null;
+  const key = (x) => String(x || '').toLowerCase().replace(/[^a-z]/g, '');
+  const t = key(team);
+  if (!t) return null;
+  const isHome = t === key(homeTeam);
+  const isAway = t === key(awayTeam);
+  // Neither or both: refuse rather than guess which side was taken.
+  if (isHome === isAway) return null;
+  return { side: isHome ? 'home' : 'away', handicap };
+}
+
+/**
+ * Win, loss or push for a spread pick, from the picked side's own point of
+ * view. A push is a push here; whether it COSTS anything is the caller's rule
+ * (it is a loss in the Pick 6 pool and a refund everywhere else).
+ */
+function gradeSpreadFromText(pick, homeScore, awayScore) {
+  const h = pickHandicap(pick);
+  if (!h) return null;
+  // Number(null) is 0 and Number('') is 0, both of which pass Number.isFinite,
+  // so a missing score would have graded as 0-0. My own test caught that.
+  const num = (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const hs = num(homeScore), as = num(awayScore);
+  if (hs === null || as === null) return null;
+  const margin = h.side === 'home' ? hs - as : as - hs;
+  const adjusted = margin + h.handicap;
+  if (adjusted > 0) return 'win';
+  if (adjusted < 0) return 'loss';
+  return 'push';
+}
+
 function pickGameTime(game) {
   if (!game || typeof game !== 'object') return null;
   for (const v of [game.startTime, game.date, game.commenceTime, game.gameTime]) {
@@ -3666,6 +3727,8 @@ module.exports = {
   gradePoolPick,
   mergePoolLines,
   pickGameTime,
+  pickHandicap,
+  gradeSpreadFromText,
   poolMarketNumber,
   NFL_TOTAL_PMF,
   totalResidualSurvival,
