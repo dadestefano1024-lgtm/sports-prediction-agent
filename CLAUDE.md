@@ -90,12 +90,21 @@ the dev laptop -- so the heap can pass 512 MB without V8 ever feeling pressure
 and Render kills the container first. It reads exactly like a leak and is not
 one. `start` now passes `--max-old-space-size=192`.
 
-**192 is measured.** V8 reports `heap_size_limit = flag + 192 MB`, so 192 gives
-a 384 MB ceiling and leaves ~128 MB of the 512 MB Starter instance for
-everything that is not heap (measured at 37 MB idle). The obvious first guess,
-384, would have permitted a 576 MB heap on a 512 MB box -- the same bug,
-smaller. This app holds 17 MB of heap at idle, so the ceiling is a guardrail
-and not a target.
+**192 is measured -- but measure it on the box that matters.** On the Windows
+dev laptop V8 reports `heap_size_limit = flag + 192 MB`, so 192 looked like a
+384 MB ceiling. **On the live Render instance the same flag reports 268 MB**, so
+the offset is ~76 there, not 192. The derivation was machine-specific and was
+quoted as if general; it happened to land safer rather than riskier, which is
+luck and not method. Check `/api/debug/memory` on the running service, never the
+laptop. The first guess of 384 would have permitted a 576 MB heap on a 512 MB
+box on the laptop's arithmetic -- the same bug, smaller.
+
+**Confirmed not a leak**, 14 Oct 2026, ten minutes of samples after the deploy:
+rss steady at 120-130 MB of 512, heapUsed flat at 28-38 MB, every cache in
+single digits (http 3, prediction 0, odds 1, espnOdds 1, injury 1). The service
+uses about a quarter of what it is allowed, so the OOM was the unbounded heap
+letting a transient spike run past the container limit before any GC pressure --
+not growth. No instance upgrade needed.
 
 **`/api/debug/memory` makes the next one diagnosable** -- rss, heapUsed,
 heapTotal, heapLimit and every cache's entry count and size. Free: no odds API,
