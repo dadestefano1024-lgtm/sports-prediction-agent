@@ -2399,9 +2399,35 @@ function parseAmericanValue(v) {
  * opening numbers — they come back as 0.0. The real openings live under
  * homeTeamOdds.open.pointSpread and open.total.
  */
-async function fetchEspnOpeningLines(sport) {
+/**
+ * Opening and current lines, for a given set of events.
+ *
+ * WHY THE EVENTS ARE AN ARGUMENT. Without them this falls back to fetchSlate,
+ * whose near branch returns nextSlate() -- the games on the SAME DAY as the
+ * earliest upcoming one. The Pick 6 tab shows a whole NFL week, so on any
+ * midweek day it asked for a week and got one day: on 14 Oct 2026, 1 of 14
+ * games had an opening line and thirteen showed nothing -- including a Titans
+ * at Colts that had moved from -3.5 to -7, which is exactly the movement this
+ * app exists to notice. ESPN had all fourteen, and answering them concurrently
+ * takes under 310ms.
+ *
+ * SLATE_SPAN_DAYS is 5 for football for precisely this reason ("a week,
+ * Thursday to Monday") but is only applied in fetchSlate's LOOKAHEAD branch,
+ * never its near branch. Rather than widen fetchSlate -- which would also
+ * change what the NFL board shows -- the caller that knows the week says so.
+ */
+async function fetchEspnOpeningLines(sport, { events: givenEvents = null } = {}) {
+  const scoped = Array.isArray(givenEvents) && givenEvents.length;
+  // TWO KEYS, and conflating them cost a local test run. `key` looks up the
+  // ESPN paths; `cacheKey` carries the scope. Putting the scope into the one
+  // key made ESPN_SCOREBOARD_PATHS['nfl:14:4018...'] undefined, and the
+  // function logged "no path mapped" and returned {} before fetching anything.
   const key = String(sport || '').toLowerCase();
-  const cached = espnOddsCache[key];
+  // The scope belongs in the CACHE key only. Without it a one-game Thursday
+  // fetch and a fourteen-game week fetch share an entry, and whichever ran
+  // first answers for the other -- a partial answer cached as a complete one.
+  const cacheKey = key + (scoped ? `:${givenEvents.length}:${givenEvents[0].id}` : '');
+  const cached = espnOddsCache[cacheKey];
   if (cached && (Date.now() - cached.timestamp) < ESPN_ODDS_CACHE_TTL_MS) {
     const ageSec = Math.round((Date.now() - cached.timestamp) / 1000);
     console.log(`[ESPN_ODDS] Cache hit for ${key} (${ageSec}s old, ${Object.keys(cached.data).length} games)`);
@@ -2428,8 +2454,8 @@ async function fetchEspnOpeningLines(sport) {
     // card showed sixteen Week 1 games and every one of them came back without
     // an odds board, because the opening lines had been fetched for a date
     // range containing no football at all.
-    const slate = await fetchSlate(scoreboardPath);
-    const events = slate.events;
+    // The caller's events when it has them; otherwise the next slate as before.
+    const events = scoped ? givenEvents : (await fetchSlate(scoreboardPath)).events;
 
     await Promise.all(events.map(async (event) => {
       const comp = (event.competitions || [])[0];
@@ -2519,7 +2545,7 @@ async function fetchEspnOpeningLines(sport) {
 
     const withSpread = Object.values(result).filter(r => r.currentSpread !== null).length;
     console.log(`[ESPN_ODDS] Parsed ${Object.keys(result).length} ${key} games (${withSpread} with a spread)`);
-    espnOddsCache[key] = { timestamp: Date.now(), data: result };
+    espnOddsCache[cacheKey] = { timestamp: Date.now(), data: result };
     return result;
   } catch (err) {
     console.error(`[ESPN_ODDS] ${key} failed:`, err.message);
@@ -4007,10 +4033,14 @@ app.get('/api/pool/:sport', async (req, res) => {
     // while this tab had nothing — and a line that moves on Thursday because a
     // quarterback is out is precisely the case where a number frozen on
     // Wednesday is worth holding or worth avoiding. Both calls are cached.
-    const [wk, oddsData, openingLines, leagueInjuries, baseline] = await Promise.all([
-      fetchNflWeekEvents(week, year),
+    // The week's events come first, because the opening lines are fetched FOR
+    // them -- inside one Promise.all, wk is still a pending promise and the
+    // opening-line call would fall back to the next slate, which is a single
+    // day. One extra sequential step, and it is a cached scoreboard call.
+    const wk = await fetchNflWeekEvents(week, year);
+    const [oddsData, openingLines, leagueInjuries, baseline] = await Promise.all([
       fetchOdds(sport).catch(() => []),
-      fetchEspnOpeningLines(sport).catch(() => ({})),
+      fetchEspnOpeningLines(sport, { events: wk.events }).catch(() => ({})),
       fetchLeagueInjuries(sport).catch(() => new Map()),
       injuryBaseline(sport).catch(() => null),
     ]);
@@ -4214,11 +4244,13 @@ app.post('/api/pool/:sport', async (req, res) => {
     const week = Number.isFinite(Number(req.body && req.body.week))
       ? Math.min(NFL_WEEKS, Math.max(1, Number(req.body.week)))
       : await currentNflWeek();
-    const [wk, oddsData, openingLines, leagueInjuriesP, baselineP, sharedForWeek] =
+    // Week events first; see the GET above for why they cannot be in the same
+    // Promise.all as the opening lines that are fetched for them.
+    const wk = await fetchNflWeekEvents(week, year);
+    const [oddsData, openingLines, leagueInjuriesP, baselineP, sharedForWeek] =
       await Promise.all([
-        fetchNflWeekEvents(week, year),
         fetchOdds(sport).catch(() => []),
-        fetchEspnOpeningLines(sport).catch(() => ({})),
+        fetchEspnOpeningLines(sport, { events: wk.events }).catch(() => ({})),
         fetchLeagueInjuries(sport).catch(() => new Map()),
         injuryBaseline(sport).catch(() => null),
         getSharedPoolLines(sport, week).catch(() => ({ lines: {} })),

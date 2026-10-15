@@ -83,6 +83,34 @@ Each cost real work. Numbers, not opinions.
 | Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
 | Backing home at every opener (the drift itself) | +0.228 CLV, which is below the ~0.25 needed to clear the vig, and the win rate is 49.0% | `epa-test.js`, `frozen-test.js` |
 
+**The Pick 6 tab was blind to line movement all midweek.** Danny reported it
+14 Oct 2026: only his own number showed, no open and no current.
+`fetchEspnOpeningLines(sport)` took no events and fell back to `fetchSlate`,
+whose NEAR branch returns `nextSlate()` -- the games on the SAME DAY as the
+earliest upcoming one. The tab shows a whole NFL week, so midweek it asked for a
+week and got one day: **1 of 14 games had an opening line.** On Sunday morning
+the next slate IS the card, which is why it had always looked fine.
+
+`SLATE_SPAN_DAYS['football/nfl']` is 5 for exactly this ("a week, Thursday to
+Monday") and is applied only in fetchSlate's LOOKAHEAD branch, never the near
+one. Rather than widen fetchSlate and change what the NFL board shows, the pool
+handlers now pass their own `wk.events`. Both had to move the week fetch OUT of
+their `Promise.all`: inside it, `wk` is still pending and the call silently
+falls back to the one-day slate.
+
+**What it was hiding, restored:** Panthers at Eagles had moved EIGHT points
+(open -6.5, now +1.5), Chargers at Chiefs six, Texans at Jaguars and two others
+four. For an app whose only measured edge is holding a stale number, being blind
+to the move is the whole game.
+
+**Two keys, not one.** The first attempt folded the event scope into `key`,
+which is also what looks up `ESPN_SCOREBOARD_PATHS` -- so the lookup missed, the
+function logged "no path mapped for nfl:14:4018..." and returned `{}` before
+fetching anything. `key` is the sport; `cacheKey` carries the scope. The scope
+MUST be in the cache key, or a one-game Thursday fetch and a fourteen-game week
+fetch share an entry and whichever ran first answers for the other. Caught by
+booting locally and reading the log, which is the only reason it did not ship.
+
 **The pool record was not the card.** Found 14 Oct 2026 in a full sanity check.
 `savePoolPicks` writes the current top six on every run, and the DELETE before
 it only clears ungraded rows for the games in the NEW six -- so a pick ranked on
