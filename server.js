@@ -729,28 +729,53 @@ async function getHistoryStats(sport = null, limit = 50) {
       FROM picks ${sportFilter};
     `, params);
 
-    // By market
+    // The same record split by SOURCE. A Pick 6 entry bets a number frozen on
+    // Wednesday; an NFL-tab pick bets a live price. One figure covering both
+    // moves whenever either moves and describes neither -- which is exactly
+    // what getClvStats was already fixed for, while this function kept mixing
+    // them. Danny asked which the record was; the answer was "both".
+    //
+    // NOTE on the pool half: these are RAW rows, so they include the earlier
+    // save runs of a re-ranked card. poolRecord is the card-based figure (see
+    // model.latestCardPerWeek) and is the one to quote for the Pick 6.
+    const bySourceRows = await pool.query(`
+      SELECT COALESCE(source, 'recommendation') AS src,
+        COUNT(*) FILTER (WHERE result = 'win') as wins,
+        COUNT(*) FILTER (WHERE result = 'loss') as losses,
+        COUNT(*) FILTER (WHERE result = 'push') as pushes,
+        COUNT(*) FILTER (WHERE result IS NULL) as pending,
+        COUNT(*) as total
+      FROM picks ${sportFilter}
+      GROUP BY COALESCE(source, 'recommendation');
+    `, params);
+
+    // Which sports have any picks at all, so the tabs are built from the data
+    // rather than a hardcoded list that forgot NFL for the whole season.
+    const sportsRows = await pool.query(
+      `SELECT sport, COUNT(*)::int AS n FROM picks GROUP BY sport ORDER BY sport;`);
+
+    // By market, now per source as well.
     const byMarket = await pool.query(`
-      SELECT market,
+      SELECT COALESCE(source, 'recommendation') AS src, market,
         COUNT(*) FILTER (WHERE result = 'win') as wins,
         COUNT(*) FILTER (WHERE result = 'loss') as losses,
         COUNT(*) FILTER (WHERE result = 'push') as pushes
       FROM picks
       ${sportFilter}
       ${sport ? 'AND' : 'WHERE'} result IS NOT NULL
-      GROUP BY market;
+      GROUP BY COALESCE(source, 'recommendation'), market;
     `, params);
 
     // By confidence
     const byConfidence = await pool.query(`
-      SELECT confidence,
+      SELECT COALESCE(source, 'recommendation') AS src, confidence,
         COUNT(*) FILTER (WHERE result = 'win') as wins,
         COUNT(*) FILTER (WHERE result = 'loss') as losses,
         COUNT(*) FILTER (WHERE result = 'push') as pushes
       FROM picks
       ${sportFilter}
       ${sport ? 'AND' : 'WHERE'} result IS NOT NULL
-      GROUP BY confidence;
+      GROUP BY COALESCE(source, 'recommendation'), confidence;
     `, params);
 
     // Recent picks (last 50)
@@ -762,16 +787,24 @@ async function getHistoryStats(sport = null, limit = 50) {
     const rowLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 5000);
     const recent = await pool.query(`
       SELECT id, created_at, sport, espn_game_id, home_team, away_team, game_time,
-             market, pick, line, edge, confidence, result, actual_home, actual_away
+             market, pick, line, edge, confidence, result, actual_home, actual_away,
+             COALESCE(source, 'recommendation') AS source
       FROM picks
       ${sportFilter}
       ORDER BY created_at DESC
       LIMIT $${params.length + 1};
     `, [...params, rowLimit]);
 
+    const bySource = {};
+    for (const r of bySourceRows.rows) bySource[r.src] = r;
+
     return {
       available: true,
       overall: overall.rows[0],
+      // Read bySource, not overall, when asking whether either edge is real.
+      // overall is kept because the tab prints it.
+      bySource,
+      sports: sportsRows.rows,
       byMarket: byMarket.rows,
       byConfidence: byConfidence.rows,
       clv: await getClvStats(sport),

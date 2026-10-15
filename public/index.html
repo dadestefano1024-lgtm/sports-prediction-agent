@@ -646,6 +646,18 @@
       margin-bottom: 16px;
       flex-wrap: wrap;
     }
+    /* The record split by source. Deliberately plain -- it is a record, not a
+       recommendation, and the SD printed beside it says how much to trust it. */
+    .src-split { border: 1px solid #21262d; border-radius: 6px; background: #10151c;
+                 padding: 2px 12px; margin: 10px 0 14px; }
+    .src-row { display: flex; justify-content: space-between; align-items: baseline;
+               gap: 12px; padding: 8px 0; font-size: 13px; }
+    .src-row + .src-row { border-top: 1px solid #1b2127; }
+    .src-lab { color: #8b949e; }
+    .src-pct { color: #c9d1d9; margin-left: 6px; }
+    .src-sd { color: #6e7681; font-size: 11px; margin-left: 6px; }
+    .src-note { color: #6e7681; font-size: 11px; margin-left: 6px; }
+    .src-none { color: #6e7681; font-size: 12px; }
     .filter-btn {
       padding: 6px 14px;
       background: #161b22;
@@ -2215,13 +2227,61 @@
       const profitColor = unitProfit > 0 ? '#3fb950' : unitProfit < 0 ? '#f85149' : '#8b949e';
 
       // Filter buttons
+      // NFL WAS MISSING from this list all season -- the only sport with any
+      // picks in it, and the variable's own comment said "null = all, 'nba',
+      // 'nhl', 'mlb'". The buttons are built from data.sports now, so a sport
+      // cannot be absent from the filter while sitting in the table, and the
+      // count shows which ones actually have something.
+      const SPORT_LABEL = { nfl: '\u{1F3C8} NFL', nba: '\u{1F3C0} NBA',
+                            nhl: '\u{1F3D2} NHL', mlb: '\u26BE MLB' };
+      const haveSports = (data.sports || []).filter(r => r && r.sport);
       const filtersHTML = `
         <div class="history-filters">
           <button class="filter-btn ${historyFilter === null ? 'active' : ''}" onclick="setHistoryFilter(null, this)">All Sports</button>
-          <button class="filter-btn ${historyFilter === 'nba' ? 'active' : ''}" onclick="setHistoryFilter('nba', this)">🏀 NBA</button>
-          <button class="filter-btn ${historyFilter === 'nhl' ? 'active' : ''}" onclick="setHistoryFilter('nhl', this)">🏒 NHL</button>
-          <button class="filter-btn ${historyFilter === 'mlb' ? 'active' : ''}" onclick="setHistoryFilter('mlb', this)">⚾ MLB</button>
+          ${haveSports.map(r => `<button class="filter-btn ${historyFilter === r.sport ? 'active' : ''}" onclick="setHistoryFilter('${r.sport}', this)">${SPORT_LABEL[r.sport] || String(r.sport).toUpperCase()} <span style="opacity:.55">${r.n}</span></button>`).join('')}
         </div>`;
+
+      // THE RECORD, SPLIT BY SOURCE. A Pick 6 entry bets a number frozen on
+      // Wednesday; an NFL-tab pick bets a live price. One combined figure moves
+      // whenever either moves and describes neither -- which is what the
+      // top-line number was doing when Danny asked which one it was.
+      //
+      // The Pick 6 row reads poolRecord, NOT bySource.pool: poolRecord counts
+      // one card per week, while bySource.pool is raw rows and still contains
+      // the earlier save runs of a re-ranked card.
+      const srcSplitHTML = (() => {
+        const int = (o, k) => parseInt((o || {})[k], 10) || 0;
+        const row = (label, w, l, pu, note) => {
+          const settled = w + l + pu;
+          if (!settled) {
+            return `<div class="src-row"><span class="src-lab">${label}</span>` +
+                   `<span class="src-none">nothing settled yet</span></div>`;
+          }
+          const pct = (w / settled * 100).toFixed(1);
+          // 2.5 SD is the bar this project uses before believing a signal, so it
+          // is printed beside the record rather than left to be assumed.
+          const sd = (w / settled - 0.5) / Math.sqrt(0.25 / settled);
+          return `<div class="src-row">
+            <span class="src-lab">${label}</span>
+            <span><strong>${w}-${l}${pu ? '-' + pu : ''}</strong>
+              <span class="src-pct">${pct}%</span>
+              <span class="src-sd">${sd >= 0 ? '+' : ''}${sd.toFixed(2)} SD${Math.abs(sd) < 2.5 ? ' \u2014 noise' : ''}</span>
+              ${note ? `<span class="src-note">${note}</span>` : ''}</span>
+          </div>`;
+        };
+        const pool = data.poolRecord;
+        const rec = (data.bySource || {}).recommendation;
+        const parts = [];
+        if (pool) {
+          parts.push(row('Pick 6', pool.wins || 0, pool.losses || 0, pool.pushes || 0,
+            pool.supersededRows ? pool.supersededRows + ' superseded rows not counted' : ''));
+        }
+        if (rec) {
+          parts.push(row('NFL tab (live picks)',
+            int(rec, 'wins'), int(rec, 'losses'), int(rec, 'pushes'), ''));
+        }
+        return parts.length ? `<div class="src-split">${parts.join('')}</div>` : '';
+      })();
 
       // Summary cards
       const summaryHTML = `
@@ -2407,7 +2467,7 @@
           </div>`;
       }
 
-      document.getElementById('content').innerHTML = filtersHTML + summaryHTML + poolHTML + clvHTML + marketHTML + byConfidenceHTML + recentHTML;
+      document.getElementById('content').innerHTML = filtersHTML + srcSplitHTML + summaryHTML + poolHTML + clvHTML + marketHTML + byConfidenceHTML + recentHTML;
     }
   </script>
 </body>

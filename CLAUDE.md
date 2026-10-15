@@ -83,6 +83,34 @@ Each cost real work. Numbers, not opinions.
 | Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
 | Backing home at every opener (the drift itself) | +0.228 CLV, which is below the ~0.25 needed to clear the vig, and the win rate is 49.0% | `epa-test.js`, `frozen-test.js` |
 
+**The History tab had no NFL filter, and its record mixed two different bets.**
+Both from Danny's questions, 14 Oct 2026.
+
+The sport buttons were hardcoded All / NBA / NHL / MLB -- **NFL was never in the
+list**, and it is the only sport with picks. The variable's own comment said
+`null = all, 'nba', 'nhl', 'mlb'`. Buttons are built from `data.sports` now, so
+a sport cannot be missing from the filter while sitting in the table.
+
+`overall`, `byMarket` and `byConfidence` mixed pool entries with NFL-tab picks.
+`getClvStats` had already been fixed for exactly this and says so in its own
+comment -- "a pool entry and a live recommendation are two different bets
+against two different numbers and averaging them describes neither" -- while
+this function kept doing it. All three now carry a source, and the tab shows
+Pick 6 and NFL tab as separate rows with the SD printed beside each.
+
+**The Pick 6 row reads `poolRecord`, not `bySource.pool`.** poolRecord counts
+one card per week; bySource.pool is raw rows and still holds the superseded
+runs of a re-ranked card. Two numbers that look like the same thing.
+
+**Totals at 53.8% and "Medium" confidence at 56.5% are both noise**, and the
+answer to why they are not recommended is sample size: n=26 at +0.39 SD and
+n=23 at +0.63 SD, against a 401-bet measurement of the totals rule at 51.4%.
+"High" confidence runs 37.5% on 8 -- *below* Medium, and an inversion is what
+noise looks like. The confidence labels were also written by the old
+`bookConfidence` that read spread points, so historical ones are not comparable
+to new ones. **The SD is now printed next to every record in the tab** so the
+sample speaks for itself.
+
 **The Pick 6 tab was blind to line movement all midweek.** Danny reported it
 14 Oct 2026: only his own number showed, no open and no current.
 `fetchEspnOpeningLines(sport)` took no events and fell back to `fetchSlate`,
