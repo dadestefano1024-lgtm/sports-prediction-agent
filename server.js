@@ -109,6 +109,34 @@ if (process.env.DATABASE_URL) {
       // picks. Nobody sells that history, so it has to be recorded — from now
       // forward, every couple of hours, for free off the scoreboard.
       await pool.query(`
+        CREATE TABLE IF NOT EXISTS pool_cards (
+          sport TEXT NOT NULL,
+          week INTEGER NOT NULL,
+          -- Danny and Logan both play this pool off the same shared lines, so a
+          -- card belongs to a PLAYER. Free text rather than an enum so a third
+          -- entrant needs no migration.
+          player TEXT NOT NULL,
+          game_id TEXT NOT NULL,
+          market TEXT NOT NULL,
+          side TEXT NOT NULL,
+          -- The display string, which is what gets graded. Tonight proved the
+          -- line column's convention can be wrong while the text cannot be:
+          -- "Las Vegas Raiders +7" means the Raiders getting seven whoever is
+          -- at home. See model.gradeSpreadFromText.
+          pick TEXT NOT NULL,
+          line NUMERIC,
+          home_team TEXT,
+          away_team TEXT,
+          game_time TIMESTAMPTZ,
+          locked_at TIMESTAMPTZ DEFAULT NOW(),
+          result TEXT,
+          actual_home INT,
+          actual_away INT,
+          graded_at TIMESTAMPTZ,
+          -- One pick per market per game per player. Stops the same game being
+          -- used twice on one card.
+          PRIMARY KEY (sport, week, player, game_id, market)
+        );
         CREATE TABLE IF NOT EXISTS odds_cache (
           sport TEXT PRIMARY KEY,
           payload JSONB,
@@ -439,15 +467,27 @@ async function gradePendingPicks() {
 
   try {
     const ungraded = await pool.query(`
-      SELECT DISTINCT espn_game_id, sport
-      FROM picks
-      WHERE result IS NULL AND espn_game_id IS NOT NULL
       -- NULL game_time must NOT hide a pick: the comparison game_time < NOW()
       -- evaluates to NULL for those rows and is never true, so 27 pool picks
       -- going back to 20 Sep 2026 could never be graded. The real guard against
       -- grading a game early is the completed check below, which reads ESPN's
       -- own status; game_time is only here to keep the query small.
-      AND (game_time IS NULL OR game_time < NOW())
+      --
+      -- Both tables, because a locked card can name a game the app never
+      -- recommended. Without the union those legs would sit unsettled for ever
+      -- and the card would never finish -- the same shape of bug as the NULL
+      -- game_time above: not mis-graded, invisible.
+      SELECT espn_game_id, sport FROM (
+        SELECT espn_game_id, sport
+          FROM picks
+         WHERE result IS NULL AND espn_game_id IS NOT NULL
+           AND (game_time IS NULL OR game_time < NOW())
+        UNION
+        SELECT game_id AS espn_game_id, sport
+          FROM pool_cards
+         WHERE result IS NULL AND game_id IS NOT NULL
+           AND (game_time IS NULL OR game_time < NOW())
+      ) u
       LIMIT 50;
     `);
 
@@ -493,6 +533,29 @@ async function gradePendingPicks() {
             `UPDATE picks SET result = $1, actual_home = $2, actual_away = $3, graded_at = NOW() WHERE id = $4`,
             [result, homeScore, awayScore, pick.id]
           );
+        }
+
+        // The same game's legs on anybody's locked card. gradePick reads the
+        // pick TEXT first, which is why a card can be graded at all: it stores
+        // the string the player saw, not a line whose convention might differ.
+        const legs = await pool.query(
+          `SELECT * FROM pool_cards WHERE game_id = $1 AND result IS NULL`,
+          [row.espn_game_id]
+        );
+        for (const leg of legs.rows) {
+          const result = gradePick(leg, homeScore, awayScore);
+          if (!result) continue;
+          await pool.query(
+            `UPDATE pool_cards SET result = $1, actual_home = $2, actual_away = $3,
+                    graded_at = NOW()
+              WHERE sport = $4 AND week = $5 AND player = $6
+                AND game_id = $7 AND market = $8`,
+            [result, homeScore, awayScore, leg.sport, leg.week, leg.player,
+             leg.game_id, leg.market]
+          );
+        }
+        if (legs.rows.length) {
+          console.log(`[GRADE] settled ${legs.rows.length} card leg(s) for ${row.espn_game_id}`);
         }
       } catch (e) {
         console.error(`[DB] Grading error for game ${row.espn_game_id}:`, e.message);
@@ -4024,6 +4087,115 @@ app.get('/api/pool/:sport/lines', async (req, res) => {
     : await currentNflWeek();
   const out = await getSharedPoolLines(sport, week);
   res.json({ sport: sport.toUpperCase(), week, ...out });
+});
+
+/**
+ * A player's locked card for a week.
+ *
+ * WHY THIS EXISTS. savePoolPicks recorded whatever the app's own ranking said
+ * every time the tab loaded, and nothing knew which six were actually entered.
+ * On week 5 that produced NINE rows from four runs for a six-pick card, and
+ * every heuristic for picking "the real one" fails: the last run of the week
+ * drops a Thursday pick that already won, and the last run before kickoff
+ * rejects Danny's actual week-5 card, which was saved 41 minutes AFTER its
+ * London game had started. The app cannot infer a submission. So it stops
+ * guessing and records the card when it is locked.
+ *
+ * It also makes a question answerable that was not before: including a Thursday
+ * game means locking all six on Wednesday and giving up four days of market
+ * movement on the other five. Nobody can measure that trade without knowing
+ * which six were really played.
+ */
+app.get('/api/pool/:sport/card', async (req, res) => {
+  const sport = String(req.params.sport || '').toLowerCase();
+  if (!ESPN_SCOREBOARD_PATHS[sport]) {
+    return res.status(400).json({ error: `Unsupported sport: ${sport}` });
+  }
+  if (!dbReady || !pool) return res.json({ sport, cards: {}, available: false });
+  const week = Number.isFinite(Number(req.query.week))
+    ? Math.min(NFL_WEEKS, Math.max(1, Number(req.query.week)))
+    : await currentNflWeek();
+  try {
+    const { rows } = await pool.query(
+      `SELECT player, game_id, market, side, pick, line, home_team, away_team,
+              game_time, locked_at, result, actual_home, actual_away
+         FROM pool_cards WHERE sport = $1 AND week = $2
+         ORDER BY player, locked_at, game_time`, [sport, week]);
+    // Grouped by player, because that is how it is read and shown.
+    const cards = {};
+    for (const r of rows) {
+      if (!cards[r.player]) cards[r.player] = { player: r.player, lockedAt: r.locked_at, picks: [] };
+      cards[r.player].picks.push(r);
+    }
+    for (const c of Object.values(cards)) {
+      const settled = c.picks.filter(p => p.result);
+      c.wins = settled.filter(p => p.result === 'win').length;
+      c.losses = settled.filter(p => p.result === 'loss').length;
+      c.pushes = settled.filter(p => p.result === 'push').length;
+      c.pending = c.picks.length - settled.length;
+      // A push is a LOSS in this pool, so "perfect" means every leg a win.
+      c.perfect = c.picks.length > 0 && c.wins === c.picks.length;
+      c.blown = c.picks.some(p => p.result && p.result !== 'win');
+    }
+    res.json({ sport: sport.toUpperCase(), week, available: true, cards });
+  } catch (err) {
+    console.error('[CARD] read failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/pool/:sport/card', async (req, res) => {
+  const sport = String(req.params.sport || '').toLowerCase();
+  if (!ESPN_SCOREBOARD_PATHS[sport]) {
+    return res.status(400).json({ error: `Unsupported sport: ${sport}` });
+  }
+  if (!dbReady || !pool) return res.status(503).json({ error: 'Database not available' });
+  const body = req.body || {};
+  const player = String(body.player || '').trim().slice(0, 40);
+  if (!player) return res.status(400).json({ error: 'player is required' });
+  const week = Number.isFinite(Number(body.week))
+    ? Math.min(NFL_WEEKS, Math.max(1, Number(body.week)))
+    : await currentNflWeek();
+  const picks = Array.isArray(body.picks) ? body.picks : [];
+  if (!picks.length) return res.status(400).json({ error: 'no picks sent' });
+  // Six is the pool, but it is not enforced: a card half-filled on Wednesday
+  // and finished Sunday is a real thing, and refusing to store five would just
+  // mean storing nothing.
+  if (picks.length > 20) return res.status(400).json({ error: 'too many picks' });
+
+  try {
+    // Replace, not merge. A re-lock is a new card, and a leftover row from the
+    // previous one would be a pick nobody made.
+    await pool.query(`DELETE FROM pool_cards WHERE sport = $1 AND week = $2 AND player = $3`,
+      [sport, week, player]);
+    let saved = 0;
+    for (const p of picks) {
+      const gameId = String(p.gameId || p.game_id || '').trim();
+      const market = p.market === 'total' ? 'total' : 'spread';
+      const side = String(p.side || '').trim();
+      const pick = String(p.pick || '').trim();
+      if (!gameId || !pick || !side) continue;
+      const line = Number.isFinite(Number(p.line)) ? Number(p.line) : null;
+      await pool.query(
+        `INSERT INTO pool_cards
+           (sport, week, player, game_id, market, side, pick, line,
+            home_team, away_team, game_time, locked_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+         ON CONFLICT (sport, week, player, game_id, market) DO UPDATE
+           SET side = EXCLUDED.side, pick = EXCLUDED.pick, line = EXCLUDED.line,
+               home_team = EXCLUDED.home_team, away_team = EXCLUDED.away_team,
+               game_time = EXCLUDED.game_time, locked_at = NOW(),
+               result = NULL, actual_home = NULL, actual_away = NULL, graded_at = NULL`,
+        [sport, week, player, gameId, market, side, pick, line,
+         p.homeTeam || null, p.awayTeam || null, model.pickGameTime(p)]);
+      saved++;
+    }
+    console.log(`[CARD] ${player} locked ${saved} pick(s) for ${sport} week ${week}`);
+    res.json({ sport: sport.toUpperCase(), week, player, locked: saved });
+  } catch (err) {
+    console.error('[CARD] lock failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put('/api/pool/:sport/lines', async (req, res) => {
