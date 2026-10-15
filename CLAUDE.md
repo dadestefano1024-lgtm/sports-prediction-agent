@@ -101,9 +101,17 @@ two of them, because six identical picks is one card entered twice.
 Both from Danny's questions, 14 Oct 2026.
 
 The sport buttons were hardcoded All / NBA / NHL / MLB -- **NFL was never in the
-list**, and it is the only sport with picks. The variable's own comment said
-`null = all, 'nba', 'nhl', 'mlb'`. Buttons are built from `data.sports` now, so
-a sport cannot be missing from the filter while sitting in the table.
+list**, and it was the only sport with picks. The variable's own comment said
+`null = all, 'nba', 'nhl', 'mlb'`.
+
+**Then the fix overshot and Danny caught that too.** Building the buttons purely
+from `data.sports` made NBA and NHL disappear the moment they had no picks --
+which is precisely when you want to look at them, because their seasons are
+starting. Both failures are the same shape: a list that does not match reality,
+first too static and then too dynamic. It is now a FIXED order (nfl, nba, nhl,
+mlb) with counts merged in, showing a dimmed `0` instead of vanishing, and any
+sport present in the data but absent from that list is appended -- so a
+hardcoded list can never hide one again.
 
 `overall`, `byMarket` and `byConfidence` mixed pool entries with NFL-tab picks.
 `getClvStats` had already been fixed for exactly this and says so in its own

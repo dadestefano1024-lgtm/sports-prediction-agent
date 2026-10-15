@@ -2447,11 +2447,25 @@
       // count shows which ones actually have something.
       const SPORT_LABEL = { nfl: '\u{1F3C8} NFL', nba: '\u{1F3C0} NBA',
                             nhl: '\u{1F3D2} NHL', mlb: '\u26BE MLB' };
-      const haveSports = (data.sports || []).filter(r => r && r.sport);
+      // ALL FOUR SPORTS, ALWAYS. Hardcoding the list left NFL out for the whole
+      // season; then building it purely from the data made NBA and NHL vanish
+      // the moment they had no picks -- which is exactly when you want to look,
+      // because their seasons are starting. So: a fixed set in a fixed order
+      // with counts merged in, showing 0 rather than the tab disappearing. A
+      // sport the data knows about but this list does not is appended, so a
+      // hardcoded list can never hide one again.
+      const SPORT_ORDER = ['nfl', 'nba', 'nhl', 'mlb'];
+      const sportCounts = {};
+      for (const r of (data.sports || [])) {
+        if (r && r.sport) sportCounts[r.sport] = r.n;
+      }
+      const haveSports = [...SPORT_ORDER,
+                          ...Object.keys(sportCounts).filter(sp => !SPORT_ORDER.includes(sp))]
+        .map(sp => ({ sport: sp, n: sportCounts[sp] || 0 }));
       const filtersHTML = `
         <div class="history-filters">
           <button class="filter-btn ${historyFilter === null ? 'active' : ''}" onclick="setHistoryFilter(null, this)">All Sports</button>
-          ${haveSports.map(r => `<button class="filter-btn ${historyFilter === r.sport ? 'active' : ''}" onclick="setHistoryFilter('${r.sport}', this)">${SPORT_LABEL[r.sport] || String(r.sport).toUpperCase()} <span style="opacity:.55">${r.n}</span></button>`).join('')}
+          ${haveSports.map(r => `<button class="filter-btn ${historyFilter === r.sport ? 'active' : ''}" onclick="setHistoryFilter('${r.sport}', this)" style="${r.n ? '' : 'opacity:.5'}">${SPORT_LABEL[r.sport] || String(r.sport).toUpperCase()} <span style="opacity:.55">${r.n}</span></button>`).join('')}
         </div>`;
 
       // THE RECORD, SPLIT BY SOURCE. A Pick 6 entry bets a number frozen on
