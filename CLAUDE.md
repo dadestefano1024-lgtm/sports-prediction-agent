@@ -83,6 +83,20 @@ Each cost real work. Numbers, not opinions.
 | Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
 | Backing home at every opener (the drift itself) | +0.228 CLV, which is below the ~0.25 needed to clear the vig, and the win rate is 49.0% | `epa-test.js`, `frozen-test.js` |
 
+**Two players, two cards, but NOT two samples.** Danny raised it as soon as the
+locked-card work landed: he and Logan pick off the same shared lines and the
+same ranking, so they can easily take five of the same six. Worked example --
+12 legs, 7 distinct bets, 5 shared. **A record that adds their legs reads as 12
+observations while holding about 7, overstating the sample by 71%**, and the
+shared five win or lose together rather than independently.
+
+This is the same arithmetic that made 60 raw pool rows look like a record when
+there were 29 cards. Nothing pools the two players today; the card endpoint
+reports `overlap` (`legs`, `distinct`, `shared`, `sharedPicks`) anyway, so
+whatever pools them later cannot pretend otherwise. **Read `distinct`, never
+`legs`, when asking how much evidence a week carries.** The panel also tells the
+two of them, because six identical picks is one card entered twice.
+
 **The History tab had no NFL filter, and its record mixed two different bets.**
 Both from Danny's questions, 14 Oct 2026.
 

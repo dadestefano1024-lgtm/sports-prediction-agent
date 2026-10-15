@@ -1918,6 +1918,10 @@
     const POOL_PLAYERS = ['Danny', 'Logan'];
     let cardPicks = {};     // key -> the pick object, for the player on screen
     let lockedCards = {};   // player -> { picks, wins, ... } from the server
+    // How much the two cards actually differ. Two people picking off the same
+    // ranking can land on nearly the same six, and then the week carries far
+    // less evidence than the leg count suggests.
+    let cardOverlap = null;
 
     const cardKey = (c) => `${c.gameId}|${c.market}`;
 
@@ -1976,7 +1980,8 @@
         const res = await fetch('/api/pool/nfl/card' + (nflWeek ? `?week=${nflWeek}` : ''));
         const out = await res.json();
         lockedCards = out.cards || {};
-      } catch (e) { lockedCards = {}; }
+        cardOverlap = out.overlap || null;
+      } catch (e) { lockedCards = {}; cardOverlap = null; }
       renderLockPanel();
     }
 
@@ -2042,10 +2047,21 @@
             c.picks.map(p => p.pick).join(' &middot; ') + `</div>`;
         }).join('');
 
+      // Worth saying out loud to the players as well as to the maths: six
+      // identical picks is one card entered twice.
+      const ov = cardOverlap;
+      const overlapLine = (ov && ov.players > 1)
+        ? `<div class="pl-other">You share <strong>${ov.shared}</strong> of
+             ${ov.distinct} different picks` +
+          (ov.shared ? ` &mdash; ${ov.sharedPicks.map(x => x.pick).join(', ')}` : '') +
+          `. ${ov.shared >= 5 ? 'Near-identical cards win and lose together.' : ''}</div>`
+        : '';
+
       host.innerHTML = `<div class="pl-wrap">
         <div class="pl-tabs">${tabs}</div>
         ${body}
         ${other}
+        ${overlapLine}
       </div>`;
     }
 

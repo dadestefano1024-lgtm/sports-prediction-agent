@@ -4137,7 +4137,33 @@ app.get('/api/pool/:sport/card', async (req, res) => {
       c.perfect = c.picks.length > 0 && c.wins === c.picks.length;
       c.blown = c.picks.some(p => p.result && p.result !== 'win');
     }
-    res.json({ sport: sport.toUpperCase(), week, available: true, cards });
+    // OVERLAP, because two cards are not two independent samples. Danny and
+    // Logan pick off the same shared lines and the same ranking, so they can
+    // easily land on five of the same six -- and then a record built by adding
+    // their legs together reads as twelve observations when it holds about
+    // seven. That is the same arithmetic that made 60 pool rows look like a
+    // record when there were 29 cards.
+    //
+    // Nothing pools them today. This ships with the feature so that whatever
+    // does pool them later cannot pretend the sample is bigger than it is.
+    const byPick = new Map();
+    for (const r of rows) {
+      const k = `${r.game_id}|${r.market}|${r.side}`;
+      if (!byPick.has(k)) byPick.set(k, { pick: r.pick, players: [] });
+      byPick.get(k).players.push(r.player);
+    }
+    const sharedPicks = [...byPick.values()].filter(v => v.players.length > 1);
+    const overlap = {
+      players: Object.keys(cards).length,
+      legs: rows.length,
+      // Distinct bets on the board across everybody.
+      distinct: byPick.size,
+      shared: sharedPicks.length,
+      sharedPicks: sharedPicks.map(v => ({ pick: v.pick, players: v.players })),
+      // Read this, not `legs`, when asking how much evidence a week carries.
+      note: 'legs overstates the sample; distinct is the number of different bets',
+    };
+    res.json({ sport: sport.toUpperCase(), week, available: true, cards, overlap });
   } catch (err) {
     console.error('[CARD] read failed:', err.message);
     res.status(500).json({ error: err.message });
