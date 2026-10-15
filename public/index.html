@@ -350,6 +350,42 @@
       background: #1c1408; border-left: 3px solid #d29922; color: #d6b656;
     }
     .sit-flag.high { background: #2a1215; border-left-color: #f85149; color: #f0a0a0; }
+    /* Locked cards: two players, their own six, the same shared lines. */
+    .pl-wrap { border: 1px solid #21262d; border-radius: 8px; background: #10151c;
+               padding: 10px 12px; margin: 0 0 14px; }
+    .pl-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+    .pl-tab { background: transparent; border: 1px solid #21262d; color: #8b949e;
+              border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+    .pl-tab.on { color: #c9d1d9; border-color: #1f6feb; background: #161b22; }
+    .pl-lk { font-size: 10px; color: #3fb950; }
+    .pl-opts { display: grid; grid-template-columns: 1fr; gap: 5px; }
+    @media (min-width: 640px) { .pl-opts { grid-template-columns: 1fr 1fr; } }
+    .pl-opt { display: flex; align-items: baseline; gap: 7px; text-align: left;
+              background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+              padding: 7px 9px; cursor: pointer; font-size: 12px; color: #c9d1d9; }
+    .pl-opt.on { border-color: #1f6feb; background: #0f1d33; }
+    .pl-pick { font-weight: 600; color: #c9d1d9; }
+    .pl-pc { color: #8b949e; font-size: 11px; }
+    .pl-game { color: #6e7681; font-size: 11px; margin-left: auto; text-align: right; }
+    .pl-card .pl-row { display: flex; align-items: baseline; gap: 8px;
+                       padding: 6px 0; font-size: 12px; }
+    .pl-card .pl-row + .pl-row { border-top: 1px solid #1b2127; }
+    .pl-w { color: #3fb950; font-weight: 700; }
+    .pl-l { color: #f85149; font-weight: 700; }
+    .pl-p { color: #d29922; font-weight: 700; }
+    .pl-o { color: #6e7681; }
+    .pl-foot { margin-top: 9px; padding-top: 8px; border-top: 1px solid #21262d;
+               font-size: 12px; color: #8b949e; display: flex; align-items: center;
+               gap: 10px; flex-wrap: wrap; }
+    .pl-lock { background: #1f6feb; border: none; color: #fff; border-radius: 6px;
+               padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .pl-lock:disabled { background: #21262d; color: #6e7681; cursor: default; }
+    .pl-redo { background: transparent; border: 1px solid #21262d; color: #8b949e;
+               border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; }
+    .pl-warn { color: #f85149; font-size: 11px; }
+    .pl-none { color: #6e7681; font-size: 12px; }
+    .pl-other { margin-top: 9px; padding-top: 8px; border-top: 1px solid #21262d;
+                font-size: 11px; color: #6e7681; line-height: 1.6; }
     .pool-flag {
       font-size: 11px; color: #58a6ff; margin-top: 5px;
       padding-top: 5px; border-top: 1px solid #21262d;
@@ -1861,6 +1897,158 @@
       </div>`;
     }
 
+    // Every candidate from the last ranking, so a card can be built from any
+    // of them rather than only the app's own six.
+    let poolCandidates = [];
+
+    // ---- LOCKED CARDS -------------------------------------------------------
+    // Danny and Logan play the same pool off the same shared lines but enter
+    // their own six, so a card belongs to a player.
+    //
+    // This exists because the app could not tell which six were ever actually
+    // played. It recorded its own ranking on every tab load -- nine rows from
+    // four runs for a six-pick week -- and every rule for picking "the real one"
+    // fails: the last run of the week drops a Thursday pick that already won,
+    // and the last run before kickoff rejects the real week-5 card, which was
+    // saved 41 minutes AFTER its London game kicked off. So it stops inferring
+    // and records the card when it is locked.
+    let poolPlayer = (() => {
+      try { return localStorage.getItem('poolPlayer') || 'Danny'; } catch (e) { return 'Danny'; }
+    })();
+    const POOL_PLAYERS = ['Danny', 'Logan'];
+    let cardPicks = {};     // key -> the pick object, for the player on screen
+    let lockedCards = {};   // player -> { picks, wins, ... } from the server
+
+    const cardKey = (c) => `${c.gameId}|${c.market}`;
+
+    function setPoolPlayer(name) {
+      poolPlayer = name;
+      try { localStorage.setItem('poolPlayer', name); } catch (e) {}
+      // A selection belongs to the player who made it, so switching clears it
+      // rather than carrying Danny's half-built card over to Logan.
+      cardPicks = {};
+      renderLockPanel();
+    }
+
+    function toggleCardPick(key) {
+      if (cardPicks[key]) { delete cardPicks[key]; renderLockPanel(); return; }
+      if (Object.keys(cardPicks).length >= 6) return;   // six is the pool
+      const c = (poolCandidates || []).find(x => cardKey(x) === key);
+      if (c) cardPicks[key] = c;
+      renderLockPanel();
+    }
+
+    async function lockCard() {
+      const picks = Object.values(cardPicks);
+      if (!picks.length) return;
+      const btn = document.getElementById('lock-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Locking...'; }
+      try {
+        const body = {
+          player: poolPlayer,
+          week: nflWeek || undefined,
+          picks: picks.map(c => ({
+            gameId: c.gameId, market: c.market, side: c.side, pick: c.pick,
+            line: c.poolLine,
+            homeTeam: c.homeTeam || null, awayTeam: c.awayTeam || null,
+            startTime: c.startTime || null,
+          })),
+        };
+        const res = await fetch('/api/pool/nfl/card', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const out = await res.json();
+        if (out.error) throw new Error(out.error);
+        cardPicks = {};
+        await loadLockedCards();
+      } catch (e) {
+        const w = document.getElementById('lock-warn');
+        if (w) w.textContent = 'Could not lock: ' + e.message;
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Lock ' + poolPlayer + "'s six"; }
+      }
+    }
+
+    async function loadLockedCards() {
+      try {
+        const res = await fetch('/api/pool/nfl/card' + (nflWeek ? `?week=${nflWeek}` : ''));
+        const out = await res.json();
+        lockedCards = out.cards || {};
+      } catch (e) { lockedCards = {}; }
+      renderLockPanel();
+    }
+
+    function renderLockPanel() {
+      const host = document.getElementById('lock-panel');
+      if (!host) return;
+      const cands = poolCandidates || [];
+      const chosen = Object.keys(cardPicks).length;
+
+      const tabs = POOL_PLAYERS.map(n =>
+        `<button class="pl-tab ${n === poolPlayer ? 'on' : ''}" onclick="setPoolPlayer('${n}')">${n}` +
+        (lockedCards[n] ? ' <span class="pl-lk">locked</span>' : '') + `</button>`).join('');
+
+      // Already locked: show it and do not offer the picker again, because a
+      // re-lock replaces the card and that should be deliberate.
+      const mine = lockedCards[poolPlayer];
+      let body;
+      if (mine && !chosen) {
+        const mark = (r) => r === 'win' ? '<span class="pl-w">W</span>'
+          : r === 'loss' ? '<span class="pl-l">L</span>'
+          : r === 'push' ? '<span class="pl-p">P</span>' : '<span class="pl-o">&middot;</span>';
+        body = `<div class="pl-card">
+          ${mine.picks.map(p => `<div class="pl-row">${mark(p.result)}
+            <span class="pl-pick">${p.pick}</span>
+            <span class="pl-game">${(p.away_team || '')} @ ${(p.home_team || '')}</span></div>`).join('')}
+          <div class="pl-foot">
+            ${mine.wins}-${mine.losses}${mine.pushes ? '-' + mine.pushes : ''}
+            ${mine.pending ? ` &middot; ${mine.pending} to play` : ''}
+            ${mine.perfect ? ' &middot; <strong class="pl-w">6-0</strong>'
+              : mine.blown ? ' &middot; <span class="pl-l">busted</span>' : ''}
+            &middot; locked ${new Date(mine.lockedAt).toLocaleString()}
+            <button class="pl-redo" onclick="cardPicks={};lockedCards[poolPlayer]=null;renderLockPanel()">re-pick</button>
+          </div>
+        </div>`;
+      } else if (!cands.length) {
+        body = `<div class="pl-none">Rank the week first &mdash; the candidates come from that.</div>`;
+      } else {
+        const row = (c) => {
+          const k = cardKey(c);
+          const on = !!cardPicks[k];
+          const pc = Number.isFinite(c.winProb) ? (c.winProb * 100).toFixed(1) + '%' : '';
+          return `<button class="pl-opt ${on ? 'on' : ''}" onclick="toggleCardPick('${k}')">
+            <span class="pl-pick">${c.pick}</span>
+            <span class="pl-pc">${pc}</span>
+            <span class="pl-game">${c.matchup || ''}</span></button>`;
+        };
+        body = `<div class="pl-opts">${cands.map(row).join('')}</div>
+          <div class="pl-foot">
+            <strong>${chosen} of 6</strong> chosen for ${poolPlayer}
+            <button class="pl-lock" id="lock-btn" ${chosen ? '' : 'disabled'} onclick="lockCard()">Lock ${poolPlayer}&rsquo;s six</button>
+            <span id="lock-warn" class="pl-warn"></span>
+          </div>`;
+      }
+
+      // The other player's card, read-only, because half the point is seeing
+      // what the other one did.
+      const other = POOL_PLAYERS.filter(n => n !== poolPlayer)
+        .map(n => {
+          const c = lockedCards[n];
+          if (!c) return `<div class="pl-other"><strong>${n}</strong> has not locked yet</div>`;
+          return `<div class="pl-other"><strong>${n}</strong> ${c.wins}-${c.losses}${c.pushes ? '-' + c.pushes : ''}` +
+            `${c.pending ? ` &middot; ${c.pending} to play` : ''} &middot; ` +
+            c.picks.map(p => p.pick).join(' &middot; ') + `</div>`;
+        }).join('');
+
+      host.innerHTML = `<div class="pl-wrap">
+        <div class="pl-tabs">${tabs}</div>
+        ${body}
+        ${other}
+      </div>`;
+    }
+
     function renderPool() {
       // Shared first. A row the server has beats the local copy, because the
       // local copy is whatever THIS browser last typed and the server's is what
@@ -2051,6 +2239,10 @@
         // same code, with the pool arithmetic injected at the top of each body
         // — so the thing that makes a Pick 6 a Pick 6 sits above everything the
         // live tab already knew about the game.
+        // Danny and Logan pick their own six, so the picker needs every
+        // candidate, not just the ones the app ranked top.
+        poolCandidates = (data.ranked && data.ranked.length
+          ? data.ranked : (data.best || [])).filter(c => c && c.pick && c.gameId);
         const picks = data.best || [];
         const byGame = {};
         for (const b of picks) byGame[b.gameId] = b;
@@ -2086,8 +2278,13 @@
               &mdash; from the ${withLines} game${withLines === 1 ? '' : 's'} you have lines for</span></h3>
           ${edgeLine}
           ${cardOddsHTML(data.card)}
+          <div id="lock-panel"></div>
           <div id="p6-cards"><div class="loading"><div class="spinner"></div>
             <div>Loading the full read on these six...</div></div></div>`;
+
+        // After the markup exists, never before -- renderLockPanel looks the
+        // mount point up by id and silently returns if it is not there yet.
+        loadLockedCards();
 
 
         try {
