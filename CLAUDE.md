@@ -83,6 +83,24 @@ Each cost real work. Numbers, not opinions.
 | Using a model to PREDICT the line movement, then betting the opener | Fails, and only visibly so once the right baseline is used. Lines drift **+0.228 pts toward home** open-to-close, so raw CLV flatters anything home-leaning and the model leans home 56.6% of the time. Against backing home at every opener, the EXCESS CLV is negative in every bucket, and at 6+ points of disagreement it is −1.000 with a 28.6% win rate — the model's strongest opinions are its worst | `epa-test.js` |
 | Backing home at every opener (the drift itself) | +0.228 CLV, which is below the ~0.25 needed to clear the vig, and the win rate is 49.0% | `epa-test.js`, `frozen-test.js` |
 
+**The picker only offered the app's own side.** Danny could not lock his week-6
+six: `candidates` holds ONE side per market per game, because `poolEdge` returns
+the side it prefers and that list exists to be ranked. A card is not a ranking.
+The POST now also returns `options` -- **both sides of both markets, four per
+game** -- and the picker reads that, with the app's own side marked so 28 rows
+do not read as 28 suggestions.
+
+The other side's probability is `otherSideProb`, **not `1 - winProb`**: the two
+sides sum to 91.1% on a 3-point line, and the missing 8.9% is the push, which
+LOSES for both sides in this pool. Using the complement would hand the push back
+as a win to whichever side was computed second.
+
+**And a stray process:** a test server started 14 Oct with
+`run_in_background` and a 5-minute limit was still running on 19 Oct, blocking
+Danny's Claude update. It cost nothing -- the log is 177 bytes, no odds key, no
+Anthropic key, no database, idle after boot -- but **stop a background server in
+the same step that starts it** rather than trusting the timeout.
+
 **Two players, two cards, but NOT two samples.** Danny raised it as soon as the
 locked-card work landed: he and Logan pick off the same shared lines and the
 same ranking, so they can easily take five of the same six. Worked example --

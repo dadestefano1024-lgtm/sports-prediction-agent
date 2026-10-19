@@ -4499,6 +4499,9 @@ app.post('/api/pool/:sport', async (req, res) => {
     const events = wk.events;
 
     const candidates = [];
+    // Every pickable side on the board, for the player's own card. Separate
+    // from `candidates`, which is the ranking's input and holds one side each.
+    const poolOptions = [];
     const roundingSample = { spread: [], total: [] };
     const games = [];
     for (const event of events) {
@@ -4637,6 +4640,52 @@ app.post('/api/pool/:sport', async (req, res) => {
       }
       if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved, headwind: headwind(edge.spread.side), homeMarketSpread: marketSpread });
       if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved });
+
+      // EVERY option, both sides of both markets.
+      //
+      // `candidates` above carries ONE side per market, whichever poolEdge
+      // prefers, because its job is to rank. A player's card is not a ranking:
+      // Danny could not lock his six for week 6 because the side he wanted was
+      // simply not offered. Four options per game, and the ranking is unchanged.
+      //
+      // otherSideProb already treats a push as a LOSS, which is this pool's
+      // rule, so it is the right probability for the side the app passed over
+      // -- not 1 minus winProb, which would hand the push back as a win.
+      const optSign = (n) => `${n > 0 ? '+' : ''}${n}`;
+      if (edge.spread) {
+        const e = edge.spread;
+        const forSide = (side) => ({
+          gameId: event.id, market: 'spread', side, matchup: label,
+          pick: side === 'home' ? `${homeFull} ${optSign(e.homeLine)}`
+                                : `${awayFull} ${optSign(e.awayLine)}`,
+          poolLine: side === 'home' ? e.homeLine : e.awayLine,
+          marketLine: e.marketLine,
+          winProb: side === e.side ? e.winProb : e.otherSideProb,
+          pushProb: e.pushProb, deadProb: e.deadProb, bothLay: e.bothLay,
+          shape: e.shape, tested: e.tested,
+          appPick: side === e.side,
+          homeTeam: homeFull, awayTeam: awayFull, startTime: event.date,
+        });
+        if (Number.isFinite(e.homeLine)) poolOptions.push(forSide('home'));
+        if (Number.isFinite(e.awayLine)) poolOptions.push(forSide('away'));
+      }
+      if (edge.total) {
+        const e = edge.total;
+        const forSide = (side) => ({
+          gameId: event.id, market: 'total', side, matchup: label,
+          pick: `${side === 'over' ? 'Over' : 'Under'} ${e.poolLine}`,
+          poolLine: e.poolLine, marketLine: e.marketLine,
+          winProb: side === e.side ? e.winProb : e.otherSideProb,
+          pushProb: e.pushProb, deadProb: e.deadProb, bothLay: false,
+          shape: e.shape, tested: e.tested,
+          appPick: side === e.side,
+          homeTeam: homeFull, awayTeam: awayFull, startTime: event.date,
+        });
+        if (Number.isFinite(e.poolLine)) {
+          poolOptions.push(forSide('over'));
+          poolOptions.push(forSide('under'));
+        }
+      }
     }
 
     // Where the card was posted, recovered from the card itself.
@@ -4700,6 +4749,11 @@ app.post('/api/pool/:sport', async (req, res) => {
       // than from the predictions path, which only knows a pool line once it has
       // been saved to the database.
       ranked: model.rankPoolPicks(candidates, candidates.length),
+      // Everything a card can be built from -- both sides of both markets --
+      // sorted so the app's own preference leads each game but the other side
+      // is always there. The picker reads this; the ranking reads `ranked`.
+      options: poolOptions.sort((a, b) =>
+        (b.winProb || 0) - (a.winProb || 0)),
       considered: candidates.length,
       // Where the card came from, and why it is empty when it is. A clean 200
       // carrying nothing is indistinguishable from a week with no edges, and

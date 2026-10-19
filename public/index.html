@@ -366,6 +366,7 @@
     .pl-opt.on { border-color: #1f6feb; background: #0f1d33; }
     .pl-pick { font-weight: 600; color: #c9d1d9; }
     .pl-pc { color: #8b949e; font-size: 11px; }
+    .pl-star { color: #1f6feb; font-size: 10px; }
     .pl-game { color: #6e7681; font-size: 11px; margin-left: auto; text-align: right; }
     .pl-card .pl-row { display: flex; align-items: baseline; gap: 8px;
                        padding: 6px 0; font-size: 12px; }
@@ -2023,8 +2024,12 @@
           const k = cardKey(c);
           const on = !!cardPicks[k];
           const pc = Number.isFinite(c.winProb) ? (c.winProb * 100).toFixed(1) + '%' : '';
+          // The app's preferred side is marked, because offering both sides of
+          // every game means most options are ones it did not pick -- and an
+          // unmarked list of 28 reads as 28 suggestions.
+          const star = c.appPick ? '<span class="pl-star" title="the app’s side">★</span>' : '';
           return `<button class="pl-opt ${on ? 'on' : ''}" onclick="toggleCardPick('${k}')">
-            <span class="pl-pick">${c.pick}</span>
+            <span class="pl-pick">${c.pick}</span>${star}
             <span class="pl-pc">${pc}</span>
             <span class="pl-game">${c.matchup || ''}</span></button>`;
         };
@@ -2255,10 +2260,13 @@
         // same code, with the pool arithmetic injected at the top of each body
         // — so the thing that makes a Pick 6 a Pick 6 sits above everything the
         // live tab already knew about the game.
-        // Danny and Logan pick their own six, so the picker needs every
-        // candidate, not just the ones the app ranked top.
-        poolCandidates = (data.ranked && data.ranked.length
-          ? data.ranked : (data.best || [])).filter(c => c && c.pick && c.gameId);
+        // EVERY SIDE, not every candidate. `ranked` carries one side per market
+        // -- whichever the app prefers -- because it is a ranking. A card is not
+        // a ranking: Danny could not lock week 6 because the side he wanted was
+        // never offered. `options` is both sides of both markets.
+        poolCandidates = (data.options && data.options.length ? data.options
+          : (data.ranked && data.ranked.length ? data.ranked : (data.best || [])))
+          .filter(c => c && c.pick && c.gameId);
         const picks = data.best || [];
         const byGame = {};
         for (const b of picks) byGame[b.gameId] = b;
