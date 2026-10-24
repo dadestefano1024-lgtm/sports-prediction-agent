@@ -1,0 +1,128 @@
+[
+ {
+  "id": "401873010",
+  "date": "2026-10-23T00:15Z",
+  "home": "Chicago Bears",
+  "homeShort": "Bears",
+  "away": "New England Patriots",
+  "awayShort": "Patriots",
+  "week": 7
+ },
+ {
+  "id": "401873011",
+  "date": "2026-10-25T13:30Z",
+  "home": "New Orleans Saints",
+  "homeShort": "Saints",
+  "away": "Pittsburgh Steelers",
+  "awayShort": "Steelers",
+  "week": 7
+ },
+ {
+  "id": "401873017",
+  "date": "2026-10-25T17:00Z",
+  "home": "Atlanta Falcons",
+  "homeShort": "Falcons",
+  "away": "San Francisco 49ers",
+  "awayShort": "49ers",
+  "week": 7
+ },
+ {
+  "id": "401873013",
+  "date": "2026-10-25T17:00Z",
+  "home": "Tennessee Titans",
+  "homeShort": "Titans",
+  "away": "Cleveland Browns",
+  "awayShort": "Browns",
+  "week": 7
+ },
+ {
+  "id": "401873014",
+  "date": "2026-10-25T17:00Z",
+  "home": "Minnesota Vikings",
+  "homeShort": "Vikings",
+  "away": "Indianapolis Colts",
+  "awayShort": "Colts",
+  "week": 7
+ },
+ {
+  "id": "401873015",
+  "date": "2026-10-25T17:00Z",
+  "home": "New York Jets",
+  "homeShort": "Jets",
+  "away": "Miami Dolphins",
+  "awayShort": "Dolphins",
+  "week": 7
+ },
+ {
+  "id": "401873018",
+  "date": "2026-10-25T17:00Z",
+  "home": "Carolina Panthers",
+  "homeShort": "Panthers",
+  "away": "Tampa Bay Buccaneers",
+  "awayShort": "Buccaneers",
+  "week": 7
+ },
+ {
+  "id": "401873012",
+  "date": "2026-10-25T17:00Z",
+  "home": "Baltimore Ravens",
+  "homeShort": "Ravens",
+  "away": "Cincinnati Bengals",
+  "awayShort": "Bengals",
+  "week": 7
+ },
+ {
+  "id": "401873016",
+  "date": "2026-10-25T17:00Z",
+  "home": "Houston Texans",
+  "homeShort": "Texans",
+  "away": "New York Giants",
+  "awayShort": "Giants",
+  "week": 7
+ },
+ {
+  "id": "401873019",
+  "date": "2026-10-25T20:05Z",
+  "home": "Arizona Cardinals",
+  "homeShort": "Cardinals",
+  "away": "Denver Broncos",
+  "awayShort": "Broncos",
+  "week": 7
+ },
+ {
+  "id": "401873020",
+  "date": "2026-10-25T20:25Z",
+  "home": "Detroit Lions",
+  "homeShort": "Lions",
+  "away": "Green Bay Packers",
+  "awayShort": "Packers",
+  "week": 7
+ },
+ {
+  "id": "401873021",
+  "date": "2026-10-25T20:25Z",
+  "home": "Las Vegas Raiders",
+  "homeShort": "Raiders",
+  "away": "Los Angeles Rams",
+  "awayShort": "Rams",
+  "week": 7
+ },
+ {
+  "id": "401873022",
+  "date": "2026-10-26T00:20Z",
+  "home": "Seattle Seahawks",
+  "homeShort": "Seahawks",
+  "away": "Kansas City Chiefs",
+  "awayShort": "Chiefs",
+  "week": 7
+ },
+ {
+  "id": "401873009",
+  "date": "2026-10-27T00:15Z",
+  "home": "Philadelphia Eagles",
+  "homeShort": "Eagles",
+  "away": "Dallas Cowboys",
+  "awayShort": "Cowboys",
+  "week": 7
+ }
+]
