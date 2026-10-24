@@ -2858,6 +2858,10 @@ function travelProb({ movePts, travel, follow }) {
  */
 function poolTier(pick) {
   if (!pick) return 'none';
+  // Belt and braces with the caller, which already withholds travelProb here.
+  // A both-lay game loses BOTH tickets on a margin inside the number, so one
+  // side's loss is not the other's win and nothing in the sweep describes it.
+  if (pick.bothLay) return 'none';
   const q = pick.travelProb;
   if (!q || !Number.isFinite(q.p)) return 'none';
   if (!pick.followsMove) return 'none';

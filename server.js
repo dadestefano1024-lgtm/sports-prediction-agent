@@ -4635,6 +4635,19 @@ app.post('/api/pool/:sport', async (req, res) => {
       });
       const travelFor = (side) => {
         if (!Number.isFinite(moved.spreadMovement) || spreadTravel === null) return null;
+        // A BOTH-LAY GAME IS A DIFFERENT INSTRUMENT and the curve cannot speak
+        // about it. When the pool lays points on both sides -- this week's
+        // Bengals -2 / Ravens -2 -- a margin inside the number loses BOTH
+        // tickets, so one side's loss is not the other's win. Every game in the
+        // 690-game sweep was an ordinary mirrored spread where it is, which is
+        // exactly why the curve priced Bengals -2 at 62.1% while the
+        // push-aware winProb had it at 47.1% with 13.1% of the distribution
+        // winning for nobody. It shipped as the top of the card, badged a real
+        // edge, for about ten minutes.
+        //
+        // Returning null is the whole fix: no tier, and cardOdds falls back to
+        // winProb, which models the dead zone properly.
+        if (edge.spread && edge.spread.bothLay) return null;
         // move < 0 means the home number came down: money came in on the home side
         const toward = moved.spreadMovement < 0 ? 'home' : 'away';
         const q = model.travelProb({

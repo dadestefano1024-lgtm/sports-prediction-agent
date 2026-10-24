@@ -3603,3 +3603,37 @@ test('the ranking puts a measured edge above a bigger winProb', () => {
   assert.deepEqual(out.map(x => x.pick), ['real edge', 'weaker edge', 'fades a big move'],
     'tier must outrank winProb');
 });
+
+test('a both-lay game is never an edge, however far the market moved', () => {
+  // SHIPPED DEFECT, caught by verifying the deploy rather than by trusting it.
+  // Week 7's pool laid 2 on BOTH sides of Bengals/Ravens. The market had moved
+  // five points and only 30% of it was absorbed, so the curve priced it 62.1%
+  // and it went out as the top of the card badged "Real edge" -- while the
+  // push-aware winProb had the same bet at 47.1% with 13.1% of the margin
+  // distribution winning for nobody. Every game in the 690-game sweep was an
+  // ordinary mirrored spread where one side's loss is the other's win. A
+  // both-lay pool line is a different instrument and the curve says nothing
+  // about it.
+  const q = m.travelProb({ movePts: 5, travel: 0.3, follow: true });
+  assert.ok(q.p > 0.6, 'the curve itself still prices the move: ' + q.p);
+  assert.equal(
+    m.poolTier({ travelProb: q, movePts: 5, followsMove: true, bothLay: true }), 'none',
+    'but a both-lay pick must never be tiered as an edge');
+  // and the identical pick without the two-sided construction still is one
+  assert.equal(
+    m.poolTier({ travelProb: q, movePts: 5, followsMove: true, bothLay: false }), 'edge');
+});
+
+test('a both-lay leg is priced on winProb, not on the curve', () => {
+  // cardOdds prefers travelProb where it exists, so the guard has to be that
+  // a both-lay leg never carries one -- otherwise the card headline inflates.
+  // Week 7's went out at 1 week in 31 with this leg in it.
+  const bothLay = { winProb: 0.471, pushProb: 0.028, bothLay: true, travelProb: null };
+  const normal = { winProb: 0.471, pushProb: 0.028, bothLay: false,
+                   travelProb: { p: 0.621, measured: true, gate: 'ok' } };
+  const a = m.cardOdds([bothLay, bothLay], { target: 2 });
+  const b = m.cardOdds([normal, normal], { target: 2 });
+  assert.ok(Math.abs(a.perfect - 0.471 * 0.471) < 1e-6,
+    'a both-lay card must price on winProb: ' + a.perfect);
+  assert.ok(b.perfect > a.perfect, 'and the curve-priced one sits higher, as it should');
+});
