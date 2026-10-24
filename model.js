@@ -2663,11 +2663,23 @@ function cardOdds(picks, { target = 6 } = {}) {
                                             p.winProb > 0 && p.winProb <= 1);
   if (!usable.length) return null;
 
-  const perfect = usable.reduce((acc, p) => acc * p.winProb, 1);
+  /**
+   * The probability to price this leg at. The travel curve where it has an
+   * opinion, winProb otherwise.
+   *
+   * This matters more than it looks: winProb prices every leg against the
+   * current line assumed fair, so it lands everything near 51% and the card
+   * headline came out at 1 week in 52 when the measured curves made the same six
+   * 1 in 43. The app was UNDERSELLING its own card by about a fifth.
+   */
+  const legProb = (p) => (p.travelProb && Number.isFinite(p.travelProb.p))
+    ? p.travelProb.p : p.winProb;
+
+  const perfect = usable.reduce((acc, p) => acc * legProb(p), 1);
   // The same card if a push refunded instead of losing — the counterfactual
   // that isolates what the whole numbers are costing.
   const refunded = usable.reduce((acc, p) =>
-    acc * Math.min(1, p.winProb + (Number.isFinite(p.pushProb) ? p.pushProb : 0)), 1);
+    acc * Math.min(1, legProb(p) + (Number.isFinite(p.pushProb) ? p.pushProb : 0)), 1);
 
   const byWin = usable.slice().sort((a, b) => a.winProb - b.winProb);
   const byPush = usable.slice().sort((a, b) =>
@@ -2699,6 +2711,166 @@ function cardOdds(picks, { target = 6 } = {}) {
   };
 }
 
+/**
+ * How much of the market's move the held number has already absorbed, and what
+ * that is worth. The pool's missing piece.
+ *
+ * The edge here was recorded at two points only -- the moved-toward side held at
+ * the OPENING number (59.8% at move>=2) and the same bet at the CLOSE (50.7%),
+ * with the conclusion that "the edge is the NUMBER, not the side". Danny's pool
+ * numbers are at NEITHER. They are posted Wednesday, after part of the move has
+ * already happened, so a card sits somewhere in between and the only question
+ * that matters is where.
+ *
+ * Swept across that gap on the same 690 games (travel-test.js for the followed
+ * side, fade-curve.js for the faded one; 2023-25, a PUSH counted as a LOSS
+ * because here it is). Rows are the move bucket, columns are travel: 0 = he
+ * holds the opener and the whole move is still in front of him, 1 = he holds the
+ * current market and none of it is.
+ *
+ *          0%     25%    50%    75%   100%      n
+ *   >=4  67.9   62.5   60.7   55.4   51.8      56
+ *   >=3  66.0   61.7   60.6   57.4   53.2      94
+ *   >=2  59.8   56.9   56.3   54.0   51.7     174
+ *   any  55.0   54.0   52.0   50.9   50.1     513
+ *
+ * It decays GRADUALLY, so a half-stale number is still worth holding -- but the
+ * gates go first. Per season at move>=2: all three seasons clear the 52.4%
+ * break-even at 0/25/50% absorbed; at 75% all three are above 50% but not above
+ * break-even; at 100% they disagree outright (46.3 / 52.3 / 54.4). Only the 0%
+ * column clears 2.5 SD. Hence the two thresholds below.
+ *
+ * This is what winProb cannot express. winProb centres a margin curve on the
+ * CURRENT line and prices the pool number against it, which assumes that line is
+ * fair -- so the only edge it can ever report is the half point of pool rounding,
+ * and it says 51.2% about a side this prices at 59.5%. It is not wrong, it is
+ * answering a different question, and ranking a Pick 6 on it buries the one edge
+ * that works.
+ */
+const POOL_TRAVEL = [0, 0.25, 0.5, 0.75, 1];
+const POOL_FOLLOW = {
+  4: [0.679, 0.625, 0.607, 0.554, 0.518],
+  3: [0.660, 0.617, 0.606, 0.574, 0.532],
+  2: [0.598, 0.569, 0.563, 0.540, 0.517],
+  0: [0.550, 0.540, 0.520, 0.509, 0.501],
+};
+/**
+ * Backing the side the market moved AWAY from, by the same travel axis.
+ *
+ * Measured rather than taken from the single recorded "fading goes 43.5%",
+ * because that figure is the opener and a card is rarely there. Note fade and
+ * follow are only approximately mirrored: a PUSH loses BOTH sides, so the two
+ * rows sum to about 98.9% rather than 100%.
+ */
+const POOL_FADE = {
+  4: [0.321, 0.375, 0.375, 0.429, 0.482],
+  3: [0.330, 0.383, 0.383, 0.415, 0.468],
+  2: [0.391, 0.425, 0.431, 0.448, 0.483],
+  0: [0.417, 0.458, 0.460, 0.487, 0.499],
+};
+/** Every season clears break-even up to here. */
+const POOL_TRAVEL_OK = 0.5;
+/** Above 50% every season up to here, but not above break-even. */
+const POOL_TRAVEL_THIN = 0.75;
+/**
+ * Converting points into cover probability past the end of the swept range.
+ * The normal density at the mean over the NFL margin SD: 0.3989 / 13.2. Used
+ * ONLY to price a number outside 0..1 travel, and anything that depends on it
+ * is reported as extrapolated and never counted as an edge.
+ */
+const POOL_PTS_TO_PROB = 0.3989 / 13.2;
+
+function poolCurveAt(row, t) {
+  let i = 0;
+  while (i < POOL_TRAVEL.length - 2 && POOL_TRAVEL[i + 1] < t) i++;
+  const span = POOL_TRAVEL[i + 1] - POOL_TRAVEL[i];
+  const f = span <= 0 ? 0 : (t - POOL_TRAVEL[i]) / span;
+  return row[i] + (row[i + 1] - row[i]) * f;
+}
+
+/**
+ * How much of a move a held number has absorbed. 0 = it is still the opener,
+ * 1 = it has caught up with the market, >1 = it is now WORSE than the market.
+ * Null when there is no move to have absorbed.
+ */
+function poolTravel({ openLine, movePts, poolLine }) {
+  if (![openLine, movePts, poolLine].every(Number.isFinite)) return null;
+  if (Math.abs(movePts) < 0.01) return null;
+  // `+ 0` normalises negative zero. Holding exactly the opener against a
+  // downward move gives -0, which is numerically fine and reads as "-0%".
+  return ((poolLine - openLine) / movePts) + 0;
+}
+
+/**
+ * Price one side of a pool game off the measured curves.
+ *
+ * Returns null when there is nothing to price. Otherwise { p, measured, basis,
+ * gate }, where `measured` is false for anything leaning on POOL_PTS_TO_PROB.
+ *
+ * Travel outside 0..1 is EXTRAPOLATION and is labelled as such rather than
+ * clamped. Clamping was the first implementation and it priced a number worse
+ * than the market as though it sat exactly at the market -- six of one week's
+ * sides, one of them a full point the wrong side, all served at the 100% column
+ * as if they had earned it.
+ */
+function travelProb({ movePts, travel, follow }) {
+  const mv = Math.abs(Number(movePts));
+  if (!Number.isFinite(mv) || mv < 0.5) return null;
+  if (!Number.isFinite(travel)) return null;
+  const table = follow ? POOL_FOLLOW : POOL_FADE;
+  const row = table[mv >= 4 ? 4 : mv >= 3 ? 3 : mv >= 2 ? 2 : 0];
+  const t = Math.max(0, Math.min(1, travel));
+  let p = poolCurveAt(row, t);
+  let measured = true;
+  let basis = 'measured';
+  if (travel > 1) {
+    const excess = (travel - 1) * mv;          // points held worse than the market
+    p += (follow ? -1 : 1) * excess * POOL_PTS_TO_PROB;
+    measured = false;
+    basis = 'extrapolated: ' + excess.toFixed(1) + 'pt past the market';
+  } else if (travel < 0) {
+    const extra = -travel * mv;                // points held better than the opener
+    p += (follow ? 1 : -1) * extra * POOL_PTS_TO_PROB;
+    measured = false;
+    basis = 'extrapolated: ' + extra.toFixed(1) + 'pt better than the open';
+  }
+  return {
+    p: Math.max(0.05, Math.min(0.95, p)),
+    measured,
+    basis,
+    gate: t <= POOL_TRAVEL_OK ? 'ok' : t <= POOL_TRAVEL_THIN ? 'thin' : 'past',
+  };
+}
+
+/**
+ * Which of three tiers a pool pick is in. This is what gets coloured on screen
+ * and what sorts the card, because the pool demands six picks whether or not six
+ * of them are any good — and the honest version of "here are your six" marks
+ * which ones are actually edges rather than presenting all six alike.
+ *
+ *   'edge'  the market moved 2+ points toward this side and the number has
+ *           absorbed half of it or less. Every season clears break-even here.
+ *   'thin'  real but weaker: either 50-75% absorbed on a 2+ point move (above
+ *           50% every season, not above break-even), or a smaller move held at
+ *           the opener (the 'any' row, 55.0% at +2.25 SD).
+ *   'none'  no measured edge. Fades a move, has no move, has absorbed more than
+ *           three quarters of it, or rests on extrapolation. Filler.
+ */
+function poolTier(pick) {
+  if (!pick) return 'none';
+  const q = pick.travelProb;
+  if (!q || !Number.isFinite(q.p)) return 'none';
+  if (!pick.followsMove) return 'none';
+  if (!q.measured) return 'none';
+  const mv = Math.abs(Number(pick.movePts) || 0);
+  if (mv >= 2 && q.gate === 'ok') return 'edge';
+  if (mv >= 2 && q.gate === 'thin') return 'thin';
+  if (mv >= 0.5 && q.gate === 'ok') return 'thin';
+  return 'none';
+}
+
+const POOL_TIER_RANK = { edge: 0, thin: 1, none: 2 };
+
 function rankPoolPicks(candidates, count = 6) {
   return (candidates || [])
     // A candidate with no usable probability is dropped rather than sorted to
@@ -2706,6 +2878,23 @@ function rankPoolPicks(candidates, count = 6) {
     .filter(c => c && Number.isFinite(c.winProb))
     .slice()
     .sort((a, b) => {
+      // TIER FIRST. The travel curve is the only measured edge this pool has, so
+      // a side it can vouch for outranks one it cannot, regardless of either
+      // model probability. Without this the card fills from the top on winProb
+      // and buries the edge: week 7's strongest side sat FOURTH on winProb, and
+      // two sides FADING five-point moves sat second and third.
+      //
+      // Tier never depends on the extrapolated conversion, so a number held past
+      // the market cannot climb into the top of the card on arithmetic the sweep
+      // never measured. That happened in the first cut -- a side ranked fourth at
+      // 52.9% almost entirely because of the per-point conversion.
+      const atier = POOL_TIER_RANK[a.poolTier] !== undefined ? POOL_TIER_RANK[a.poolTier] : 2;
+      const btier = POOL_TIER_RANK[b.poolTier] !== undefined ? POOL_TIER_RANK[b.poolTier] : 2;
+      if (atier !== btier) return atier - btier;
+      // Inside a tier, the measured number decides where there is one.
+      const am = a.travelProb && Number.isFinite(a.travelProb.p) ? a.travelProb.p : null;
+      const bm = b.travelProb && Number.isFinite(b.travelProb.p) ? b.travelProb.p : null;
+      if (am !== null && bm !== null && Math.abs(am - bm) > 0.001) return bm - am;
       // Tested before untested, and the REASON matters because the old one was
       // wrong for this tab. It used to say a stale total "does not clear the
       // vig" -- true of a bet, irrelevant to a pool, which has no vig and only
@@ -3730,6 +3919,7 @@ function bestBet({
 }
 
 module.exports = {
+  travelProb, poolTravel, poolTier, POOL_TRAVEL_OK, POOL_TRAVEL_THIN,
   SPORTS,
   sportConfig,
   americanToDecimal,

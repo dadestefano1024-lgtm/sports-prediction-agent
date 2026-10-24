@@ -3473,3 +3473,133 @@ test('centre only accepts the two it knows', () => {
   assert.throws(() => m.marginPmf({ mean: 1, sigma: 3, sport: 'nhl', centre: 'mode' }),
     /median.*mean/);
 });
+
+// ---------------------------------------------------------------------------
+// The travel curve: how much of the market's move the held number has absorbed
+// ---------------------------------------------------------------------------
+
+test('the curve reproduces travel-test.js at every grid point', () => {
+  // If these drift the constants have been edited without re-running the sweep.
+  const grid = [
+    [4.5, 0.00, true, 0.679], [4.5, 0.50, true, 0.607], [4.5, 1.00, true, 0.518],
+    [3.0, 0.00, true, 0.660], [3.0, 1.00, true, 0.532],
+    [2.0, 0.25, true, 0.569], [2.0, 0.75, true, 0.540],
+    [0.5, 0.00, true, 0.550], [0.5, 1.00, true, 0.501],
+    [2.0, 0.00, false, 0.391], [4.0, 1.00, false, 0.482],
+  ];
+  for (const [mv, t, follow, want] of grid) {
+    const q = m.travelProb({ movePts: mv, travel: t, follow });
+    assert.ok(q, `no price for move ${mv} at travel ${t}`);
+    assert.ok(Math.abs(q.p - want) < 1e-9,
+      `move ${mv} travel ${t} follow=${follow}: got ${q.p}, want ${want}`);
+    assert.equal(q.measured, true);
+  }
+});
+
+test('the followed side decays as the number catches up, and never rises', () => {
+  let prev = Infinity;
+  for (const t of [0, 0.2, 0.4, 0.6, 0.8, 1]) {
+    const q = m.travelProb({ movePts: 3, travel: t, follow: true });
+    assert.ok(q.p <= prev + 1e-12, `travel ${t} must not price above ${prev}`);
+    prev = q.p;
+  }
+  // and the fade runs the other way
+  prev = -Infinity;
+  for (const t of [0, 0.2, 0.4, 0.6, 0.8, 1]) {
+    const q = m.travelProb({ movePts: 3, travel: t, follow: false });
+    assert.ok(q.p >= prev - 1e-12, `faded travel ${t} must not price below ${prev}`);
+    prev = q.p;
+  }
+});
+
+test('a number PAST the market prices below the market, and says it is extrapolated', () => {
+  // The defect this pins. The first implementation clamped travel to [0,1], so
+  // a pool number a full point WORSE than the market was priced at the 100%
+  // column as though it sat exactly on it -- six of one week's sides, one of
+  // them served as a 53.2% bet while giving a point away to the books.
+  const atMarket = m.travelProb({ movePts: 3, travel: 1, follow: true });
+  const past = m.travelProb({ movePts: 3, travel: 1.5, follow: true });
+  assert.ok(past.p < atMarket.p,
+    `past the market (${past.p}) must price below it (${atMarket.p})`);
+  assert.equal(past.measured, false);
+  assert.match(past.basis, /extrapolated/);
+  // and on the faded side the same number is BETTER than the market
+  const fAt = m.travelProb({ movePts: 3, travel: 1, follow: false });
+  const fPast = m.travelProb({ movePts: 3, travel: 1.5, follow: false });
+  assert.ok(fPast.p > fAt.p, 'a faded side past the market holds a better number');
+  assert.equal(fPast.measured, false);
+});
+
+test('nothing to price returns null rather than a number', () => {
+  // Negative findings must not look like measurements.
+  assert.equal(m.travelProb({ movePts: 0.2, travel: 0, follow: true }), null,
+    'a move under half a point has no side to back');
+  assert.equal(m.travelProb({ movePts: 3, travel: null, follow: true }), null);
+  assert.equal(m.travelProb({ movePts: null, travel: 0.5, follow: true }), null);
+  assert.equal(m.poolTravel({ openLine: 3, movePts: 0, poolLine: 3 }), null,
+    'no move means no travel');
+  assert.equal(m.poolTravel({ openLine: null, movePts: 2, poolLine: 3 }), null);
+});
+
+test('travel measures how much of the move the pool number already took on', () => {
+  // open +4.5, market now +2.5 (a 2-point move toward home), pool holds +4
+  assert.ok(Math.abs(m.poolTravel({ openLine: 4.5, movePts: -2, poolLine: 4 }) - 0.25) < 1e-9);
+  // holding the opener is zero absorbed; holding the market is all of it
+  assert.equal(m.poolTravel({ openLine: 4.5, movePts: -2, poolLine: 4.5 }), 0);
+  assert.equal(m.poolTravel({ openLine: 4.5, movePts: -2, poolLine: 2.5 }), 1);
+});
+
+test('only a measured, followed, unabsorbed side counts as an edge', () => {
+  const tier = (movePts, travel, follow) => {
+    const q = m.travelProb({ movePts, travel, follow });
+    return m.poolTier({ travelProb: q, movePts, followsMove: follow });
+  };
+  assert.equal(tier(4.5, 0.25, true), 'edge', '2+ pt move, a quarter absorbed');
+  assert.equal(tier(4.5, 0.60, true), 'thin', 'past half absorbed is weaker');
+  assert.equal(tier(4.5, 0.90, true), 'none', 'past three quarters the seasons disagree');
+  assert.equal(tier(0.8, 0.10, true), 'thin', 'a small move held from the opener');
+  assert.equal(tier(4.5, 0.10, false), 'none', 'fading a move is never an edge');
+  // THE RULE THAT MATTERS: extrapolation must never reach the top tier. A side
+  // ranked fourth on a card at 52.9% once came almost entirely from the
+  // per-point conversion, above picks the sweep had actually measured.
+  assert.equal(tier(4.5, 1.40, true), 'none', 'past the market is not an edge');
+  assert.equal(tier(4.5, -0.50, true), 'none',
+    'better than the opener is still outside the sweep, so not an edge');
+  assert.equal(m.poolTier(null), 'none');
+  assert.equal(m.poolTier({}), 'none');
+});
+
+test('the card is priced on the measured number where there is one', () => {
+  // winProb lands everything near 51% because it assumes the current line is
+  // fair, and the headline came out a fifth too long on week 7 -- 1 in 52 when
+  // the measured curves made the same six 1 in 43.
+  const leg = (winProb, p) => ({
+    winProb, pushProb: 0.02,
+    travelProb: p === null ? null : { p, measured: true, basis: 'measured', gate: 'ok' },
+  });
+  const flat = m.cardOdds([leg(0.51, null), leg(0.51, null)], { target: 2 });
+  const measured = m.cardOdds([leg(0.51, 0.60), leg(0.51, 0.60)], { target: 2 });
+  assert.ok(measured.perfect > flat.perfect,
+    'a card of measured 60% legs must price above the same card read at 51%');
+  assert.ok(Math.abs(measured.perfect - 0.36) < 1e-6, `got ${measured.perfect}`);
+  // and a leg with no curve opinion still falls back to winProb
+  const mixed = m.cardOdds([leg(0.50, 0.60), leg(0.40, null)], { target: 2 });
+  assert.ok(Math.abs(mixed.perfect - 0.24) < 1e-6, `got ${mixed.perfect}`);
+});
+
+test('the ranking puts a measured edge above a bigger winProb', () => {
+  // Week 7 is the case: the strongest side on the board sat FOURTH on winProb,
+  // and two sides fading five-point moves sat second and third.
+  const pick = (name, winProb, tierName, p) => ({
+    pick: name, market: 'spread', winProb, gap: 1, tested: true,
+    poolTier: tierName,
+    travelProb: p === null ? null : { p, measured: true, basis: 'measured', gate: 'ok' },
+  });
+  const out = m.rankPoolPicks([
+    pick('fades a big move', 0.529, 'none', 0.497),
+    pick('real edge', 0.512, 'edge', 0.595),
+    pick('weaker edge', 0.546, 'thin', 0.569),
+  ], 3);
+  assert.deepEqual(out.map(x => x.pick), ['real edge', 'weaker edge', 'fades a big move'],
+    'tier must outrank winProb');
+});

@@ -4614,6 +4614,46 @@ app.post('/api/pool/:sport', async (req, res) => {
       // suppressed its own projection because the starting quarterback is out,
       // the market moved four points off them, and the ranking recommended them
       // anyway because it could not see either fact.
+      // The measured edge, per side. Everything needed is already above: the
+      // opening number, what the market has done since, and the number the pool
+      // posted. What was missing was the question -- how much of that move the
+      // held number has ALREADY absorbed -- and the curve that answers it.
+      //
+      // Travel is a property of the GAME, not the side: it is measured on the
+      // home axis, and both sides of a game share it. What differs per side is
+      // whether the move came toward it.
+      //
+      // Totals get nothing. stale-totals-pool.js measured the totals version of
+      // this rule at 51.4% over 401 bets, +0.55 SD, with 2024 on its own at
+      // 49.5% and "always take the over" scoring 50.6% -- so almost all of what
+      // was left was that. Rejected, and a rejected rule does not get a
+      // confident number on screen.
+      const spreadTravel = model.poolTravel({
+        openLine: moved.openSpread,
+        movePts: moved.spreadMovement,
+        poolLine: poolSpread,
+      });
+      const travelFor = (side) => {
+        if (!Number.isFinite(moved.spreadMovement) || spreadTravel === null) return null;
+        // move < 0 means the home number came down: money came in on the home side
+        const toward = moved.spreadMovement < 0 ? 'home' : 'away';
+        const q = model.travelProb({
+          movePts: moved.spreadMovement, travel: spreadTravel, follow: toward === side,
+        });
+        if (!q) return null;
+        return {
+          travelProb: q,
+          movePts: +Math.abs(moved.spreadMovement).toFixed(1),
+          absorbed: +spreadTravel.toFixed(3),
+          followsMove: toward === side,
+        };
+      };
+      // The tier is what gets coloured and what sorts the card.
+      const tierFor = (side) => {
+        const t = travelFor(side);
+        if (!t) return { poolTier: 'none' };
+        return { ...t, poolTier: model.poolTier(t) };
+      };
       const headwind = (side) => {
         if (!Number.isFinite(moved.spreadMovement)) return null;
         const mv = moved.spreadMovement;   // + means the home number grew, home got worse
@@ -4638,7 +4678,7 @@ app.post('/api/pool/:sport', async (req, res) => {
       if (Number.isFinite(poolTotal) && Number.isFinite(marketTotal)) {
         roundingSample.total.push({ poolLine: poolTotal, marketLine: marketTotal });
       }
-      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved, headwind: headwind(edge.spread.side), homeMarketSpread: marketSpread });
+      if (edge.spread) candidates.push({ ...edge.spread, market: 'spread', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved, headwind: headwind(edge.spread.side), homeMarketSpread: marketSpread, ...tierFor(edge.spread.side) });
       if (edge.total) candidates.push({ ...edge.total, market: 'total', gameId: event.id, matchup: label, earlyWeek: early, kickoffDay: day, ...moved });
 
       // EVERY option, both sides of both markets.
@@ -4665,6 +4705,7 @@ app.post('/api/pool/:sport', async (req, res) => {
           shape: e.shape, tested: e.tested,
           appPick: side === e.side,
           homeTeam: homeFull, awayTeam: awayFull, startTime: event.date,
+          ...tierFor(side),
         });
         if (Number.isFinite(e.homeLine)) poolOptions.push(forSide('home'));
         if (Number.isFinite(e.awayLine)) poolOptions.push(forSide('away'));
@@ -4680,6 +4721,9 @@ app.post('/api/pool/:sport', async (req, res) => {
           shape: e.shape, tested: e.tested,
           appPick: side === e.side,
           homeTeam: homeFull, awayTeam: awayFull, startTime: event.date,
+          // explicit, not absent: the totals rule was measured and rejected, and
+          // "no tier" must not read on the client as "not computed yet"
+          poolTier: 'none',
         });
         if (Number.isFinite(e.poolLine)) {
           poolOptions.push(forSide('over'));
@@ -4722,6 +4766,14 @@ app.post('/api/pool/:sport', async (req, res) => {
     }
 
     const best = model.rankPoolPicks(candidates, count);
+    // How many of the card are measured edges rather than filler. The pool
+    // demands six whether or not six are any good, so the count ships with the
+    // card instead of six picks being presented alike.
+    const tierCount = best.reduce((acc, b) => {
+      const t = b.poolTier || 'none';
+      acc[t] = (acc[t] || 0) + 1;
+      return acc;
+    }, { edge: 0, thin: 0, none: 0 });
 
     // Record them, then answer. Awaited rather than fired and forgotten so a
     // database problem shows up in the log next to the request that caused it,
@@ -4748,6 +4800,7 @@ app.post('/api/pool/:sport', async (req, res) => {
       // of leaving most of the board with no opinion on it. Sourced here rather
       // than from the predictions path, which only knows a pool line once it has
       // been saved to the database.
+      tierCount,
       ranked: model.rankPoolPicks(candidates, candidates.length),
       // Everything a card can be built from -- both sides of both markets --
       // sorted so the app's own preference leads each game but the other side

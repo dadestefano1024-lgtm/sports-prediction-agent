@@ -198,6 +198,28 @@
     .avoid-badge { background: #7d4e00; color: #ffd9a0; font-size: 10px; font-weight: 700;
                    text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 6px;
                    border-radius: 3px; vertical-align: 2px; }
+    /* GREEN for a measured edge, and nothing else in the Pick 6 is green.
+       The blue "Recommended" badge used to fire on winProb > 50.005%, which on
+       a card whose lines all sit half a point off the market means almost
+       everything -- twelve picks at exactly 50.0% once wore it. Green now means
+       one specific, measured thing: the market moved 2+ points toward this side
+       and the pool number still holds half that move or more. Every season of
+       the sweep clears break-even there. */
+    .edge-badge { background: #1a7f37; color: #fff; font-size: 10px; font-weight: 700;
+                  text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 6px;
+                  border-radius: 3px; vertical-align: 2px; }
+    /* Blue for the same shape of thing on weaker evidence -- 50-75% of the move
+       absorbed, or a smaller move held from the opener. Above 50% every season
+       but not above break-even every season. */
+    .thin-badge { background: #1f6feb; color: #fff; font-size: 10px; font-weight: 700;
+                  text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 6px;
+                  border-radius: 3px; vertical-align: 2px; }
+    .pool-edge-why { font-size: 11px; color: #3fb950; margin-top: 5px; line-height: 1.45; }
+    .pool-edge-why strong { color: #56d364; }
+    .pool-thin-why { font-size: 11px; color: #58a6ff; margin-top: 5px; line-height: 1.45; }
+    .pool-block-measured { color: #3fb950; font-weight: 700; margin-left: 6px; }
+    .pool-block-thin { color: #58a6ff; font-weight: 700; margin-left: 6px; }
+    .pool-block-app { color: #6e7681; font-size: 11px; margin-left: 5px; font-weight: 400; }
     .pool-filler { font-size: 11px; color: #8b949e; margin-top: 5px; line-height: 1.45; }
     .pool-flat { font-size: 11px; color: #8b949e; margin-top: 5px; line-height: 1.45; }
     .pool-rounding { background: #10151c; border-left: 3px solid #8b949e; border-radius: 4px;
@@ -383,6 +405,8 @@
     .pl-lock:disabled { background: #21262d; color: #6e7681; cursor: default; }
     .pl-redo { background: transparent; border: 1px solid #21262d; color: #8b949e;
                border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; }
+    .pl-edge { color: #3fb950; }
+    .pl-thin { color: #58a6ff; }
     .pl-warn { color: #f85149; font-size: 11px; }
     .pl-none { color: #6e7681; font-size: 12px; }
     .pl-other { margin-top: 9px; padding-top: 8px; border-top: 1px solid #21262d;
@@ -1790,21 +1814,64 @@
       // but underdogs cannot all be edges. The pool still needs six picks, so
       // nothing is withheld; the ones with no edge are labelled as what they
       // are and the slot is filled anyway.
-      const grade = b.grade || (b.winProb > 0.5005 ? 'edge'
-                              : b.winProb < 0.4995 ? 'avoid' : 'coinflip');
+      // THE BADGE FOLLOWS THE MEASURED EDGE, not the slot and not winProb.
+      //
+      // winProb centres a margin curve on the CURRENT market line and prices the
+      // pool number against it, which assumes that line is fair -- so the only
+      // thing it can ever see is the half point of pool rounding, and it grades
+      // nearly everything "Recommended" at 50-something per cent. It also cannot
+      // see the one edge that works: it said 51.2% about a side the sweep prices
+      // at 59.5%, and it ranked two sides FADING five-point moves above it.
+      //
+      // poolTier comes from the travel curve in model.js and means something
+      // specific. Totals are always 'none' -- that rule was measured at +0.55 SD
+      // and rejected.
+      const tier = b.poolTier || 'none';
+      const tq = b.travelProb && Number.isFinite(b.travelProb.p) ? b.travelProb : null;
+      // ONE number decides, not two. The first cut read
+      // `(tq && tq.p < 0.4995) || b.winProb < 0.4995`, which let winProb veto a
+      // better measured number -- Panthers -3 was badged Avoid on a winProb of
+      // 45.4% while the curve priced it at 51.8%. Using both lenses to grade one
+      // bet is the exact confusion this change exists to remove, so the measured
+      // number decides where there is one and winProb is the fallback where
+      // there is not.
+      const eff = tq ? tq.p : b.winProb;
+      const grade = tier === 'edge' ? 'edge' : tier === 'thin' ? 'thin'
+        : eff < 0.4995 ? 'avoid' : 'coinflip';
       const badge = !isRecommended ? ''
-        : grade === 'edge' ? '<span class="rec-badge">Recommended</span> '
+        : grade === 'edge' ? '<span class="edge-badge">Real edge</span> '
+        : grade === 'thin' ? '<span class="thin-badge">Some edge</span> '
         : grade === 'avoid' ? '<span class="avoid-badge">Avoid</span> '
-        : '<span class="flat-badge">Coin flip</span> ';
+        : '<span class="flat-badge">Filler</span> ';
+      // Why, in the pick's own numbers, so the colour is never the only reason.
+      const absorbedPct = Number.isFinite(b.absorbed)
+        ? Math.round(Math.max(0, Math.min(1, b.absorbed)) * 100) : null;
+      const whyEdge = (tier === 'edge' || tier === 'thin') && Number.isFinite(b.movePts)
+        ? `<div class="pool-${tier === 'edge' ? 'edge' : 'thin'}-why">The market has moved
+             <strong>${b.movePts} pt${b.movePts === 1 ? '' : 's'}</strong> toward this side since it
+             opened${absorbedPct !== null ? `, and your number still holds
+             ${100 - absorbedPct}% of that move` : ''}. Backing the side the market moved toward,
+             at a number it has left behind, is the one thing here that has been measured and
+             held up &mdash; ${(tq ? tq.p * 100 : 0).toFixed(1)}% over 690 games, pushes counted
+             as losses.${tier === 'thin' ? ' Weaker than the top tier: every season of the sweep is above 50% here but not all of them above break-even.' : ''}</div>`
+        : b.followsMove === false && Number.isFinite(b.movePts) && b.movePts >= 2
+          ? `<div class="pool-against">The market has moved <strong>${b.movePts} pts the other
+               way</strong> since this opened. Backing the faded side at a stale number measured
+               ${(tq ? tq.p * 100 : 0).toFixed(1)}% over the same 690 games.</div>`
+          : '';
       return `<div class="pool-block${bothLose ? ' pool-block-dead' : ''}">
         <div class="pool-block-head">${badge}Your pool pick
           <strong>${b.pick}</strong>
-          <span class="pool-block-prob">${(b.winProb * 100).toFixed(1)}%</span></div>
-        ${isRecommended && grade !== 'edge' ? `<div class="pool-filler">In your six because
-          the card needs six, not because the number is good. ${grade === 'avoid'
+          ${tq
+            ? `<span class="pool-block-${tier === 'edge' ? 'measured' : tier === 'thin' ? 'thin' : 'prob'}">${(tq.p * 100).toFixed(1)}%</span>
+               <span class="pool-block-app">(the market-fair read: ${(b.winProb * 100).toFixed(1)}%)</span>`
+            : `<span class="pool-block-prob">${(b.winProb * 100).toFixed(1)}%</span>`}</div>
+        ${whyEdge}
+        ${isRecommended && grade !== 'edge' && grade !== 'thin' ? `<div class="pool-filler">In
+          your six because the card needs six, not because the number is good. ${grade === 'avoid'
             ? 'This one is below even money'
-            : 'This is a straight coin flip'} &mdash; if you have a game you like for a
-          reason the app cannot see, play it over this.</div>` : ''}
+            : 'There is no measured edge either way on this one'} &mdash; if you have a game you
+          like for a reason the app cannot see, play it over this.</div>` : ''}
         <div class="pool-block-line">your line ${b.poolLine} &middot; market ${b.marketLine}
           &middot; <strong>${b.gap} pt${b.gap === 1 ? '' : 's'} of daylight</strong>${
           Number.isFinite(mv) && Math.abs(mv) >= 0.5
@@ -2023,13 +2090,21 @@
         const row = (c) => {
           const k = cardKey(c);
           const on = !!cardPicks[k];
-          const pc = Number.isFinite(c.winProb) ? (c.winProb * 100).toFixed(1) + '%' : '';
+          // The measured number where there is one, so building a card by hand
+          // sees the same figure the ranking does rather than a different
+          // number for the same bet.
+          const tq = c.travelProb && Number.isFinite(c.travelProb.p) ? c.travelProb.p : null;
+          const pc = Number.isFinite(tq) ? (tq * 100).toFixed(1) + '%'
+            : Number.isFinite(c.winProb) ? (c.winProb * 100).toFixed(1) + '%' : '';
           // The app's preferred side is marked, because offering both sides of
           // every game means most options are ones it did not pick -- and an
           // unmarked list of 28 reads as 28 suggestions.
           const star = c.appPick ? '<span class="pl-star" title="the app’s side">★</span>' : '';
           return `<button class="pl-opt ${on ? 'on' : ''}" onclick="toggleCardPick('${k}')">
-            <span class="pl-pick">${c.pick}</span>${star}
+            <span class="pl-pick">${(c.poolTier === 'edge'
+              ? '<span class="pl-edge" title="measured edge">&#9679;</span> '
+              : c.poolTier === 'thin'
+                ? '<span class="pl-thin" title="weaker edge">&#9679;</span> ' : '')}${c.pick}</span>${star}
             <span class="pl-pc">${pc}</span>
             <span class="pl-game">${c.matchup || ''}</span></button>`;
         };
@@ -2290,12 +2365,21 @@
         // How many of the six are actually edges. Worth its own line at the top,
         // because "your best 6" reads as six recommendations and on a card
         // sitting half a point off the market it is usually one.
-        const edges = picks.filter(b => (b.grade || '') === 'edge').length;
-        const edgeLine = picks.length === 0 ? '' : edges === 0
-          ? `<div class="pool-rounding">Your lines and the market agree on every game this
-               week, so none of these has an edge in the number.</div>`
+        // Counted on the measured tier, not on winProb. The old count asked
+        // whether the pool number beat the market by a rounding half point,
+        // which is true of nearly every game and so told Danny nothing.
+        const tc = data.tierCount || { edge: 0, thin: 0 };
+        const edges = tc.edge || 0, thins = tc.thin || 0;
+        const edgeLine = picks.length === 0 ? '' : (edges + thins) === 0
+          ? `<div class="pool-rounding">None of these six has a measured edge. The market has
+               not moved toward any of them in a way your frozen numbers are still behind, so
+               the card is six slots that have to be filled &mdash; play your own reads.</div>`
           : `<div class="pool-rounding"><strong>${edges} of your ${picks.length}
-               ${edges === 1 ? 'carries' : 'carry'} a real edge in the number.</strong></div>`;
+               ${edges === 1 ? 'carries' : 'carry'} a real edge</strong>${thins
+                 ? `, and ${thins} ${thins === 1 ? 'carries' : 'carry'} a weaker one` : ''}.
+               The rest are filler &mdash; the pool wants six whether or not six are any good.
+               Green is the measured edge: the market moved toward that side and your number is
+               still behind it.</div>`;
 
         target.innerHTML = `<h3 style="margin:0 0 10px">Your best ${picks.length}
             <span style="font-weight:400;color:#8b949e;font-size:13px">
