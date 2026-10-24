@@ -829,6 +829,25 @@ async function getHistoryStats(sport = null, limit = 50) {
       GROUP BY COALESCE(source, 'recommendation'), market;
     `, params);
 
+    // THE SAME MARKETS SPLIT BY SPORT.
+    //
+    // Danny read "totals 13-9, 59.1%" off the All view and asked why the app is
+    // so good at them. It is not: five MLB totals from late August went 4-1 and
+    // were carrying an NFL record of 9-8. A market's row on the All view is a
+    // legitimate aggregate, but five baseball games should not be able to move
+    // a headline by six points without saying so, so the split ships with it
+    // and the client prints it whenever a market spans more than one sport.
+    const byMarketSport = await pool.query(`
+      SELECT COALESCE(source, 'recommendation') AS src, market, sport,
+        COUNT(*) FILTER (WHERE result = 'win') as wins,
+        COUNT(*) FILTER (WHERE result = 'loss') as losses,
+        COUNT(*) FILTER (WHERE result = 'push') as pushes
+      FROM picks
+      ${sportFilter}
+      ${sport ? 'AND' : 'WHERE'} result IS NOT NULL
+      GROUP BY COALESCE(source, 'recommendation'), market, sport;
+    `, params);
+
     // By confidence
     const byConfidence = await pool.query(`
       SELECT COALESCE(source, 'recommendation') AS src, confidence,
@@ -869,6 +888,10 @@ async function getHistoryStats(sport = null, limit = 50) {
       bySource,
       sports: sportsRows.rows,
       byMarket: byMarket.rows,
+      byMarketSport: byMarketSport.rows,
+      // Whether a sport filter was applied, so the client knows if a split is
+      // worth printing at all.
+      sportFilter: sport || null,
       byConfidence: byConfidence.rows,
       clv: await getClvStats(sport),
       returned: recent.rows.length,

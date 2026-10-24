@@ -436,6 +436,17 @@
     .pl-none { color: #6e7681; font-size: 12px; }
     .pl-other { margin-top: 9px; padding-top: 8px; border-top: 1px solid #21262d;
                 font-size: 11px; color: #6e7681; line-height: 1.6; }
+    /* n and SD beside every market record, because the bare win-loss was
+       being read as a result on samples of twenty-odd bets. */
+    .breakdown-src { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+                     color: #6e7681; margin-left: 6px; font-weight: 400; }
+    .breakdown-sd { font-size: 11px; color: #6e7681; margin-top: 3px; }
+    .breakdown-split { margin-top: 7px; padding-top: 6px; border-top: 1px solid #21262d;
+                       font-size: 11px; color: #8b949e; }
+    .bd-sp { display: inline-block; margin-right: 10px; }
+    .bd-sp strong { color: #c9d1d9; }
+    .bd-sp-n { color: #6e7681; }
+    .bd-sp-why { color: #6e7681; margin-top: 4px; line-height: 1.45; }
     .pool-flag {
       font-size: 11px; color: #58a6ff; margin-top: 5px;
       padding-top: 5px; border-top: 1px solid #21262d;
@@ -2743,14 +2754,64 @@
         </div>`;
 
       // By Market breakdown
+      //
+      // THREE THINGS WERE WRONG WITH THIS and all three let a coin flip read as
+      // a finding. Danny saw "totals 13-9, 59.1%" and asked why the app is so
+      // good at them; the honest answers were n=22, and five MLB games.
+      //
+      //   1. NO n AND NO SD. The source split directly above prints both and
+      //      flags anything under 2.5 SD as noise. A bare 13-9 does not say
+      //      that 22 bets carry a standard error of ten percentage points, so
+      //      the figure reads like a result.
+      //   2. THE LABEL WAS THE MARKET ALONE, so a market bet from both the Pick
+      //      6 and the NFL tab rendered TWO cards both called "TOTAL" with
+      //      different records and nothing to tell them apart. Those are not the
+      //      same bet: one is a frozen Wednesday number where a push LOSES, the
+      //      other a live price where it refunds.
+      //   3. ON THE ALL VIEW IT BLENDS SPORTS. Five MLB totals at 4-1 were
+      //      carrying an NFL record of 9-8 into a single 59.1%.
       let marketHTML = '';
       if (data.byMarket && data.byMarket.length > 0) {
+        const srcLabel = (src) => src === 'pool' ? 'Pick 6' : 'NFL tab';
+        const int = (v) => parseInt(v, 10) || 0;
         const marketCards = data.byMarket.map(m => {
           const r = fmtRecord(m.wins, m.losses, m.pushes);
+          const w = int(m.wins), l = int(m.losses), pu = int(m.pushes);
+          const settled = w + l + pu;
+          // Same bar and same wording as the source split, so the two sections
+          // cannot be read as disagreeing about what counts as evidence.
+          const sd = settled ? (w / settled - 0.5) / Math.sqrt(0.25 / settled) : null;
+          const name = m.market === 'spread' ? 'Spread / Run Line / Puck Line'
+            : m.market.toUpperCase();
+
+          // The per-sport split, only where it can actually change the reading:
+          // no sport filter applied, and this market genuinely spans more than
+          // one sport.
+          const parts = (data.byMarketSport || []).filter(x =>
+            x.src === m.src && x.market === m.market &&
+            (int(x.wins) + int(x.losses) + int(x.pushes)) > 0);
+          const split = (!data.sportFilter && parts.length > 1)
+            ? `<div class="breakdown-split">${parts
+                .sort((a, b) => (int(b.wins) + int(b.losses)) - (int(a.wins) + int(a.losses)))
+                .map(x => {
+                  const xw = int(x.wins), xl = int(x.losses), xp = int(x.pushes);
+                  const n = xw + xl + xp;
+                  return `<span class="bd-sp"><strong>${String(x.sport).toUpperCase()}</strong>
+                    ${xw}-${xl}${xp ? '-' + xp : ''}
+                    <span class="bd-sp-n">n=${n}</span></span>`;
+                }).join('')}
+               <div class="bd-sp-why">Two sports in one figure. The smaller sample moves
+                 it more than it should &mdash; use the sport tabs above.</div></div>`
+            : '';
+
           return `
             <div class="breakdown-card">
-              <div class="breakdown-name">${m.market === 'spread' ? 'Spread / Run Line / Puck Line' : m.market.toUpperCase()}</div>
+              <div class="breakdown-name">${name}
+                <span class="breakdown-src">${srcLabel(m.src)}</span></div>
               <div class="breakdown-record">${r.record}<span class="breakdown-pct ${r.cls}">${r.pct}%</span></div>
+              ${settled ? `<div class="breakdown-sd">n=${settled} &middot;
+                ${sd >= 0 ? '+' : ''}${sd.toFixed(2)} SD${Math.abs(sd) < 2.5 ? ' \u2014 noise' : ''}</div>` : ''}
+              ${split}
             </div>`;
         }).join('');
         marketHTML = `
