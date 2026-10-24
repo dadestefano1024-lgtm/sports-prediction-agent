@@ -19,6 +19,8 @@ something is wrong and is usually right to.
 - **Repo:** `dadestefano1024-lgtm/sports-prediction-agent`
 - **Files:** `server.js` (5,380), `model.js` (3,146, pure maths, no I/O),
   `public/index.html` (2,353). Plus 17 analysis scripts.
+- **The weekly read:** `node stale-read.js [week]` — the Pick 6 board priced on
+  the travel curve, with its gates. `travel-test.js` regenerates the curve.
 - **Tests:** `npm test` (253). `npm run analyse` for the measurement scripts —
   never a bare `node --test`, which matches `*-test.js` and executes the
   harvesters against live ESPN.
@@ -57,6 +59,48 @@ Separately holdout-tested at 55.4% over 325 bets (found on 2025, held on 2024).
 than the open (9.714 vs 9.878 mean error; 1.277 better on games that move 4+
 points). If moves were public noise the close would be worse. Fading the move at
 the frozen number goes 43.5%.
+
+### The number is a DIAL, not a switch — and Danny's is never at either end
+
+The two rows above are the opener and the close. **The pool's numbers are at
+neither.** They are posted Wednesday, after part of the move has already
+happened, so the live question is what a PARTLY absorbed number is worth. Swept
+on the same 690 games by `travel-test.js`; "absorbed" is how much of the
+open-to-close move the held number has already taken on.
+
+| move | 0% absorbed | 25% | 50% | 75% | 100% | n |
+|---|---|---|---|---|---|---|
+| any | 55.0% | 54.0% | 52.0% | 50.9% | 50.1% | 513 |
+| ≥2pt | 59.8% | 56.9% | 56.3% | 54.0% | 51.7% | 174 |
+| ≥3pt | 66.0% | 61.7% | 60.6% | 57.4% | 53.2% | 94 |
+| ≥4pt | 67.9% | 62.5% | 60.7% | 55.4% | 51.8% | 56 |
+
+**It decays gradually, so a half-stale number is still worth holding** — but the
+gates go first. Per season at ≥2pt: every season clears break-even at 0/25/50%;
+at 75% all three are above 50% but not above 52.4%; **at 100% the seasons
+disagree** (46.3 / 52.3 / 54.4). Only the 0% column clears 2.5 SD. So
+`GATE_OK = 0.5` and `GATE_THIN = 0.75` in `stale-read.js`, and past that there is
+nothing to bet.
+
+**Beyond the market is not measured.** A pool number WORSE than the current line
+is travel > 1, outside the sweep. The first version clamped it to the 100% column
+and so priced six of week 7's sides — Vikings -7, Cowboys -5, Browns -3, Texans
+-11, Panthers -3, Jets -5 — as if they sat exactly at the market when each was a
+point or two the wrong side of it. `measuredProb` now returns null there.
+
+**Why the app and this disagree, which is the useful part.** `winProb` builds a
+margin PMF centred on the *current* line and prices the pool number against it.
+That assumes the current line is fair — so the only edge it can ever express is
+the half point of pool rounding, and it reports 51.2% on a side the sweep prices
+at 59.5%. It is not wrong; it is answering a different question, and it
+structurally cannot see a claim that the line itself is still moving. Ranking a
+Pick 6 card on `winProb` therefore buries the one edge that works. Week 7: the
+app's own six contained two sides FADING five-point moves.
+
+**Ranking on the pool-vs-market gap does not fix it either.** That gap comes out
+at half a point on every whole pool line once the push is netted out, so it
+cannot tell a number still holding three points of an unfinished move from one
+that has caught up. Rank on the travel curve.
 
 ---
 
