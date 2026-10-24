@@ -374,18 +374,9 @@
     .sit-flag.high { background: #2a1215; border-left-color: #f85149; color: #f0a0a0; }
     /* Locked cards: two players, their own six, the same shared lines. */
     .pl-wrap { border: 1px solid #21262d; border-radius: 8px; background: #10151c;
-               padding: 10px 12px; margin: 0 0 14px; }
-    .pl-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
-    .pl-tab { background: transparent; border: 1px solid #21262d; color: #8b949e;
-              border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
-    .pl-tab.on { color: #c9d1d9; border-color: #1f6feb; background: #161b22; }
+               padding: 10px 12px; margin: 0 0 14px;
+               position: sticky; top: 0; z-index: 5; }
     .pl-lk { font-size: 10px; color: #3fb950; }
-    .pl-opts { display: grid; grid-template-columns: 1fr; gap: 5px; }
-    @media (min-width: 640px) { .pl-opts { grid-template-columns: 1fr 1fr; } }
-    .pl-opt { display: flex; align-items: baseline; gap: 7px; text-align: left;
-              background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
-              padding: 7px 9px; cursor: pointer; font-size: 12px; color: #c9d1d9; }
-    .pl-opt.on { border-color: #1f6feb; background: #0f1d33; }
     .pl-pick { font-weight: 600; color: #c9d1d9; }
     .pl-pc { color: #8b949e; font-size: 11px; }
     .pl-star { color: #1f6feb; font-size: 10px; }
@@ -405,6 +396,40 @@
     .pl-lock:disabled { background: #21262d; color: #6e7681; cursor: default; }
     .pl-redo { background: transparent; border: 1px solid #21262d; color: #8b949e;
                border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; }
+    /* The per-game picker, inside the card for its own game. */
+    .gp { border-top: 1px solid #21262d; margin-top: 9px; padding-top: 8px; }
+    .gp-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+               color: #6e7681; margin-bottom: 6px; }
+    .gp-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; }
+    .gp-row + .gp-row { border-top: 1px solid #161b22; }
+    .gp-bet { flex: 1 1 auto; color: #c9d1d9; min-width: 0; }
+    .gp-p { color: #8b949e; font-variant-numeric: tabular-nums; font-size: 11px;
+            flex: 0 0 auto; }
+    .gp-p-edge { color: #3fb950; font-weight: 700; }
+    .gp-p-thin { color: #58a6ff; font-weight: 700; }
+    /* One button per player on every bet, which is the whole point: no tab to
+       switch, no list to scroll, the choice is made where the game is. */
+    .gp-b { flex: 0 0 auto; background: #0d1117; border: 1px solid #30363d; color: #8b949e;
+            border-radius: 5px; padding: 3px 9px; font-size: 11px; cursor: pointer; }
+    .gp-b:hover:not(:disabled) { border-color: #58a6ff; color: #c9d1d9; }
+    .gp-b.on { background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+    .gp-b:disabled { opacity: 0.35; cursor: default; }
+    .gp-note { font-size: 11px; color: #6e7681; margin-top: 6px; }
+    /* The bar stays put while the picking happens in the cards below it. */
+    .lp-bar { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+    .lp-st { display: inline-flex; align-items: center; gap: 7px; font-size: 12px;
+             color: #c9d1d9; }
+    .lp-ct { color: #8b949e; font-variant-numeric: tabular-nums; }
+    .lp-ct.full { color: #3fb950; font-weight: 700; }
+    .lp-rec { color: #8b949e; font-size: 11px; }
+    .lp-msg { margin-top: 8px; font-size: 11px; color: #d29922; }
+    .lp-hint { margin-top: 8px; font-size: 11px; color: #6e7681; }
+    .lp-hint strong { color: #8b949e; }
+    .pl-cards { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 10px; }
+    @media (min-width: 640px) { .pl-cards { grid-template-columns: 1fr 1fr; } }
+    .pl-card-head { font-size: 12px; font-weight: 600; color: #c9d1d9; margin-bottom: 4px;
+                    display: flex; align-items: center; gap: 8px; }
+    .pl-star { color: #d29922; font-size: 10px; margin-left: 4px; }
     .pl-edge { color: #3fb950; }
     .pl-thin { color: #58a6ff; }
     .pl-warn { color: #f85149; font-size: 11px; }
@@ -1980,44 +2005,139 @@
     // and the last run before kickoff rejects the real week-5 card, which was
     // saved 41 minutes AFTER its London game kicked off. So it stops inferring
     // and records the card when it is locked.
-    let poolPlayer = (() => {
-      try { return localStorage.getItem('poolPlayer') || 'Danny'; } catch (e) { return 'Danny'; }
-    })();
+    //
+    // THE PICKER LIVES IN THE GAME CARDS. It used to be one flat list above
+    // them -- every side of every market, four per game, sorted by probability.
+    // Two things were wrong with that. A single game's four bets ended up
+    // scattered down the list with other games in between, so there was nowhere
+    // to see "what can I take on this game"; and the list had to be scrolled
+    // past in full before reaching anything else on the tab. The options now sit
+    // in the card for their own game, each with a button per player, and the
+    // only thing left at the top is a sticky bar that says where both cards
+    // stand and locks them.
+    // There is deliberately NO "current player" state any more. Every bet
+    // carries a button for each of them, so what a tab used to hold -- whose
+    // turn is it -- has nowhere left to be read. The pair that held it, and the
+    // localStorage key behind them, are gone rather than left sitting unused.
     const POOL_PLAYERS = ['Danny', 'Logan'];
-    let cardPicks = {};     // key -> the pick object, for the player on screen
+    // player -> slot key -> the pick. BOTH players are selected from the same
+    // screen now, so a single current-player selection will not do: switching
+    // tabs used to clear a half-built card, which is the wrong behaviour when
+    // the two of them are sitting next to each other filling cards together.
+    let cardSel = { Danny: {}, Logan: {} };
     let lockedCards = {};   // player -> { picks, wins, ... } from the server
     // How much the two cards actually differ. Two people picking off the same
     // ranking can land on nearly the same six, and then the week carries far
     // less evidence than the leg count suggests.
     let cardOverlap = null;
+    let lockMsg = '';       // the one line of feedback the sticky bar shows
 
+    // A SLOT is one game and one market -- you cannot have both sides of the
+    // same spread on a card. An OPTION is a particular side of that slot. The
+    // two were the same thing when the picker only offered one side per game,
+    // and conflating them is why clicking the other side of a game you had
+    // already picked used to CLEAR the slot instead of switching sides.
     const cardKey = (c) => `${c.gameId}|${c.market}`;
+    const optKey = (c) => `${c.gameId}|${c.market}|${c.side}`;
+    const findOption = (k) => (poolCandidates || []).find(x => optKey(x) === k);
+    const selCount = (player) => Object.keys(cardSel[player] || {}).length;
 
-    function setPoolPlayer(name) {
-      poolPlayer = name;
-      try { localStorage.setItem('poolPlayer', name); } catch (e) {}
-      // A selection belongs to the player who made it, so switching clears it
-      // rather than carrying Danny's half-built card over to Logan.
-      cardPicks = {};
+    /**
+     * Put an option on a player's card, take it off, or switch to the other
+     * side of the same game.
+     */
+    function togglePickFor(player, k) {
+      if (!cardSel[player]) cardSel[player] = {};
+      const c = findOption(k);
+      if (!c) return;
+      const sel = cardSel[player];
+      const slot = cardKey(c);
+      const have = sel[slot];
+      lockMsg = '';
+      if (have && optKey(have) === k) {
+        delete sel[slot];                       // clicking your own pick clears it
+      } else if (have) {
+        sel[slot] = c;                          // the other side of the same game: switch
+      } else if (Object.keys(sel).length >= 6) {
+        lockMsg = `${player} already has six. Take one off first.`;
+      } else {
+        sel[slot] = c;
+      }
+      renderGamePicker(c.gameId);
       renderLockPanel();
     }
 
-    function toggleCardPick(key) {
-      if (cardPicks[key]) { delete cardPicks[key]; renderLockPanel(); return; }
-      if (Object.keys(cardPicks).length >= 6) return;   // six is the pool
-      const c = (poolCandidates || []).find(x => cardKey(x) === key);
-      if (c) cardPicks[key] = c;
-      renderLockPanel();
+    /** Every pickable side of one game, each with a button per player. */
+    function gamePickerHTML(gameId) {
+      const inner = gamePickerInner(gameId);
+      return inner ? `<div class="gp" id="gp-${gameId}">${inner}</div>` : '';
     }
 
-    async function lockCard() {
-      const picks = Object.values(cardPicks);
+    /**
+     * The guts of one game's picker, without its wrapper.
+     *
+     * Split out so a click can refresh one game by assigning straight into the
+     * existing element. The first version returned the wrapper only, so
+     * redrawing meant building the HTML, parsing it into a detached div and
+     * lifting firstElementChild's innerHTML back out -- round-tripping through
+     * the HTML parser to undo the wrapper this function had just added.
+     */
+    function gamePickerInner(gameId) {
+      const opts = (poolCandidates || []).filter(c => c.gameId === gameId);
+      if (!opts.length) return '';
+      // Spreads first, then the total, and each market's sides in the order the
+      // board lists them -- so the block reads like a betting slip for this one
+      // game rather than a slice of a ranking.
+      const order = { spread: 0, total: 1 };
+      const rows = opts.slice().sort((a, b) =>
+        (order[a.market] - order[b.market]) ||
+        ((b.travelProb ? b.travelProb.p : b.winProb) - (a.travelProb ? a.travelProb.p : a.winProb)));
+      const locked = POOL_PLAYERS.filter(n => lockedCards[n]);
+      return `
+        <div class="gp-head">Put this game on a card</div>
+        ${rows.map(c => {
+          const k = optKey(c);
+          const q = c.travelProb && Number.isFinite(c.travelProb.p) ? c.travelProb.p : null;
+          const pc = Number.isFinite(q) ? (q * 100).toFixed(1) + '%'
+            : Number.isFinite(c.winProb) ? (c.winProb * 100).toFixed(1) + '%' : '';
+          const t = c.poolTier || 'none';
+          const dot = t === 'edge' ? '<span class="pl-edge" title="measured edge">&#9679;</span> '
+            : t === 'thin' ? '<span class="pl-thin" title="weaker edge">&#9679;</span> ' : '';
+          return `<div class="gp-row">
+            <span class="gp-bet">${dot}${c.pick}${c.appPick ? '<span class="pl-star" title="the app&rsquo;s side">&#9733;</span>' : ''}</span>
+            <span class="gp-p ${t === 'edge' ? 'gp-p-edge' : t === 'thin' ? 'gp-p-thin' : ''}">${pc}</span>
+            ${POOL_PLAYERS.map(n => {
+              const sel = (cardSel[n] || {})[cardKey(c)];
+              const on = sel && optKey(sel) === k;
+              // A locked card is not edited by accident. Re-picking is
+              // deliberate, through the re-pick button on the card itself.
+              const dis = lockedCards[n] ? ' disabled' : '';
+              return `<button class="gp-b ${on ? 'on' : ''}"${dis}
+                onclick="togglePickFor('${n}', '${k}')"
+                title="${lockedCards[n] ? n + ' has already locked' : 'put this on ' + n + '&rsquo;s card'}"
+                >${n}</button>`;
+            }).join('')}
+          </div>`;
+        }).join('')}
+        ${locked.length === POOL_PLAYERS.length
+          ? '<div class="gp-note">Both cards are locked for this week.</div>' : ''}`;
+    }
+
+    /** Re-draw one game's block, so a click does not redraw the whole tab. */
+    function renderGamePicker(gameId) {
+      const host = document.getElementById('gp-' + gameId);
+      if (!host) return;
+      host.innerHTML = gamePickerInner(gameId);
+    }
+
+    async function lockCardFor(player) {
+      const picks = Object.values(cardSel[player] || {});
       if (!picks.length) return;
-      const btn = document.getElementById('lock-btn');
+      const btn = document.getElementById('lock-btn-' + player);
       if (btn) { btn.disabled = true; btn.textContent = 'Locking...'; }
       try {
         const body = {
-          player: poolPlayer,
+          player,
           week: nflWeek || undefined,
           picks: picks.map(c => ({
             gameId: c.gameId, market: c.market, side: c.side, pick: c.pick,
@@ -2033,13 +2153,16 @@
         });
         const out = await res.json();
         if (out.error) throw new Error(out.error);
-        cardPicks = {};
+        cardSel[player] = {};
+        lockMsg = `${player}&rsquo;s card is locked.`;
         await loadLockedCards();
+        // Every game's buttons change state once a card is locked.
+        for (const id of new Set((poolCandidates || []).map(c => c.gameId))) renderGamePicker(id);
       } catch (e) {
-        const w = document.getElementById('lock-warn');
-        if (w) w.textContent = 'Could not lock: ' + e.message;
+        lockMsg = 'Could not lock ' + player + ': ' + e.message;
+        renderLockPanel();
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = 'Lock ' + poolPlayer + "'s six"; }
+        if (btn) { btn.disabled = false; btn.textContent = 'Lock ' + player; }
       }
     }
 
@@ -2053,79 +2176,48 @@
       renderLockPanel();
     }
 
+    /**
+     * The bar at the top: where both cards stand, and the buttons that lock
+     * them. Sticky, because the picking now happens further down the page and
+     * having to scroll back up to lock was half the problem being fixed.
+     */
     function renderLockPanel() {
       const host = document.getElementById('lock-panel');
       if (!host) return;
-      const cands = poolCandidates || [];
-      const chosen = Object.keys(cardPicks).length;
+      const anyOptions = (poolCandidates || []).length > 0;
 
-      const tabs = POOL_PLAYERS.map(n =>
-        `<button class="pl-tab ${n === poolPlayer ? 'on' : ''}" onclick="setPoolPlayer('${n}')">${n}` +
-        (lockedCards[n] ? ' <span class="pl-lk">locked</span>' : '') + `</button>`).join('');
+      const status = POOL_PLAYERS.map(n => {
+        const lk = lockedCards[n];
+        const count = selCount(n);
+        if (lk) {
+          const rec = `${lk.wins}-${lk.losses}${lk.pushes ? '-' + lk.pushes : ''}`;
+          return `<span class="lp-st">
+            <strong>${n}</strong> <span class="pl-lk">locked</span>
+            <span class="lp-rec">${rec}${lk.pending ? ` &middot; ${lk.pending} to play` : ''}${
+              lk.perfect ? ' &middot; 6-0' : lk.blown ? ' &middot; busted' : ''}</span></span>`;
+        }
+        return `<span class="lp-st">
+          <strong>${n}</strong> <span class="lp-ct ${count === 6 ? 'full' : ''}">${count} of 6</span>
+          <button class="pl-lock" id="lock-btn-${n}" ${count ? '' : 'disabled'}
+            onclick="lockCardFor('${n}')">Lock ${n}</button></span>`;
+      }).join('');
 
-      // Already locked: show it and do not offer the picker again, because a
-      // re-lock replaces the card and that should be deliberate.
-      const mine = lockedCards[poolPlayer];
-      let body;
-      if (mine && !chosen) {
+      // The two cards side by side once they exist, because half the point is
+      // seeing what the other one did.
+      const cards = POOL_PLAYERS.map(n => {
+        const c = lockedCards[n];
+        if (!c) return '';
         const mark = (r) => r === 'win' ? '<span class="pl-w">W</span>'
           : r === 'loss' ? '<span class="pl-l">L</span>'
           : r === 'push' ? '<span class="pl-p">P</span>' : '<span class="pl-o">&middot;</span>';
-        body = `<div class="pl-card">
-          ${mine.picks.map(p => `<div class="pl-row">${mark(p.result)}
+        return `<div class="pl-card">
+          <div class="pl-card-head">${n}
+            <button class="pl-redo" onclick="repick('${n}')">re-pick</button></div>
+          ${c.picks.map(p => `<div class="pl-row">${mark(p.result)}
             <span class="pl-pick">${p.pick}</span>
             <span class="pl-game">${(p.away_team || '')} @ ${(p.home_team || '')}</span></div>`).join('')}
-          <div class="pl-foot">
-            ${mine.wins}-${mine.losses}${mine.pushes ? '-' + mine.pushes : ''}
-            ${mine.pending ? ` &middot; ${mine.pending} to play` : ''}
-            ${mine.perfect ? ' &middot; <strong class="pl-w">6-0</strong>'
-              : mine.blown ? ' &middot; <span class="pl-l">busted</span>' : ''}
-            &middot; locked ${new Date(mine.lockedAt).toLocaleString()}
-            <button class="pl-redo" onclick="cardPicks={};lockedCards[poolPlayer]=null;renderLockPanel()">re-pick</button>
-          </div>
         </div>`;
-      } else if (!cands.length) {
-        body = `<div class="pl-none">Rank the week first &mdash; the candidates come from that.</div>`;
-      } else {
-        const row = (c) => {
-          const k = cardKey(c);
-          const on = !!cardPicks[k];
-          // The measured number where there is one, so building a card by hand
-          // sees the same figure the ranking does rather than a different
-          // number for the same bet.
-          const tq = c.travelProb && Number.isFinite(c.travelProb.p) ? c.travelProb.p : null;
-          const pc = Number.isFinite(tq) ? (tq * 100).toFixed(1) + '%'
-            : Number.isFinite(c.winProb) ? (c.winProb * 100).toFixed(1) + '%' : '';
-          // The app's preferred side is marked, because offering both sides of
-          // every game means most options are ones it did not pick -- and an
-          // unmarked list of 28 reads as 28 suggestions.
-          const star = c.appPick ? '<span class="pl-star" title="the app’s side">★</span>' : '';
-          return `<button class="pl-opt ${on ? 'on' : ''}" onclick="toggleCardPick('${k}')">
-            <span class="pl-pick">${(c.poolTier === 'edge'
-              ? '<span class="pl-edge" title="measured edge">&#9679;</span> '
-              : c.poolTier === 'thin'
-                ? '<span class="pl-thin" title="weaker edge">&#9679;</span> ' : '')}${c.pick}</span>${star}
-            <span class="pl-pc">${pc}</span>
-            <span class="pl-game">${c.matchup || ''}</span></button>`;
-        };
-        body = `<div class="pl-opts">${cands.map(row).join('')}</div>
-          <div class="pl-foot">
-            <strong>${chosen} of 6</strong> chosen for ${poolPlayer}
-            <button class="pl-lock" id="lock-btn" ${chosen ? '' : 'disabled'} onclick="lockCard()">Lock ${poolPlayer}&rsquo;s six</button>
-            <span id="lock-warn" class="pl-warn"></span>
-          </div>`;
-      }
-
-      // The other player's card, read-only, because half the point is seeing
-      // what the other one did.
-      const other = POOL_PLAYERS.filter(n => n !== poolPlayer)
-        .map(n => {
-          const c = lockedCards[n];
-          if (!c) return `<div class="pl-other"><strong>${n}</strong> has not locked yet</div>`;
-          return `<div class="pl-other"><strong>${n}</strong> ${c.wins}-${c.losses}${c.pushes ? '-' + c.pushes : ''}` +
-            `${c.pending ? ` &middot; ${c.pending} to play` : ''} &middot; ` +
-            c.picks.map(p => p.pick).join(' &middot; ') + `</div>`;
-        }).join('');
+      }).join('');
 
       // Worth saying out loud to the players as well as to the maths: six
       // identical picks is one card entered twice.
@@ -2137,12 +2229,29 @@
           `. ${ov.shared >= 5 ? 'Near-identical cards win and lose together.' : ''}</div>`
         : '';
 
+      const hint = !anyOptions
+        ? `<div class="pl-none">Rank the week first &mdash; the picks come from that.</div>`
+        : (!lockedCards.Danny || !lockedCards.Logan)
+          ? `<div class="lp-hint">Pick from the <strong>game cards below</strong> &mdash; each one
+               has a Danny and a Logan button on every bet.</div>`
+          : '';
+
       host.innerHTML = `<div class="pl-wrap">
-        <div class="pl-tabs">${tabs}</div>
-        ${body}
-        ${other}
+        <div class="lp-bar">${status}</div>
+        ${lockMsg ? `<div class="lp-msg">${lockMsg}</div>` : ''}
+        ${hint}
+        ${cards ? `<div class="pl-cards">${cards}</div>` : ''}
         ${overlapLine}
       </div>`;
+    }
+
+    /** Clear a locked card locally so it can be rebuilt. */
+    function repick(player) {
+      cardSel[player] = {};
+      lockedCards[player] = null;
+      lockMsg = `${player}&rsquo;s card is open again &mdash; locking replaces it.`;
+      renderLockPanel();
+      for (const id of new Set((poolCandidates || []).map(c => c.gameId))) renderGamePicker(id);
     }
 
     function renderPool() {
@@ -2421,17 +2530,23 @@
             header: '',
             onlyIds: [...pickIds, ...restIds],
             extraFor: (g) => {
+              // The picker for THIS game, under whatever the card already says
+              // about it. This is what used to be one 52-row list above all the
+              // cards, which separated a game's own bets from each other and had
+              // to be scrolled past in full.
+              const picker = gamePickerHTML(g.id);
               const b = byGame[g.id];
-              if (b) return poolBlockHTML(b, true, g);
+              if (b) return poolBlockHTML(b, true, g) + picker;
               // Not one of the six, but still worth an answer. The pool line on
               // this game was priced exactly like the others — it just came out
               // lower — so the honest thing is to say which side it points at
               // rather than leave a card with no opinion on it.
               const p = bestPerGame[g.id] || g.poolPick;
               if (!p) {
-                return '<div class="pool-block pool-block-off">No pool line entered for this game.</div>';
+                return picker +
+                  '<div class="pool-block pool-block-off">No pool line entered for this game.</div>';
               }
-              return `<div class="pool-block pool-block-off">
+              return picker + `<div class="pool-block pool-block-off">
                 <div class="pool-block-head">If I had to pick
                   <strong>${p.pick}</strong>
                   <span class="pool-block-prob">${(p.winProb * 100).toFixed(1)}%</span></div>
