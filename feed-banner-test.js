@@ -105,9 +105,52 @@ check('and falls back to naming the cost without a balance',
   /costs 3 credits/.test(txt(noFeed)) && !/NaN|undefined|null/.test(txt(noFeed)),
   txt(noFeed).slice(-120));
 
-console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 console.log('\n  --- what you see with nothing bought ---');
 console.log('  ' + noneTxt);
 console.log('\n  --- what you see with day-old prices ---');
 console.log('  ' + staleTxt);
-process.exit(fail ? 1 : 0);
+// The tally and the exit live at the very END of this file, after every
+// appended block. They used to sit here, so a set of checks appended later
+// never ran at all and the file still reported a clean pass -- a test harness
+// failing open, which is the exact shape of defect this repo keeps finding.
+
+// --- 7. the free single-book line, added when ESPN turned out to carry one ---
+// Appended rather than woven in, so the earlier cases stay exactly as they were
+// when they passed.
+(() => {
+  const freeBook = { title: 'DraftKings', from: 'espn', singleBook: true };
+  const GAMES_FREE = GAMES_NO_PRICE.map(g => ({ ...g, myBook: freeBook }));
+  const out = render(GAMES_FREE, feed({ source: 'none', stale: null }));
+  const t = txt(out);
+  check('a free one-book line is reported as live, not as missing',
+    /Live DraftKings lines, free from ESPN/.test(t) && !/no book prices have been bought/i.test(t),
+    t.slice(0, 150));
+  check('and says the ACROSS-books comparison is what is missing',
+    /comparison ACROSS books/.test(t));
+  // Both phrases appear ON PURPOSE -- the sentence contrasts them -- so the
+  // check is on the contrast, not on "No lean" being absent. The first version
+  // asserted the absence and failed on correct copy.
+  check('so the game is said to read No read on price RATHER THAN No lean',
+    /reads\s+No read on price rather than\s+No lean/.test(t), t.slice(0, 220));
+  check('with a button to buy the comparison', /id="odds-buy"/.test(out));
+
+  // the ordering that matters: a stale PAID cache must not be reported as the
+  // age of an ESPN line, which rides its own five-minute fetch
+  const staleFeed = render(GAMES_FREE, feed({ stale: true, ageMinutes: 60 * 144 }));
+  check('a six-day-old PAID cache is not reported as the age of a live ESPN line',
+    !/days old/.test(txt(staleFeed)) && /free from ESPN/.test(txt(staleFeed)),
+    txt(staleFeed).slice(0, 150));
+
+  // a mixed board -- one paid book and one free -- is not "only free"
+  const mixed = render(
+    [{ ...GAMES_NO_PRICE[0], myBook: { title: 'DraftKings' } },
+     { ...GAMES_NO_PRICE[1], myBook: freeBook }],
+    feed({ stale: false }));
+  check('a board with any PAID book does not claim to be single-book',
+    !/free from ESPN/.test(txt(mixed)), txt(mixed).slice(0, 120));
+
+  console.log('\n  with the free ESPN line:');
+  console.log('  ' + t);
+  console.log('\n  ' + pass + ' passed, ' + fail + ' failed  (including the appended set)');
+  process.exit(fail ? 1 : 0);
+})();

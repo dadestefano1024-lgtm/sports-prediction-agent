@@ -2875,6 +2875,60 @@ function poolTier(pick) {
 
 const POOL_TIER_RANK = { edge: 0, thin: 1, none: 2 };
 
+/**
+ * A live book line from ESPN's free feed, in the shape the paid feed produces.
+ *
+ * ESPN's core odds endpoint carries ONE provider and it is DraftKings -- checked
+ * 27 Oct 2026, provider "Draft Kings" id 100 -- with the open and current
+ * spread, the price on each side, both moneylines, the total and the over/under
+ * prices. The app has been fetching all of it for months and reading only the
+ * point values; server.js already builds a `board` object from it, and nothing
+ * but a debug counter has ever looked at that object.
+ *
+ * So a live line costs nothing. What it cannot give is the measured edge, which
+ * is a book offering a better NUMBER than the rest of the market -- that needs
+ * several books by definition, and there is exactly one here.
+ *
+ * WHICH IS WHY EVERY CONSENSUS-RELATIVE FIELD IS EXPLICITLY null. homeEdgePts
+ * and its siblings mean "points better than consensus". With one book there is
+ * no consensus, so the answer is "cannot be computed", and that is null. Zero
+ * would say "compared against the market and found level" -- a measurement that
+ * was never made, in the same shape as one that was. Downstream already treats
+ * these correctly: bookValue filters to finite values, and bookOfferEdge
+ * returns reachable:false without consensus prices, which the card renders as
+ * "No read" rather than as an even match.
+ */
+function espnBookLine({ board, name } = {}) {
+  if (!board || !board.current) return null;
+  const c = board.current;
+  const n = (v) => (Number.isFinite(v) ? v : null);
+  const line = {
+    name: name || board.book || 'DraftKings',
+    // Where it came from, so the card can say so rather than implying the paid
+    // multi-book feed is behind it.
+    from: 'espn',
+    singleBook: true,
+    homeML: n(c.homeML),
+    awayML: n(c.awayML),
+    spread: n(c.homeSpread),
+    spreadHomePrice: n(c.homeSpreadPrice),
+    spreadAwayPrice: n(c.awaySpreadPrice),
+    total: n(c.total),
+    overPrice: n(c.overPrice),
+    underPrice: n(c.underPrice),
+    // Not zero. See above.
+    homeEdgePts: null,
+    awayEdgePts: null,
+    overEdgePts: null,
+    underEdgePts: null,
+  };
+  // Nothing usable means nothing to offer, rather than a line of nulls that
+  // reads downstream as a book with no opinion.
+  const usable = [line.spread, line.total, line.homeML, line.awayML]
+    .some((v) => Number.isFinite(v));
+  return usable ? line : null;
+}
+
 function rankPoolPicks(candidates, count = 6) {
   return (candidates || [])
     // A candidate with no usable probability is dropped rather than sorted to
@@ -3923,6 +3977,7 @@ function bestBet({
 }
 
 module.exports = {
+  espnBookLine,
   travelProb, poolTravel, poolTier, POOL_TRAVEL_OK, POOL_TRAVEL_THIN,
   SPORTS,
   sportConfig,

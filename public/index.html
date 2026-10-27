@@ -1244,6 +1244,28 @@
                  &mdash; ${left} left and a refresh costs ${cost}.</span>`;
         };
 
+        // A FOURTH CASE. Prices are now shown without the paid feed, because
+        // ESPN's free endpoint carries one provider and it is DraftKings. That
+        // fixes the blank board but NOT the verdict: the measured live edge is
+        // one book offering a better number than the REST of the market, and
+        // that cannot be seen from inside a single book. Saying nothing here
+        // would let a live line imply a comparison that was never made.
+        //
+        // CHECKED BEFORE `stale` ON PURPOSE. feed.stale describes the age of the
+        // PAID cache. An ESPN-sourced line does not come from that cache at all
+        // -- it rides fetchEspnOpeningLines and its own five-minute TTL -- so
+        // the paid feed being six days old says nothing about it, and reporting
+        // a live line as six days old would be flatly untrue.
+        const onlyFree = havePrices &&
+          games.filter(g => g.myBook).every(g => g.myBook.from === 'espn');
+        if (onlyFree) {
+          return `<div class="feed-note">Live <strong>DraftKings</strong> lines, free from
+            ESPN &mdash; the numbers and prices are real and current. What is missing is the
+            comparison ACROSS books, which is the only live edge here that has ever measured
+            up, and one book cannot be compared with itself. So every game reads
+            <em>No read</em> on price rather than <em>No lean</em>.
+            ${btn('Buy the multi-book comparison')}</div>`;
+        }
         if (havePrices && feed && feed.stale) {
           const h = Math.round((feed.ageMinutes || 0) / 60);
           return `<div class="feed-note">These book prices are

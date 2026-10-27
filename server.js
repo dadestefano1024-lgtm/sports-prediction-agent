@@ -3057,6 +3057,34 @@ async function fetchOdds(sport, { force = false } = {}) {
 // depending on whether you hold one account or nine; this is the one.
 const MY_BOOK = process.env.MY_BOOK || 'DraftKings';
 
+/**
+ * Fill in a live book line from ESPN's free feed when the paid one is absent.
+ *
+ * ESPN's core odds endpoint carries one provider and it is DraftKings, with the
+ * spread, the price on each side, both moneylines, the total and the over/under
+ * prices. server.js has been building a `board` object out of it for months and
+ * nothing but a debug counter has read it. So the live line was already paid
+ * for -- by nobody -- and simply never wired up.
+ *
+ * The PAID feed wins when it has anything, because several books is strictly
+ * more than one: the only measured live edge here is a book offering a better
+ * number than the rest of the market, and that cannot be seen from inside a
+ * single book. When the paid data is missing, this is the difference between
+ * showing Danny a live DraftKings line and showing him nothing.
+ *
+ * Returning `odds` untouched when there is nothing to add matters: a bare
+ * `{ myBook }` object in place of null would hand downstream code an odds
+ * object with no spreadQuotes, and the multi-book paths read those. They are
+ * all guarded (`(odds.spreadQuotes || [])` then `sq.length`), which is why this
+ * is safe, but it is safe by their care and not by accident.
+ */
+function withFreeBook(odds, board) {
+  if (odds && odds.myBook) return odds;
+  const free = model.espnBookLine({ board, name: MY_BOOK });
+  if (!free) return odds;
+  return { ...(odds || {}), myBook: free };
+}
+
 function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
   if (!oddsData || oddsData.length === 0) return null;
 
@@ -4409,7 +4437,8 @@ app.get('/api/pool/:sport', async (req, res) => {
       const away = comp.competitors.find(c => c.homeAway === 'away');
       const homeFull = home.team.displayName;
       const awayFull = away.team.displayName;
-      const odds = matchOddsToGame(oddsData, homeFull, awayFull);
+      const odds = withFreeBook(matchOddsToGame(oddsData, homeFull, awayFull),
+        (openingLines[event.id] || {}).board);
       const espnOdds = (comp.odds || [])[0] || null;
 
       // The book actually being bet at, then consensus, then ESPN.
@@ -4624,7 +4653,8 @@ app.post('/api/pool/:sport', async (req, res) => {
       const away = comp.competitors.find(c => c.homeAway === 'away');
       const homeFull = home.team.displayName;
       const awayFull = away.team.displayName;
-      const odds = matchOddsToGame(oddsData, homeFull, awayFull);
+      const odds = withFreeBook(matchOddsToGame(oddsData, homeFull, awayFull),
+        entry && entry.board);
       const espnOdds = (comp.odds || [])[0] || null;
       // The number to score a frozen pool line against is the one on the screen
       // of the book being bet at — DraftKings — not a consensus of nine books
@@ -5174,7 +5204,8 @@ async function handleNFLPredictions(res, oddsData, requestedWeek) {
           (awayQB.expectedStarter ? `, expect ${awayQB.expectedStarter}` : ''));
       }
 
-      const odds = matchOddsToGame(oddsData, homeFullName, awayFullName);
+      const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
+        (espnOpeningLines[event.id] || {}).board);
       const espnLines = espnOpeningLines[event.id] || null;
       const sharpSignals = espnLines
         ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
@@ -5331,7 +5362,8 @@ async function handleNBAPredictions(res, oddsData) {
         fetchInjuries(awayFullName, 'nba')   // FIX: pass full name not nickname
       ]);
 
-      const odds = matchOddsToGame(oddsData, homeFullName, awayFullName);
+      const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
+        (espnOpeningLines[event.id] || {}).board);
 
       // Look up opening lines from ESPN by game ID
       const espnLines = espnOpeningLines[event.id] || null;
@@ -5492,7 +5524,8 @@ async function handleNHLPredictions(res, oddsData) {
         fetchInjuries(awayFullName, 'nhl')
       ]);
 
-      const odds = matchOddsToGame(oddsData, homeFullName, awayFullName);
+      const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
+        (espnOpeningLines[event.id] || {}).board);
       const espnLines = espnOpeningLines[event.id] || null;
       const sharpSignals = espnLines
         ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
@@ -5655,7 +5688,8 @@ async function handleMLBPredictions(res, oddsData) {
         fetchInjuries(awayFullName, 'mlb')
       ]);
 
-      const odds = matchOddsToGame(oddsData, homeFullName, awayFullName);
+      const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
+        (espnOpeningLines[event.id] || {}).board);
       const espnLines = espnOpeningLines[event.id] || null;
       const sharpSignals = espnLines
         ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
