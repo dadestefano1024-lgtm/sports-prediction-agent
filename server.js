@@ -3901,6 +3901,14 @@ function buildGamesFromModel(sport, gamesWithStats, commentary, skipReason) {
       : null;
 
     return {
+      // THE HANDLER'S OBJECT IS NOT THE PAYLOAD. This builds a fresh object from
+      // an explicit field list rather than spreading g, so anything a handler
+      // attaches and does not list here is silently dropped on the way out.
+      // liveRead was attached in handleNBAPredictions, verified to be in the
+      // right function and the right return, deployed -- and arrived at the
+      // client as undefined for seven minutes of polling before this was found.
+      // Add the field here as well as at the handler, or it does not ship.
+      liveRead: g.liveRead || null,
       homeTeam: g.homeTeam,
       awayTeam: g.awayTeam,
       gameTime: g.gameTime,
