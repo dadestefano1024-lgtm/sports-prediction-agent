@@ -2757,33 +2757,40 @@ const POOL_FOLLOW = {
 /**
  * THE SAME CURVE PER SPORT, and basketball's is NOT football's.
  *
- * NBA harvested from ESPN alone by nba-travel.js: 1,228 completed 2025-26 games
- * carrying both an opening and a closing number. Scored with a push REFUNDING,
- * which is the live-betting rule and what the NBA tab is for -- the football
- * rows above are scored with a push LOSING, which is the Pick 6 rule.
+ * NBA harvested from ESPN alone by nba-travel.js: THREE seasons, 2023-24 to
+ * 2025-26, 3,990 completed games carrying both an opening and a closing number.
+ * Scored with a push REFUNDING, the live-betting rule -- the football rows above
+ * are scored with a push LOSING, which is the Pick 6 rule.
  *
- * Positive control before anything was read off it: the 0% column reproduces the
- * independently recorded headline, 62.2% on n=434 at +5.09 SD against the
- * recorded 62.1% / n=435 / 5.03 SD from calibrate-sport.js.
+ * Positive control before anything was read off it: the one-season 0% column
+ * reproduced the independently recorded headline, 62.2% on n=434 at +5.09 SD
+ * against calibrate-sport.js's 62.1% / n=435 / 5.03 SD.
  *
- *            0%     25%    50%    75%   100%      n
- *   >=3   64.1   60.8   60.1   57.6   54.4      217
- *   >=2   62.2   60.0   58.6   57.2   55.3      434
- *   any   57.7   56.6   55.2   53.6   52.7      924
+ *            0%     25%    50%    75%   100%       n
+ *   >=3   66.3   62.5   60.0   57.0   52.6       815
+ *   >=2   62.8   59.9   57.7   55.6   52.4     1,497
+ *   any   58.6   57.0   55.3   53.4   51.8     3,157
  *
- * THE DIFFERENCE THAT MATTERS IS THE LAST COLUMN. Football at the close is 51.7%
- * at +0.45 SD, which is nothing, and that is why the football rule is only ever
- * about holding a stale number. Basketball at the close is 55.3% at +2.21 SD, so
- * a live bet at the current number is not automatically edgeless.
+ * TRIPLING THE SAMPLE KILLED THE LAST COLUMN AND CONFIRMED THE REST. On one
+ * season the close looked like 55.3% at +2.21 SD and it was tempting; on three
+ * it is 52.4% against a 52.38% break-even, +1.86 SD, and it held in only 12 of
+ * 24 months. Indistinguishable from break-even -- exactly what football's close
+ * column did, and exactly what an efficient closing line should do.
+ *
+ * The left of the curve went the other way: 62.8% at +9.90 SD over 1,497 bets,
+ * 22 of 24 months. So the rule is not weaker than it looked, it is just entirely
+ * about holding a number the market has LEFT BEHIND. There is no live edge at
+ * the number on screen, and this curve is the reason to say so rather than a
+ * reason to hope otherwise.
  *
  * There is deliberately NO NBA fade curve. Nothing measured the faded side for
  * basketball, and borrowing football's would be an interpolation wearing a
  * measurement's clothes. travelProb returns null for it.
  */
 const NBA_FOLLOW = {
-  3: [0.641, 0.608, 0.601, 0.576, 0.544],
-  2: [0.622, 0.600, 0.586, 0.572, 0.553],
-  0: [0.577, 0.566, 0.552, 0.536, 0.527],
+  3: [0.663, 0.625, 0.600, 0.570, 0.526],
+  2: [0.628, 0.599, 0.577, 0.556, 0.524],
+  0: [0.586, 0.570, 0.553, 0.534, 0.518],
 };
 /**
  * SD against 50% at each travel point, PER BUCKET. They are not the same, and
@@ -2794,9 +2801,9 @@ const NBA_FOLLOW = {
  * it is half the sample.
  */
 const NBA_FOLLOW_SD = {
-  3: [4.14, 3.19, 2.95, 2.24, 1.29],
-  2: [5.09, 4.11, 3.57, 2.98, 2.21],
-  0: [4.67, 4.00, 3.13, 2.17, 1.64],
+  3: [9.28, 7.13, 5.71, 3.99, 1.51],
+  2: [9.90, 7.60, 5.93, 4.30, 1.86],
+  0: [9.70, 7.88, 5.92, 3.88, 1.99],
 };
 /**
  * Months above 50% at each travel point, out of seven -- gate 2, and the gate
@@ -2811,10 +2818,10 @@ const NBA_FOLLOW_SD = {
  */
 const NBA_FOLLOW_PERIODS = {
   3: null,
-  2: [7, 7, 7, 6, 4],
+  2: [22, 21, 19, 15, 12],
   0: null,
 };
-const NBA_PERIODS_TOTAL = 7;
+const NBA_PERIODS_TOTAL = 24;
 /**
  * Backing the side the market moved AWAY from, by the same travel axis.
  *
@@ -2926,10 +2933,12 @@ function travelProb({ sport = 'nfl', movePts, travel, follow }) {
  * number for the NBA tab: the already-happened move is priced into the number on
  * screen, and what is left is exactly this residual.
  *
- * It comes back with its gates attached because 55.3% reads like a good bet and
- * is not a proven one -- at that point the sample is +2.21 SD and held in only
- * four months of seven. Quoting it bare is how a 55% becomes a recommendation it
- * has not earned.
+ * On three seasons the answer is that there is NO live edge: the floor is 52.4%
+ * against a 52.38% break-even, +1.86 SD, 12 of 24 months. So this function
+ * exists to say that with numbers rather than to offer a bet, and `tier` comes
+ * back 'none' for every bucket. It is kept rather than deleted because the
+ * floor is the honest ceiling on a live bet and a future harvest could move it;
+ * callers must read `gates` and never the bare `p`.
  */
 function travelFloor({ sport = 'nba', movePts } = {}) {
   const mv = Math.abs(Number(movePts));
@@ -2945,8 +2954,15 @@ function travelFloor({ sport = 'nba', movePts } = {}) {
   // Three gates, the same three this project uses everywhere. An UNMEASURED
   // gate fails: `periods === NBA_PERIODS_TOTAL` is false for null, which is the
   // intended reading and not an accident of the comparison.
+  // The margin has to EXCEED THE PRECISION OF THE NUMBER. The curve is stored to
+  // three decimals, so it is known to about +/-0.0005, and the three-season
+  // floor is 0.524 against a 0.5238 break-even -- ahead by 0.0002, which is
+  // inside its own rounding. Reported as a pass, that is a claim the number
+  // cannot support; half a point is the smallest margin worth asserting.
+  const BREAK_EVEN = 0.5238;
+  const MARGIN = 0.005;
   const gates = {
-    beatsBreakEven: p > 0.5238,                // -110 with a push refunding
+    beatsBreakEven: p > BREAK_EVEN + MARGIN,
     allPeriods: periods === NBA_PERIODS_TOTAL,
     significant: sd >= 2.5,
   };

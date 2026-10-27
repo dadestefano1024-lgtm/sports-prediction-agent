@@ -3647,9 +3647,9 @@ test('the NBA curve reproduces nba-travel.js at every grid point', () => {
   // The 0% column is itself a positive control: it reproduces calibrate-sport's
   // independently recorded 62.1% / n=435 / 5.03 SD at 62.2% / n=434 / +5.09.
   const grid = [
-    [2, 0, 0.622], [2, 0.25, 0.600], [2, 0.5, 0.586], [2, 0.75, 0.572], [2, 1, 0.553],
-    [3, 0, 0.641], [3, 0.5, 0.601], [3, 1, 0.544],
-    [0.5, 0, 0.577], [0.5, 1, 0.527],
+    [2, 0, 0.628], [2, 0.25, 0.599], [2, 0.5, 0.577], [2, 0.75, 0.556], [2, 1, 0.524],
+    [3, 0, 0.663], [3, 0.5, 0.600], [3, 1, 0.526],
+    [0.5, 0, 0.586], [0.5, 1, 0.518],
   ];
   for (const [mv, t, want] of grid) {
     const q = m.travelProb({ sport: 'nba', movePts: mv, travel: t, follow: true });
@@ -3666,7 +3666,7 @@ test('basketball does not borrow football numbers, and vice versa', () => {
     m.travelProb({ sport: 'nfl', movePts: 2, travel: 0, follow: true }).p);
   // football keeps its own >=4 bucket; NBA was never swept that far and must
   // fall back to >=3 rather than index a row that does not exist
-  assert.equal(m.travelProb({ sport: 'nba', movePts: 5, travel: 0, follow: true }).p, 0.641);
+  assert.equal(m.travelProb({ sport: 'nba', movePts: 5, travel: 0, follow: true }).p, 0.663);
   assert.equal(m.travelProb({ sport: 'nfl', movePts: 5, travel: 0, follow: true }).p, 0.679);
   // no NBA fade curve was measured, so there is no NBA fade answer
   assert.equal(m.travelProb({ sport: 'nba', movePts: 3, travel: 0, follow: false }), null);
@@ -3677,35 +3677,51 @@ test('basketball does not borrow football numbers, and vice versa', () => {
 });
 
 test('the live floor is the close, with its own gates attached', () => {
+  // ON ONE SEASON this looked like 55.3% at +2.21 SD and it was tempting.
+  // Tripling the sample to 3,990 games collapsed it to break-even -- the same
+  // thing football's close column did, and what an efficient closing line
+  // should do. The test records the kill so it is not re-proposed.
   const f = m.travelFloor({ sport: 'nba', movePts: 2 });
-  assert.ok(Math.abs(f.p - 0.553) < 1e-9, 'the floor is the t=1 column: ' + f.p);
-  assert.ok(Math.abs(f.atOpen - 0.622) < 1e-9);
-  assert.equal(f.sd, 2.21);
-  assert.equal(f.periods, 4);
-  // 55.3% beats break-even and fails the other two, so it is NOT an edge
-  assert.equal(f.gates.beatsBreakEven, true);
-  assert.equal(f.gates.allPeriods, false, '4 of 7 months is not all of them');
-  assert.equal(f.gates.significant, false, '+2.21 SD is below the 2.5 bar');
-  assert.equal(f.passed, 1);
-  assert.equal(f.tier, 'none',
-    'a number above break-even that fails two gates must not be tiered as an edge');
+  assert.ok(Math.abs(f.p - 0.524) < 1e-9, 'the floor is the t=1 column: ' + f.p);
+  assert.ok(Math.abs(f.atOpen - 0.628) < 1e-9, 'and the open is where the edge lives');
+  assert.equal(f.sd, 1.86);
+  assert.equal(f.periods, 12, 'held in 12 of 24 months -- a coin flip on consistency');
+  // 52.4% against a 52.38% break-even is ahead by 0.02 points, INSIDE the
+  // three-decimal precision the curve is stored to. Reporting that as a pass
+  // would be a claim the number cannot support.
+  assert.equal(f.gates.beatsBreakEven, false,
+    'a margin smaller than the stored precision is not a pass');
+  assert.equal(f.gates.allPeriods, false);
+  assert.equal(f.gates.significant, false);
+  assert.equal(f.passed, 0, 'zero of three gates -- no live edge at the screen number');
+  assert.equal(f.tier, 'none');
+  const open = m.travelProb({ sport: 'nba', movePts: 2, travel: 0, follow: true });
+  assert.ok(open.p > 0.62, 'but the OPEN held up, at ' + open.p);
 });
 
 test('each bucket carries its OWN significance, not the >=2 row\'s', () => {
   // The defect this pins: travelFloor handed every bucket +2.21 SD and 4 of 7
   // months, which belonged to >=2 alone.
-  assert.equal(m.travelFloor({ sport: 'nba', movePts: 1 }).sd, 1.64);
-  assert.equal(m.travelFloor({ sport: 'nba', movePts: 2 }).sd, 2.21);
-  assert.equal(m.travelFloor({ sport: 'nba', movePts: 3 }).sd, 1.29);
-  // AND THE COUNTERINTUITIVE ONE, worth a test so nobody "fixes" it: a bigger
-  // move is a WORSE live bet. >=3 is the best bucket at the open (64.1%) and the
-  // worst at the close (54.4%), because more is already priced in and the sample
-  // halves. Ranking live NBA bets by move size would pick the weakest.
+  assert.equal(m.travelFloor({ sport: 'nba', movePts: 1 }).sd, 1.99);
+  assert.equal(m.travelFloor({ sport: 'nba', movePts: 2 }).sd, 1.86);
+  assert.equal(m.travelFloor({ sport: 'nba', movePts: 3 }).sd, 1.51);
+
+  // A FINDING OF MINE THAT DID NOT SURVIVE. On one season the >=3 bucket was
+  // both the best at the open AND the worst at the close, and I wrote a test
+  // asserting that ordering so nobody would "fix" it. Three seasons reversed it:
+  // >=3 now closes at 52.6% against >=2's 52.4%. Both are break-even and the gap
+  // is noise, so the close ordering was never a fact about basketball -- it was a
+  // fact about 217 games. Asserting only what three seasons supports.
   const two = m.travelFloor({ sport: 'nba', movePts: 2 });
   const three = m.travelFloor({ sport: 'nba', movePts: 3 });
-  assert.ok(three.atOpen > two.atOpen, 'bigger move is better at the open');
-  assert.ok(three.p < two.p, 'and worse at the close');
-  assert.ok(three.sd < two.sd, 'on a thinner sample');
+  assert.ok(three.atOpen > two.atOpen,
+    'a bigger move IS better at the open, and that part held: ' + three.atOpen);
+  for (const f2 of [two, three]) {
+    assert.ok(Math.abs(f2.p - 0.5238) < 0.005,
+      'the close is break-even in either order: ' + f2.p);
+    assert.equal(f2.gates.beatsBreakEven, false);
+    assert.ok(f2.sd < 2.5, 'and neither is significant, so do not rank on move size');
+  }
 });
 
 test('an unmeasured gate counts as failed, never as passed', () => {

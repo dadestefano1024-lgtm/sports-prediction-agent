@@ -82,57 +82,64 @@ disagree** (46.3 / 52.3 / 54.4). Only the 0% column clears 2.5 SD. So
 `GATE_OK = 0.5` and `GATE_THIN = 0.75` in `stale-read.js`, and past that there is
 nothing to bet.
 
-### NBA: the same curve, measured, and it does NOT die at the close
+### NBA: the same curve, measured on three seasons
 
-Danny asked whether NBA could get a recommendation without a second book. It
-can, and not from a projection -- from this. Harvested from ESPN only by
-`nba-travel.js` (1,228 completed 2025-26 games with both an opening and a
-closing number, 1,406 urls, cached to disk so a re-run is free).
+Danny asked whether NBA could get a recommendation without a second book. It can
+at the open, and it cannot live. Harvested from ESPN only by `nba-travel.js`:
+**3,990 completed games, 2023-24 through 2025-26**, each with both an opening and
+a closing number, cached to disk so a re-run is free. Nothing touches the paid
+feed.
 
-**Positive control first.** The sweep's 0% column reproduces the recorded
-headline independently: 62.2% at 2+ points on n=434 at +5.09 SD, against the
-62.1% / n=435 / 5.03 SD that `calibrate-sport.js` recorded. The curve was not
-believed until that matched.
+**Positive control.** The first pass ran one season and its 0% column reproduced
+the independently recorded headline -- 62.2% / n=434 / +5.09 SD against
+`calibrate-sport.js`'s 62.1% / n=435 / 5.03 SD. Nothing was read off the curve
+until that matched.
 
-Push REFUNDS below, which is the live-betting rule and what the NBA tab is for.
-Scored with push as a loss as well, in `nba-travel.js`; the answer barely moves.
+Push REFUNDS below (the live rule). Scored with push-loses too, in the script;
+the answer barely moves.
 
 | move | 0% absorbed | 25% | 50% | 75% | 100% | n |
 |---|---|---|---|---|---|---|
-| any (all moves were >=1pt) | 57.7% | 56.6% | 55.2% | 53.6% | 52.7% | 924 |
-| **>=2pt** | **62.2%** | **60.0%** | **58.6%** | **57.2%** | **55.3%** | 434 |
-| >=3pt | 64.1% | 60.8% | 60.1% | 57.6% | 54.4% | 217 |
+| any | 58.6% | 57.0% | 55.3% | 53.4% | 51.8% | 3,157 |
+| **≥2pt** | **62.8%** | 59.9% | 57.7% | 55.6% | **52.4%** | 1,497 |
+| ≥3pt | 66.3% | 62.5% | 60.0% | 57.0% | 52.6% | 815 |
 
-**The difference from football is the right-hand column.** NFL at the close is
-51.7% and +0.45 SD -- nothing. **NBA at the close is 55.3% at +2.21 SD.** So
-unlike football, a live NBA bet at the current number is not automatically
-edgeless, and the t=1 row is the FLOOR for one: betting now is somewhere at or
-before the close, so it cannot do worse in expectation.
+SD, ≥2pt row: **+9.90, +7.60, +5.93, +4.30, +1.86**.
+Months above 50% out of 24: **22, 21, 19, 15, 12**.
 
-**The three gates, >=2pt, by how much of the move the number has absorbed:**
+**TRIPLING THE SAMPLE KILLED THE CLOSE AND CONFIRMED THE REST.** On one season
+the close looked like 55.3% at +2.21 SD and it was tempting. On three it is
+**52.4% against a 52.38% break-even, +1.86 SD, and it held in 12 of 24 months** --
+indistinguishable from break-even, which is exactly what football's close column
+did and exactly what an efficient closing line should do. **There is no live NBA
+edge at the number on screen.** `travelFloor` returns `tier: 'none'` for every
+bucket and exists to say so with numbers.
 
-| absorbed | rate | SD | months >50% | verdict |
-|---|---|---|---|---|
-| 0% | 62.2% | +5.09 | 7 of 7 | clears all three |
-| 25% | 60.0% | +4.11 | 7 of 7 | clears all three |
-| 50% | 58.6% | +3.57 | 7 of 7 | clears all three |
-| 75% | 57.2% | +2.98 | 6 of 7 | fails gate 2 |
-| 100% | 55.3% | +2.21 | 4 of 7 | fails gates 2 and 3 |
+The left of the curve went the other way: **62.8% at +9.90 SD over 1,497 bets, 22
+of 24 months.** The rule is not weaker than it looked; it is entirely about
+holding a number the market has LEFT BEHIND. Same shape as football, bigger.
 
-So: **real and fully gated up to half the move, marginal at three quarters, and
-at the close 55.3% is above break-even but NOT proven to this project's bar.**
-Quote the floor with its gates attached, never bare.
+**What this licenses on the NBA tab:** the side the money went to, the size of
+the move, and the decay — which is a TIMING statement, not a bet. "62.8% at the
+opening number, break-even by the close" tells a reader that waiting costs them
+and that right now there is nothing left. It does not license a win-rate badge.
 
-**What this does and does not license.** It licenses a one-book NBA
-recommendation, because the rule compares a number against ITSELF over time and
-ESPN's free feed carries DraftKings' open and current. It does not license
-reading the already-happened move as money in hand: a bet at the current number
-has that move priced into it, and what remains is the residual the 100% column
-measures.
+**A finding of mine that did NOT survive, recorded because I had already written
+a test to protect it.** On one season the ≥3 bucket was both the best at the open
+and the WORST at the close (54.4% against ≥2's 55.3%), and I asserted that
+ordering so nobody would "fix" it. Three seasons reversed it: ≥3 closes at 52.6%
+against 52.4%. Both are break-even and the gap is noise. The ordering was never a
+fact about basketball, it was a fact about 217 games.
 
-**It still does not license a projection.** That was measured and rejected --
-51.7% as a picker, 47.1% where the market did not move, and the EPA rebuild lost
-to the OPENING line. Asked again on 27 Oct 2026 and the answer is the same.
+**A gate margin must exceed the number's precision.** The curve is stored to
+three decimals, so it is known to about ±0.0005. The floor at 0.524 against a
+0.5238 break-even is ahead by 0.0002 — inside its own rounding — and
+`gates.beatsBreakEven` reported that as a pass until a margin of half a point was
+required. An edge smaller than the precision of the number is not an edge.
+
+**It still does not license a projection.** Measured and rejected: 51.7% as a
+picker, 47.1% where the market did not move, and the EPA rebuild lost to the
+OPENING line. Asked again 27 Oct 2026, same answer.
 
 **Beyond the market is not measured.** A pool number WORSE than the current line
 is travel > 1, outside the sweep. The first version clamped it to the 100% column
