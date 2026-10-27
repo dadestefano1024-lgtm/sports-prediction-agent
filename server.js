@@ -5815,6 +5815,24 @@ app.get('/api/debug/odds/:sport', async (req, res) => {
       validateStatus: () => true  // Don't throw on any status — return everything
     });
 
+    // RECORD THE SPEND. This endpoint makes a real paid call and never told the
+    // app about it, so the reserve guard went on believing the pre-call figure.
+    // Measured 27 Oct 2026: the API said 8 remaining and the app said 11,
+    // because one diagnostic had spent 3 behind its back -- which is exactly
+    // the number of credits the guard would then have let through below the
+    // floor it is there to defend.
+    const dbgRemaining = Number(response.headers['x-requests-remaining']);
+    const dbgUsed = Number(response.headers['x-requests-used']);
+    if (Number.isFinite(dbgRemaining)) {
+      lastOddsQuota = {
+        remaining: dbgRemaining,
+        used: Number.isFinite(dbgUsed) ? dbgUsed : lastOddsQuota.used,
+        lastCost: Number(response.headers['x-requests-last']) || null,
+        at: new Date().toISOString(),
+      };
+      saveOddsQuota(lastOddsQuota).catch(() => {});
+    }
+
     return res.json({
       ok: response.status === 200,
       httpStatus: response.status,
