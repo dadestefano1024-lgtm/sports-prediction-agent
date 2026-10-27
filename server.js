@@ -2759,6 +2759,62 @@ let lastOddsQuota = { remaining: null, used: null, lastCost: null, at: null };
 const ODDS_QUOTA_RESERVE = Number(process.env.ODDS_QUOTA_RESERVE ?? 12);
 
 /**
+ * THE PAID FEED IS NO LONGER SPENT BY LOOKING AT A PAGE.
+ *
+ * The allowance is 500 CREDITS a month, not 500 requests, and the call below
+ * asks for three markets in one region -- so every fetch costs 3. The real
+ * budget is about 167 fetches a month. Measured 27 Oct 2026: 492 credits gone,
+ * which is 18 a day, which is about six cache misses a day. Nobody was
+ * hammering it; six idle page loads a day is enough to empty the month.
+ *
+ * NBA and NHL opening is what tipped it. Each sport caches separately, so one
+ * sitting that checks football, basketball and hockey costs 9 credits rather
+ * than 3, and four sports in season at a three-hour TTL is 96 a day -- the
+ * month in five days.
+ *
+ * The reserve already said the right thing in its own comment: those credits
+ * are "there for the moment somebody actually needs a price, reached by passing
+ * force, rather than burned by a background refresh on a Tuesday". The main
+ * path never honoured it. Now it does. A page load serves whatever is cached at
+ * ANY age, carries that age so the board can say how old the prices are, and
+ * never spends. A price is bought when somebody presses the button, and the
+ * button says what it will cost before they do.
+ *
+ * Everything else on the board is free and unaffected: ESPN lines and movement,
+ * the pool numbers, the travel-curve edges, injuries, the write-ups. Only the
+ * multi-book price comparison sits behind the button.
+ *
+ * Set ODDS_ON_DEMAND=false to go back to spending on page loads.
+ */
+const ODDS_ON_DEMAND = String(process.env.ODDS_ON_DEMAND ?? 'true') !== 'false';
+/** How the last serve of each sport was satisfied, for the client to report. */
+const oddsServeInfo = {};
+/** One fetch costs three markets in one region. */
+const ODDS_CALL_COST = 3;
+const ODDS_SPORTS = new Set(['nfl', 'nba', 'nhl', 'mlb', 'cbb']);
+
+/** How the client should describe the prices it is showing, and what more cost. */
+function oddsFeedStatus(sport) {
+  const info = oddsServeInfo[sport] || null;
+  const left = lastOddsQuota.remaining;
+  const age = info && Number.isFinite(info.age) ? info.age : null;
+  return {
+    onDemand: ODDS_ON_DEMAND,
+    source: info ? info.source : null,
+    ageMinutes: age === null ? null : Math.round(age / 60000),
+    games: info ? info.games : null,
+    // Older than the TTL is not wrong, it is old -- and saying so is the whole
+    // difference between a stale price and a price presented as current.
+    stale: info ? (info.age > ODDS_CACHE_TTL_MS) : null,
+    quotaRemaining: Number.isFinite(left) ? left : null,
+    quotaUsed: Number.isFinite(lastOddsQuota.used) ? lastOddsQuota.used : null,
+    callCost: ODDS_CALL_COST,
+    reserve: ODDS_QUOTA_RESERVE,
+    canRefresh: !Number.isFinite(left) || left >= ODDS_CALL_COST,
+  };
+}
+
+/**
  * The odds response, cached in the database as well as in memory.
  *
  * The in-memory cache has a sixty minute TTL and never got to use it. Render's
@@ -2839,14 +2895,16 @@ async function fetchOdds(sport, { force = false } = {}) {
   const apiKey = process.env.ODDS_API_KEY;
   if (!apiKey) {
     console.log('[ODDS] No ODDS_API_KEY found');
+    oddsServeInfo[sport] = { source: 'no-key', age: Infinity, games: 0 };
     return null;
   }
 
   // Check cache first
   const cached = oddsCache[sport];
   if (cached && (Date.now() - cached.timestamp) < ODDS_CACHE_TTL_MS) {
-    const ageSec = Math.round((Date.now() - cached.timestamp) / 1000);
-    console.log(`[ODDS] Cache hit for ${sport} (${ageSec}s old, ${cached.data?.length || 0} games)`);
+    const age = Date.now() - cached.timestamp;
+    console.log(`[ODDS] Cache hit for ${sport} (${Math.round(age / 1000)}s old, ${cached.data?.length || 0} games)`);
+    oddsServeInfo[sport] = { source: 'memory', age, games: cached.data?.length || 0 };
     return cached.data;
   }
 
@@ -2855,7 +2913,33 @@ async function fetchOdds(sport, { force = false } = {}) {
   const stored = await loadOddsFromDb(sport, ODDS_CACHE_TTL_MS);
   if (stored) {
     oddsCache[sport] = { timestamp: Date.now() - stored.age, data: stored.games };
+    oddsServeInfo[sport] = { source: 'database', age: stored.age, games: stored.games.length };
     return stored.games;
+  }
+
+  // ON DEMAND. Past this point a fetch costs credits, so an unforced call stops
+  // here. It serves whatever is cached at ANY age rather than nothing, and the
+  // age travels with it, because a two-day-old price is useful and a two-day-old
+  // price presented as current is not.
+  if (ODDS_ON_DEMAND && !force) {
+    const anyAge = await loadOddsFromDb(sport, Infinity);
+    const fallback = anyAge
+      ? { games: anyAge.games, age: anyAge.age, source: 'database' }
+      : cached
+        ? { games: cached.data, age: Date.now() - cached.timestamp, source: 'memory' }
+        : null;
+    if (fallback) {
+      oddsCache[sport] = { timestamp: Date.now() - fallback.age, data: fallback.games };
+      console.log(`[ODDS] on demand: serving ${sport} from ${fallback.source}, ` +
+        `${Math.round(fallback.age / 60000)}m old, no credit spent`);
+      oddsServeInfo[sport] = { source: fallback.source + '-stale', age: fallback.age,
+                               games: (fallback.games || []).length };
+      return fallback.games;
+    }
+    console.log(`[ODDS] on demand: nothing cached for ${sport}; a page load does ` +
+      'not buy prices. Returning null.');
+    oddsServeInfo[sport] = { source: 'none', age: Infinity, games: 0 };
+    return null;
   }
 
   // Below the reserve, serve whatever is cached rather than spending one of the
@@ -2867,6 +2951,10 @@ async function fetchOdds(sport, { force = false } = {}) {
     console.warn(`[ODDS] ${left} requests left, at or below the reserve of ` +
       `${ODDS_QUOTA_RESERVE} — not fetching. ` +
       (cached ? `Serving cache ${age}m old.` : 'Nothing cached; returning null.'));
+    oddsServeInfo[sport] = cached
+      ? { source: 'memory-reserve', age: Date.now() - cached.timestamp,
+          games: cached.data?.length || 0 }
+      : { source: 'reserve', age: Infinity, games: 0 };
     return cached ? cached.data : null;
   }
 
@@ -2905,6 +2993,8 @@ async function fetchOdds(sport, { force = false } = {}) {
       lastCost: lastCost === undefined ? null : Number(lastCost),
       at: new Date().toISOString(),
     };
+    oddsServeInfo[sport] = { source: 'live', age: 0,
+      games: Array.isArray(response.data) ? response.data.length : 0 };
     // Written through to the database, because this process does not survive.
     // Render's free tier spins down when idle and the in-memory copy dies with
     // it, so on every cold start the guard below had no idea what was left and
@@ -4882,13 +4972,17 @@ const PREDICTION_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 // Handlers write straight to res, so intercept .json() to capture the payload.
 // .status() deliberately returns the real res, so error responses pass through
 // uncached.
-function makeCachingRes(res, key) {
+function makeCachingRes(res, key, decorate) {
   return {
     json: (payload) => {
+      // The payload is cached UNDECORATED and the decoration applied at send
+      // time, on this path and on the cache-hit path alike. Caching it with the
+      // feed status baked in would have served a ten-minute-old answer to "how
+      // old are these prices" -- the one question the status exists to answer.
       if (payload && !payload.error) {
         predictionCache[key] = { timestamp: Date.now(), data: payload };
       }
-      return res.json(payload);
+      return res.json(decorate && payload && !payload.error ? decorate(payload) : payload);
     },
     status: (code) => res.status(code)
   };
@@ -4910,12 +5004,16 @@ app.post('/api/predictions', async (req, res) => {
     if (cached && (Date.now() - cached.timestamp) < PREDICTION_CACHE_TTL_MS) {
       const ageSec = Math.round((Date.now() - cached.timestamp) / 1000);
       console.log(`[PREDICTIONS] Cache hit for ${sport} (${ageSec}s old) — no Claude call`);
-      return res.json(cached.data);
+      // Feed status is computed fresh, never served from the cached payload.
+      return res.json({ ...cached.data, oddsFeed: oddsFeedStatus(sport) });
     }
 
     console.log(`\n=== Fetching predictions for ${sport.toUpperCase()} ===`);
     const oddsData = await fetchOdds(sport);
-    const cachingRes = makeCachingRes(res, cacheKey);
+    // So the board can say where its prices came from and what a refresh costs,
+    // rather than leaving "No lean" to be read as a verdict on the game.
+    const cachingRes = makeCachingRes(res, cacheKey,
+      (payload) => ({ ...payload, oddsFeed: oddsFeedStatus(sport) }));
 
     if (sport === 'nba') return await handleNBAPredictions(cachingRes, oddsData);
     if (sport === 'nhl') return await handleNHLPredictions(cachingRes, oddsData);
@@ -5648,6 +5746,51 @@ async function handleMLBPredictions(res, oddsData) {
 // DEBUG ENDPOINT — verify Odds API status without running full predictions
 // Visit https://sports-prediction-agent.onrender.com/api/debug/odds/nba in a browser
 // ============================================================================
+
+/**
+ * Buy prices for one sport, deliberately.
+ *
+ * The only path in the app that is allowed to spend a credit, and it exists
+ * because the ones that used to do it by accident were emptying the month by
+ * the 27th. Costs ODDS_CALL_COST, refuses when fewer than that remain, and
+ * clears the prediction cache for the sport so the board is rebuilt from the
+ * prices just bought rather than from the ten-minute-old payload without them.
+ */
+app.post('/api/odds/refresh', async (req, res) => {
+  const sport = String((req.body && req.body.sport) || '').toLowerCase();
+  if (!ODDS_SPORTS.has(sport)) {
+    return res.status(400).json({ error: `unknown sport: ${sport || '(none)'}` });
+  }
+  const before = lastOddsQuota.remaining;
+  if (Number.isFinite(before) && before < ODDS_CALL_COST) {
+    return res.json({ ok: false,
+      reason: `${before} credit${before === 1 ? '' : 's'} left and a fetch costs ` +
+              `${ODDS_CALL_COST}`,
+      feed: oddsFeedStatus(sport) });
+  }
+  let games = null;
+  try {
+    games = await fetchOdds(sport, { force: true });
+  } catch (err) {
+    console.error('[ODDS] forced refresh failed:', err.message);
+    return res.json({ ok: false, reason: err.message, feed: oddsFeedStatus(sport) });
+  }
+  // The board is built from the odds, so a stale prediction payload would hide
+  // the prices that were just paid for. Both key shapes: the sport, and the
+  // per-week football keys.
+  let cleared = 0;
+  for (const k of Object.keys(predictionCache)) {
+    if (k === sport || k.startsWith(sport + ':')) { delete predictionCache[k]; cleared++; }
+  }
+  const after = lastOddsQuota.remaining;
+  res.json({
+    ok: Array.isArray(games) && games.length > 0,
+    games: Array.isArray(games) ? games.length : 0,
+    spent: (Number.isFinite(before) && Number.isFinite(after)) ? before - after : null,
+    cacheCleared: cleared,
+    feed: oddsFeedStatus(sport),
+  });
+});
 
 app.get('/api/debug/odds/:sport', async (req, res) => {
   const { sport } = req.params;

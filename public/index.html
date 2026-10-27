@@ -447,6 +447,16 @@
     .bd-sp strong { color: #c9d1d9; }
     .bd-sp-n { color: #6e7681; }
     .bd-sp-why { color: #6e7681; margin-top: 4px; line-height: 1.45; }
+    /* The one button in the app that spends money. It says so. */
+    .odds-buy { background: #1f6feb; border: none; color: #fff; border-radius: 6px;
+                padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+                margin-top: 7px; }
+    .odds-buy:disabled { background: #21262d; color: #6e7681; cursor: default; }
+    .odds-cost { font-size: 11px; color: #8b949e; margin-left: 8px; }
+    .feed-note { background: #10151c; border-left: 3px solid #d29922; border-radius: 4px;
+                 padding: 9px 12px; margin: 0 0 12px; font-size: 12px; color: #8b949e;
+                 line-height: 1.55; }
+    .feed-note strong { color: #d29922; }
     .pool-flag {
       font-size: 11px; color: #58a6ff; margin-top: 5px;
       padding-top: 5px; border-top: 1px solid #21262d;
@@ -967,6 +977,39 @@
       }
     }
 
+    /**
+     * Buy book prices for the sport on screen. The ONLY thing in the app that
+     * spends a paid credit, and it does nothing until pressed.
+     *
+     * The server clears its prediction cache for the sport before answering, so
+     * the reload below rebuilds the board from the prices just bought rather
+     * than from the ten-minute-old payload that has none.
+     */
+    async function buyOddsPrices() {
+      const btn = document.getElementById('odds-buy');
+      if (btn) { btn.disabled = true; btn.textContent = 'Buying...'; }
+      try {
+        const res = await fetch('/api/odds/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sport: currentSport }),
+        });
+        const out = await res.json();
+        if (out.error) throw new Error(out.error);
+        if (!out.ok) {
+          if (btn) { btn.disabled = false; btn.textContent = 'Buy book prices'; }
+          const c = document.querySelector('.odds-cost');
+          if (c) c.textContent = out.reason || 'nothing came back from the feed';
+          return;
+        }
+        await fetchPredictions(false);
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Buy book prices'; }
+        const c = document.querySelector('.odds-cost');
+        if (c) c.textContent = 'Could not buy prices: ' + e.message;
+      }
+    }
+
     async function fetchPredictions(isAuto) {
       // A manual click resets the auto-refresh budget; an auto cycle does not.
       if (!isAuto) { autoRefreshCount = 0; }
@@ -1174,14 +1217,47 @@
       // the one whose entire verdict depends on that price — did not. A notice
       // bolted onto one caller is the wrong altitude for a fact about the feed,
       // so it is stated here, once, where every board renders.
+      //
+      // THREE STATES, not two. The old version had "prices" and "no prices",
+      // and said the feed "has no data right now" -- which was wrong in the one
+      // case that actually happens. The feed had data all along; the app had
+      // simply stopped buying it, because 500 CREDITS a month at 3 a fetch is
+      // about 167 fetches, and six idle page loads a day empties that by the
+      // 27th. Page loads no longer spend. So the states are: prices and fresh,
+      // prices but old, and none bought yet -- and the last two are fixable by
+      // pressing a button, which the old wording gave no hint of.
       const wantsBook = games.some(g => g.bestBet || g.spreadPick);
-      const feedWarn = (wantsBook && !games.some(g => g.myBook))
-        ? '<div class="feed-warn">The paid odds feed has no data right now, so there is no ' +
-          'book price to compare. Every game below reads as <em>No lean</em> because nothing ' +
-          'could be priced &mdash; not because the sides were examined and found even. The ' +
-          'pool numbers, the market moves, the injuries and the write-ups come from free ' +
-          'sources and are unaffected.</div>'
-        : '';
+      const feed = data.oddsFeed || null;
+      const feedWarn = (() => {
+        if (!wantsBook) return '';
+        const havePrices = games.some(g => g.myBook);
+        const cost = feed ? feed.callCost : 3;
+        const left = feed && Number.isFinite(feed.quotaRemaining) ? feed.quotaRemaining : null;
+        const btn = (label) => {
+          const can = !feed || feed.canRefresh;
+          const costLine = left === null ? `costs ${cost} credits`
+            : `costs ${cost} of your ${left} remaining`;
+          return can
+            ? `<button class="odds-buy" id="odds-buy" onclick="buyOddsPrices()">${label}</button>
+               <span class="odds-cost">${costLine}</span>`
+            : `<span class="odds-cost">Out of credits until the feed&rsquo;s monthly reset
+                 &mdash; ${left} left and a refresh costs ${cost}.</span>`;
+        };
+
+        if (havePrices && feed && feed.stale) {
+          const h = Math.round((feed.ageMinutes || 0) / 60);
+          return `<div class="feed-note">These book prices are
+            <strong>${h >= 24 ? Math.round(h / 24) + ' day' + (Math.round(h / 24) === 1 ? '' : 's') : h + ' hour' + (h === 1 ? '' : 's')} old</strong>
+            &mdash; fine for a Pick 6 number frozen on Wednesday, not for a live bet.
+            ${btn('Get current prices')}</div>`;
+        }
+        if (havePrices) return '';
+        return `<div class="feed-warn">No book prices have been bought for this board, so
+          every game reads as <em>No lean</em> &mdash; nothing could be priced, which is not
+          the same as the sides being examined and found even. The pool numbers, the market
+          moves, the edges on your Pick 6, the injuries and the write-ups all come from free
+          sources and are unaffected.<br>${btn('Buy book prices')}</div>`;
+      })();
 
       // Sorted, not filtered: every game is still here, the ones worth acting
       // on are just at the top instead of scattered down a fifteen-game card.
