@@ -5162,7 +5162,20 @@ async function handleNFLPredictions(res, oddsData, requestedWeek) {
       }
     }
 
-    const espnOpeningLines = await fetchEspnOpeningLines('nfl');
+    // SCOPED TO THE WEEK, not to today's slate.
+    //
+    // Football is the one sport where the board is a WEEK and the default scope
+    // is a day, so an unscoped call returned opening lines for whichever games
+    // happen to kick off today -- on a Monday, one of them. Harmless while the
+    // paid feed was supplying prices; the moment the free ESPN board became the
+    // fallback it meant NFL alone could not use it, and the tab kept a
+    // six-day-old paid price for all fourteen games while NBA and NHL went
+    // fully live. The pool handlers have always passed the week's events; this
+    // one never did.
+    //
+    // fetchEspnOpeningLines keys its cache on sport AND scope, so this does not
+    // collide with the daily call.
+    const espnOpeningLines = await fetchEspnOpeningLines('nfl', { events });
     const eventMap = {};
 
     const gamesWithStats = await Promise.all(events.map(async (event) => {
