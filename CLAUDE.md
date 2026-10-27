@@ -60,6 +60,54 @@ than the open (9.714 vs 9.878 mean error; 1.277 better on games that move 4+
 points). If moves were public noise the close would be worse. Fading the move at
 the frozen number goes 43.5%.
 
+### "What if Vegas is right with the opening line?" -- tested, and it is backwards
+
+Danny's question, 27 Oct 2026, and a reasonable one: openers land close enough
+that they look authoritative, so maybe a market that has moved AWAY from one is
+now wrong. If that were true the play would be to back the faded side at the
+current number -- the opposite of everything here. `opener-right.js` tests it on
+both row files, 4,680 games.
+
+Mean absolute error against the actual margin, by how far the line moved:
+
+| moved | NFL open | NFL close | NBA open | NBA close |
+|---|---|---|---|---|
+| every game | 9.878 | **9.714** | 10.961 | **10.677** |
+| <1pt | 9.314 | 9.323 | 10.433 | **10.418** |
+| 1-2pt | 9.631 | **9.568** | 10.757 | **10.708** |
+| 2-4pt | 10.538 | **10.297** | 11.252 | **10.922** |
+| **4pt+** | 12.339 | **11.063** | 12.148 | **10.646** |
+
+**THE GAP WIDENS EXACTLY WHERE HIS IDEA NEEDS IT TO CLOSE.** On games that move
+4+ points the close beats the open by **1.277 points in football and 1.501 in
+basketball**, and the opener is the closer number in only 38.2% / 39.2% of them.
+If a big move were public noise, the close would be WORSE on those games. It is
+dramatically better, in both sports, independently.
+
+His rule scored directly -- back the faded side at the close:
+
+| | NFL | NBA |
+|---|---|---|
+| any move | 49.9% (-0.04 SD) | 48.2% (**-1.99 SD**) |
+| moved 2pt+ | 48.3% (-0.45 SD) | 47.6% (-1.86 SD) |
+| moved 4pt+ | 48.2% | 48.3% |
+
+Not "noise" -- consistently under 50% in six of six buckets, and the NBA
+all-moves figure is significantly worse than a coin flip. Fading loses.
+
+**What IS true in the observation:** openers are genuinely excellent. 9.878
+points of mean error on an NFL margin is a hard number to beat and our projection
+does not come close. And on games that barely move, the opener is as good as the
+close (9.314 against 9.323). It is simply not BETTER, and the money that moves a
+line is carrying information rather than destroying it.
+
+**And the corollary worth keeping:** this is WHY the Pick 6 edge exists. The
+pool's Wednesday number sits near the opener; the market then walks to a
+better-informed number. Danny ends up holding the worse-informed PRICE on the
+side the better-informed number prefers, which is both halves of the edge. If
+the opener were the truth, the edge would not exist -- the hypothesis, had it
+held, would have destroyed the one thing that works.
+
 ### The number is a DIAL, not a switch — and Danny's is never at either end
 
 The two rows above are the opener and the close. **The pool's numbers are at
