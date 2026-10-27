@@ -2755,6 +2755,67 @@ const POOL_FOLLOW = {
   0: [0.550, 0.540, 0.520, 0.509, 0.501],
 };
 /**
+ * THE SAME CURVE PER SPORT, and basketball's is NOT football's.
+ *
+ * NBA harvested from ESPN alone by nba-travel.js: 1,228 completed 2025-26 games
+ * carrying both an opening and a closing number. Scored with a push REFUNDING,
+ * which is the live-betting rule and what the NBA tab is for -- the football
+ * rows above are scored with a push LOSING, which is the Pick 6 rule.
+ *
+ * Positive control before anything was read off it: the 0% column reproduces the
+ * independently recorded headline, 62.2% on n=434 at +5.09 SD against the
+ * recorded 62.1% / n=435 / 5.03 SD from calibrate-sport.js.
+ *
+ *            0%     25%    50%    75%   100%      n
+ *   >=3   64.1   60.8   60.1   57.6   54.4      217
+ *   >=2   62.2   60.0   58.6   57.2   55.3      434
+ *   any   57.7   56.6   55.2   53.6   52.7      924
+ *
+ * THE DIFFERENCE THAT MATTERS IS THE LAST COLUMN. Football at the close is 51.7%
+ * at +0.45 SD, which is nothing, and that is why the football rule is only ever
+ * about holding a stale number. Basketball at the close is 55.3% at +2.21 SD, so
+ * a live bet at the current number is not automatically edgeless.
+ *
+ * There is deliberately NO NBA fade curve. Nothing measured the faded side for
+ * basketball, and borrowing football's would be an interpolation wearing a
+ * measurement's clothes. travelProb returns null for it.
+ */
+const NBA_FOLLOW = {
+  3: [0.641, 0.608, 0.601, 0.576, 0.544],
+  2: [0.622, 0.600, 0.586, 0.572, 0.553],
+  0: [0.577, 0.566, 0.552, 0.536, 0.527],
+};
+/**
+ * SD against 50% at each travel point, PER BUCKET. They are not the same, and
+ * the first version of travelFloor handed every bucket the >=2 row's +2.21 --
+ * so a 1-point move and a 3-point move were both reported with a significance
+ * that belonged to neither. The >=3 bucket is the trap: it has the best win rate
+ * at the open (64.1%) and the WORST significance at the close (+1.29), because
+ * it is half the sample.
+ */
+const NBA_FOLLOW_SD = {
+  3: [4.14, 3.19, 2.95, 2.24, 1.29],
+  2: [5.09, 4.11, 3.57, 2.98, 2.21],
+  0: [4.67, 4.00, 3.13, 2.17, 1.64],
+};
+/**
+ * Months above 50% at each travel point, out of seven -- gate 2, and the gate
+ * that fails first: 7, 7, 7, 6, 4 for the >=2 bucket. A 55.3% that held in four
+ * months of seven is not the same animal as a 58.6% that held in all seven, and
+ * the single number cannot tell them apart.
+ *
+ * ONLY THE >=2 BUCKET HAS ITS MONTHS MEASURED. nba-travel.js printed gate 2 for
+ * that row alone, so the others are null -- and a null gate counts as FAILED,
+ * never as passed. Defaulting an unknown grade to the mildest reading is how a
+ * blank severity once hid fifteen serious findings.
+ */
+const NBA_FOLLOW_PERIODS = {
+  3: null,
+  2: [7, 7, 7, 6, 4],
+  0: null,
+};
+const NBA_PERIODS_TOTAL = 7;
+/**
  * Backing the side the market moved AWAY from, by the same travel axis.
  *
  * Measured rather than taken from the single recorded "fading goes 43.5%",
@@ -2813,12 +2874,26 @@ function poolTravel({ openLine, movePts, poolLine }) {
  * sides, one of them a full point the wrong side, all served at the 100% column
  * as if they had earned it.
  */
-function travelProb({ movePts, travel, follow }) {
+function travelProb({ sport = 'nfl', movePts, travel, follow }) {
   const mv = Math.abs(Number(movePts));
   if (!Number.isFinite(mv) || mv < 0.5) return null;
   if (!Number.isFinite(travel)) return null;
-  const table = follow ? POOL_FOLLOW : POOL_FADE;
-  const row = table[mv >= 4 ? 4 : mv >= 3 ? 3 : mv >= 2 ? 2 : 0];
+  // Football and basketball are measured; everything else is not, and a sport
+  // with no curve gets null rather than football's numbers under its own name.
+  // No `sd` here. The first version carried one and referenced CURVE_SD, which
+  // lives in stale-read.js and not in this file -- so the NBA path worked and the
+  // FOOTBALL path threw a ReferenceError on a field nothing read. travelProb
+  // returns p/measured/basis/gate; the SD belongs to travelFloor, which quotes it.
+  const curves = sport === 'nba' ? { follow: NBA_FOLLOW, fade: null }
+    : sport === 'nfl' ? { follow: POOL_FOLLOW, fade: POOL_FADE }
+    : null;
+  if (!curves) return null;
+  const table = follow ? curves.follow : curves.fade;
+  if (!table) return null;
+  // NBA was swept at >=3 and has no >=4 row; football has both. Falling through
+  // to the highest bucket the sport actually measured, rather than indexing a
+  // row that is not there and returning undefined.
+  const row = table[mv >= 4 && table[4] ? 4 : mv >= 3 ? 3 : mv >= 2 ? 2 : 0];
   const t = Math.max(0, Math.min(1, travel));
   let p = poolCurveAt(row, t);
   let measured = true;
@@ -2839,6 +2914,48 @@ function travelProb({ movePts, travel, follow }) {
     measured,
     basis,
     gate: t <= POOL_TRAVEL_OK ? 'ok' : t <= POOL_TRAVEL_THIN ? 'thin' : 'past',
+  };
+}
+
+/**
+ * The FLOOR for a live bet, where travel cannot be known at bet time.
+ *
+ * The sweep's axis is open-to-close, so t=1 is "bet at the closing number". A
+ * bet placed now is at or before the close, so t <= 1 and the t=1 row is the
+ * worst the moved-toward side can do in expectation. That is the only honest
+ * number for the NBA tab: the already-happened move is priced into the number on
+ * screen, and what is left is exactly this residual.
+ *
+ * It comes back with its gates attached because 55.3% reads like a good bet and
+ * is not a proven one -- at that point the sample is +2.21 SD and held in only
+ * four months of seven. Quoting it bare is how a 55% becomes a recommendation it
+ * has not earned.
+ */
+function travelFloor({ sport = 'nba', movePts } = {}) {
+  const mv = Math.abs(Number(movePts));
+  if (!Number.isFinite(mv) || mv < 0.5) return null;
+  if (sport !== 'nba') return null;            // only basketball survives its close
+  const bucket = mv >= 3 ? 3 : mv >= 2 ? 2 : 0;
+  const row = NBA_FOLLOW[bucket];
+  const last = row.length - 1;
+  const p = row[last];
+  const sd = NBA_FOLLOW_SD[bucket][last];
+  const periodRow = NBA_FOLLOW_PERIODS[bucket];
+  const periods = periodRow ? periodRow[last] : null;
+  // Three gates, the same three this project uses everywhere. An UNMEASURED
+  // gate fails: `periods === NBA_PERIODS_TOTAL` is false for null, which is the
+  // intended reading and not an accident of the comparison.
+  const gates = {
+    beatsBreakEven: p > 0.5238,                // -110 with a push refunding
+    allPeriods: periods === NBA_PERIODS_TOTAL,
+    significant: sd >= 2.5,
+  };
+  const passed = Object.values(gates).filter(Boolean).length;
+  return {
+    p, sd, periods, periodsTotal: NBA_PERIODS_TOTAL, bucket, gates, passed,
+    // best case is the same bet at the OPEN, which is gone, but it frames the range
+    atOpen: row[0],
+    tier: passed === 3 ? 'edge' : passed === 2 ? 'thin' : 'none',
   };
 }
 
@@ -3977,6 +4094,7 @@ function bestBet({
 }
 
 module.exports = {
+  travelFloor,
   espnBookLine,
   travelProb, poolTravel, poolTier, POOL_TRAVEL_OK, POOL_TRAVEL_THIN,
   SPORTS,

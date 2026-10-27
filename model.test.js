@@ -3637,3 +3637,94 @@ test('a both-lay leg is priced on winProb, not on the curve', () => {
     'a both-lay card must price on winProb: ' + a.perfect);
   assert.ok(b.perfect > a.perfect, 'and the curve-priced one sits higher, as it should');
 });
+
+// ---------------------------------------------------------------------------
+// NBA: the same travel curve, measured separately, and it survives the close
+// ---------------------------------------------------------------------------
+
+test('the NBA curve reproduces nba-travel.js at every grid point', () => {
+  // Drift here means the constants were edited without re-running the harvest.
+  // The 0% column is itself a positive control: it reproduces calibrate-sport's
+  // independently recorded 62.1% / n=435 / 5.03 SD at 62.2% / n=434 / +5.09.
+  const grid = [
+    [2, 0, 0.622], [2, 0.25, 0.600], [2, 0.5, 0.586], [2, 0.75, 0.572], [2, 1, 0.553],
+    [3, 0, 0.641], [3, 0.5, 0.601], [3, 1, 0.544],
+    [0.5, 0, 0.577], [0.5, 1, 0.527],
+  ];
+  for (const [mv, t, want] of grid) {
+    const q = m.travelProb({ sport: 'nba', movePts: mv, travel: t, follow: true });
+    assert.ok(q, `no NBA price for move ${mv} at travel ${t}`);
+    assert.ok(Math.abs(q.p - want) < 1e-9,
+      `nba move ${mv} travel ${t}: got ${q.p}, want ${want}`);
+  }
+});
+
+test('basketball does not borrow football numbers, and vice versa', () => {
+  // Two sports, two push rules, two curves. The NBA rows are scored with a push
+  // REFUNDING (live betting); the NFL rows with it LOSING (the Pick 6).
+  assert.notEqual(m.travelProb({ sport: 'nba', movePts: 2, travel: 0, follow: true }).p,
+    m.travelProb({ sport: 'nfl', movePts: 2, travel: 0, follow: true }).p);
+  // football keeps its own >=4 bucket; NBA was never swept that far and must
+  // fall back to >=3 rather than index a row that does not exist
+  assert.equal(m.travelProb({ sport: 'nba', movePts: 5, travel: 0, follow: true }).p, 0.641);
+  assert.equal(m.travelProb({ sport: 'nfl', movePts: 5, travel: 0, follow: true }).p, 0.679);
+  // no NBA fade curve was measured, so there is no NBA fade answer
+  assert.equal(m.travelProb({ sport: 'nba', movePts: 3, travel: 0, follow: false }), null);
+  assert.ok(m.travelProb({ sport: 'nfl', movePts: 3, travel: 0, follow: false }));
+  // and a sport with no curve at all gets null, not somebody else's
+  assert.equal(m.travelProb({ sport: 'nhl', movePts: 3, travel: 0, follow: true }), null);
+  assert.equal(m.travelProb({ sport: 'mlb', movePts: 3, travel: 0, follow: true }), null);
+});
+
+test('the live floor is the close, with its own gates attached', () => {
+  const f = m.travelFloor({ sport: 'nba', movePts: 2 });
+  assert.ok(Math.abs(f.p - 0.553) < 1e-9, 'the floor is the t=1 column: ' + f.p);
+  assert.ok(Math.abs(f.atOpen - 0.622) < 1e-9);
+  assert.equal(f.sd, 2.21);
+  assert.equal(f.periods, 4);
+  // 55.3% beats break-even and fails the other two, so it is NOT an edge
+  assert.equal(f.gates.beatsBreakEven, true);
+  assert.equal(f.gates.allPeriods, false, '4 of 7 months is not all of them');
+  assert.equal(f.gates.significant, false, '+2.21 SD is below the 2.5 bar');
+  assert.equal(f.passed, 1);
+  assert.equal(f.tier, 'none',
+    'a number above break-even that fails two gates must not be tiered as an edge');
+});
+
+test('each bucket carries its OWN significance, not the >=2 row\'s', () => {
+  // The defect this pins: travelFloor handed every bucket +2.21 SD and 4 of 7
+  // months, which belonged to >=2 alone.
+  assert.equal(m.travelFloor({ sport: 'nba', movePts: 1 }).sd, 1.64);
+  assert.equal(m.travelFloor({ sport: 'nba', movePts: 2 }).sd, 2.21);
+  assert.equal(m.travelFloor({ sport: 'nba', movePts: 3 }).sd, 1.29);
+  // AND THE COUNTERINTUITIVE ONE, worth a test so nobody "fixes" it: a bigger
+  // move is a WORSE live bet. >=3 is the best bucket at the open (64.1%) and the
+  // worst at the close (54.4%), because more is already priced in and the sample
+  // halves. Ranking live NBA bets by move size would pick the weakest.
+  const two = m.travelFloor({ sport: 'nba', movePts: 2 });
+  const three = m.travelFloor({ sport: 'nba', movePts: 3 });
+  assert.ok(three.atOpen > two.atOpen, 'bigger move is better at the open');
+  assert.ok(three.p < two.p, 'and worse at the close');
+  assert.ok(three.sd < two.sd, 'on a thinner sample');
+});
+
+test('an unmeasured gate counts as failed, never as passed', () => {
+  // Only the >=2 bucket had its months printed, so the others are null. A null
+  // must not read as "passed" -- defaulting an unknown grade to the mildest
+  // reading is how a blank severity once hid fifteen serious findings.
+  for (const mv of [1, 3, 5]) {
+    const f = m.travelFloor({ sport: 'nba', movePts: mv });
+    assert.equal(f.periods, null, `move ${mv} has no month measurement`);
+    assert.equal(f.gates.allPeriods, false, `move ${mv} must not pass an unmeasured gate`);
+  }
+});
+
+test('the floor is offered only where it was measured', () => {
+  // Football dies at the close -- 51.7% at +0.45 SD -- so there is no football
+  // floor to quote and asking for one gets null rather than a number.
+  assert.equal(m.travelFloor({ sport: 'nfl', movePts: 3 }), null);
+  assert.equal(m.travelFloor({ sport: 'nhl', movePts: 3 }), null);
+  assert.equal(m.travelFloor({ sport: 'nba', movePts: 0.2 }), null, 'no move, nothing to back');
+  assert.equal(m.travelFloor({ sport: 'nba' }), null);
+  assert.equal(m.travelFloor({}), null);
+});
