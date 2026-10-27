@@ -5397,6 +5397,53 @@ async function handleNBAPredictions(res, oddsData) {
 
       // Look up opening lines from ESPN by game ID
       const espnLines = espnOpeningLines[event.id] || null;
+      // WHAT THIS TAB CAN HONESTLY SAY ABOUT A GAME, which is a timing
+      // statement and not a bet.
+      //
+      // Measured on 3,990 completed games, 2023-24 to 2025-26, harvested from
+      // ESPN alone (nba-travel.js). Backing the side the market moved toward:
+      // 62.8% at the OPENING number, +9.90 SD, 22 of 24 months -- and 52.4% at
+      // the CLOSING number against a 52.38% break-even, +1.86 SD, 12 of 24
+      // months. The second figure is break-even and nothing more.
+      //
+      // So there is NO live edge at the number on screen, and this does not
+      // offer one. What it offers is the side the money went to and the fact
+      // that the value decays to nothing by tip -- which tells a reader that
+      // waiting costs them, and that right now there is nothing left to collect.
+      // On one season the close looked like 55.3% and a badge was tempting;
+      // tripling the sample took it to break-even.
+      //
+      // A quarter of NBA games never move, and those get an explicit no-read
+      // rather than a projection dressed up as one -- that was measured at 51.7%
+      // as a picker and 47.1% where the market stood still.
+      const liveRead = (() => {
+        const mv = espnLines && Number.isFinite(espnLines.spreadMovement)
+          ? espnLines.spreadMovement : null;
+        if (mv === null || Math.abs(mv) < 0.5) {
+          return { state: 'no-move', movePts: mv === null ? null : Math.abs(mv) };
+        }
+        const floor = model.travelFloor({ sport: 'nba', movePts: mv });
+        const atOpen = model.travelProb({
+          sport: 'nba', movePts: mv, travel: 0, follow: true });
+        if (!floor || !atOpen) return { state: 'no-move', movePts: Math.abs(mv) };
+        // move < 0 means the home number came down: money came in on the home side
+        const side = mv < 0 ? 'home' : 'away';
+        return {
+          state: 'moved',
+          side,
+          team: side === 'home' ? homeFullName : awayFullName,
+          movePts: +Math.abs(mv).toFixed(1),
+          atOpen: atOpen.p,
+          atClose: floor.p,
+          breakEven: 0.5238,
+          sd: floor.sd,
+          periods: floor.periods,
+          periodsTotal: floor.periodsTotal,
+          // Explicitly: nothing here clears a gate at the current number.
+          gatesAtClose: floor.passed,
+          liveEdge: false,
+        };
+      })();
       const sharpSignals = espnLines
         ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
         : [];
@@ -5441,6 +5488,8 @@ async function handleNBAPredictions(res, oddsData) {
           projectedTotal: calculateProjectedTotal(homePace, awayPace)
         },
         travel: travelData,
+        // Which side the money went to, and that the value is already gone.
+        liveRead,
         injuries: { home: homeInjuries, away: awayInjuries },
         // Why the number moved, by name. Asked for explicitly -- not to bet
         // ahead of the market, since nba-rest.js measured absences as fully

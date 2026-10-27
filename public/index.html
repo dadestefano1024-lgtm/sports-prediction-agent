@@ -457,6 +457,21 @@
                  padding: 9px 12px; margin: 0 0 12px; font-size: 12px; color: #8b949e;
                  line-height: 1.55; }
     .feed-note strong { color: #d29922; }
+    /* The move read. Amber-grey on purpose: it is information, not a verdict,
+       and nothing here clears a gate at the current number. No green, no blue --
+       those two mean "measured edge" everywhere else in this app. */
+    .lr-wrap { border-radius: 6px; padding: 9px 11px; margin: 0 0 10px; font-size: 12px;
+               line-height: 1.5; background: #10151c; }
+    .lr-moved { border-left: 3px solid #8b6914; color: #c9d1d9; }
+    .lr-none { border-left: 3px solid #30363d; color: #6e7681; }
+    .lr-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .lr-head strong { color: #d29922; }
+    .lr-mv { margin-left: auto; color: #8b949e; font-size: 11px;
+             font-variant-numeric: tabular-nums; }
+    .lr-why { color: #8b949e; font-size: 11px; margin-top: 5px; }
+    .lr-why strong { color: #c9d1d9; }
+    .lr-gate { color: #6e7681; font-size: 11px; margin-top: 4px; }
+    .lr-gate strong { color: #8b949e; }
     .pool-flag {
       font-size: 11px; color: #58a6ff; margin-top: 5px;
       padding-top: 5px; border-top: 1px solid #21262d;
@@ -1545,6 +1560,7 @@
               </div>
             </div>
             <div class="card-body">
+              ${liveReadHTML(g)}
               ${opts.extraFor ? opts.extraFor(g) : ''}
               ${(() => {
                 // Show the best available side, not just whether an edge
@@ -1936,6 +1952,49 @@
      *            public, and the reader is right not to trust either half until
      *            somebody explains which one to believe.
      */
+    /**
+     * Which side the market moved toward on this game, and what that is worth.
+     *
+     * DELIBERATELY NOT A BADGE, and deliberately not green or blue. Three
+     * seasons of NBA say the moved-toward side pays 62.8% at the OPENING number
+     * and 52.4% at the closing one, against a 52.38% break-even -- so at the
+     * number on screen there is nothing left to collect, and a coloured verdict
+     * would say otherwise. What is left is a TIMING fact: the money went this
+     * way, and the value has already decayed.
+     *
+     * On one season the close read 55.3% and this very nearly shipped as a blue
+     * "Some edge" badge. Tripling the sample took it to break-even. The shape
+     * of the component is what stopped that being a badge nobody revisited.
+     *
+     * A game that has not moved says so, because a blank is how "nothing could
+     * be measured" came to look like "examined and found even".
+     */
+    function liveReadHTML(g) {
+      const r = g && g.liveRead;
+      if (!r) return '';
+      const pct = (x) => (x * 100).toFixed(1) + '%';
+      if (r.state === 'no-move') {
+        return `<div class="lr-wrap lr-none">No read &mdash; this line has not moved
+          since it opened${Number.isFinite(r.movePts) && r.movePts > 0
+            ? ` (${r.movePts} pt)` : ''}. Market movement is the only live signal here that
+          has ever measured up, so with no movement there is nothing to report. Not a
+          verdict on the game.</div>`;
+      }
+      return `<div class="lr-wrap lr-moved">
+        <div class="lr-head">Money is on <strong>${r.team}</strong>
+          <span class="lr-mv">${r.movePts} pt${r.movePts === 1 ? '' : 's'} since it opened</span></div>
+        <div class="lr-why">Backing the side the market moved toward measured
+          <strong>${pct(r.atOpen)}</strong> at the <em>opening</em> number and
+          <strong>${pct(r.atClose)}</strong> at the <em>closing</em> one, over 3,990 games.
+          Break-even is ${pct(r.breakEven)}.</div>
+        <div class="lr-gate">So the value is in being early, and at the number above there is
+          none of it left &mdash; ${pct(r.atClose)} is break-even, at +${r.sd.toFixed(2)} SD
+          against a 2.5 bar${r.periods === null ? ''
+            : ` and holding in only ${r.periods} of ${r.periodsTotal} months`}.
+          <strong>This is not a bet signal.</strong> It says which way the money went.</div>
+      </div>`;
+    }
+
     function poolBlockHTML(b, isRecommended, g) {
       if (!b) return '';
       const notes = [];
