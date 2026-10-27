@@ -1256,8 +1256,27 @@
         // -- it rides fetchEspnOpeningLines and its own five-minute TTL -- so
         // the paid feed being six days old says nothing about it, and reporting
         // a live line as six days old would be flatly untrue.
-        const onlyFree = havePrices &&
-          games.filter(g => g.myBook).every(g => g.myBook.from === 'espn');
+        const priced = games.filter(g => g.myBook);
+        const freeN = priced.filter(g => g.myBook.from === 'espn').length;
+        const paidN = priced.length - freeN;
+        // A MIXED BOARD GETS ITS OWN SENTENCE. It used to fall through to the
+        // stale branch, which then announced the PAID cache's age as the age of
+        // the whole board: three live ESPN lines and one 25-day-old paid price
+        // read as "these book prices are 25 days old". Three of them were
+        // minutes old. The server now prefers a fresh free line over a stale
+        // paid one, so this should be rare -- but rare is not never, and the
+        // wrong version of this sentence is a lie about live prices.
+        if (freeN && paidN) {
+          const h = feed && Number.isFinite(feed.ageMinutes) ? Math.round(feed.ageMinutes / 60) : null;
+          const oldBit = h === null ? 'an older paid copy'
+            : h >= 24 ? `a paid copy ${Math.round(h / 24)} day${Math.round(h / 24) === 1 ? '' : 's'} old`
+            : `a paid copy ${h} hour${h === 1 ? '' : 's'} old`;
+          return `<div class="feed-note"><strong>${freeN}</strong> of these
+            ${priced.length} lines ${freeN === 1 ? 'is' : 'are'} live DraftKings, free from
+            ESPN; the other ${paidN === 1 ? 'one comes' : paidN + ' come'} from ${oldBit}.
+            ${btn('Buy current prices for all of them')}</div>`;
+        }
+        const onlyFree = freeN > 0 && paidN === 0;
         if (onlyFree) {
           return `<div class="feed-note">Live <strong>DraftKings</strong> lines, free from
             ESPN &mdash; the numbers and prices are real and current. What is missing is the

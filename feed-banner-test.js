@@ -146,8 +146,24 @@ console.log('  ' + staleTxt);
     [{ ...GAMES_NO_PRICE[0], myBook: { title: 'DraftKings' } },
      { ...GAMES_NO_PRICE[1], myBook: freeBook }],
     feed({ stale: false }));
-  check('a board with any PAID book does not claim to be single-book',
-    !/free from ESPN/.test(txt(mixed)), txt(mixed).slice(0, 120));
+  // THIS CHECK USED TO ASSERT ONLY AN ABSENCE and so passed on a lie. A board
+  // with three live ESPN lines and one 25-day-old paid price fell through to the
+  // stale branch and announced "these book prices are 25 days old" about all
+  // four. The check saw that the single-book sentence was absent, called it
+  // good, and never asked what WAS said. Asserting what appears, not just what
+  // does not.
+  const mixedTxt = txt(mixed);
+  check('a mixed board counts the live ones and dates only the old ones',
+    /1 of these 2 lines is live DraftKings/.test(mixedTxt), mixedTxt.slice(0, 200));
+  check('and never dates the live lines',
+    !/these book prices are/i.test(mixedTxt), mixedTxt.slice(0, 200));
+
+  const mixedOld = txt(render(
+    [{ ...GAMES_NO_PRICE[0], myBook: { title: 'DraftKings' } },
+     { ...GAMES_NO_PRICE[1], myBook: freeBook }],
+    feed({ stale: true, ageMinutes: 60 * 24 * 25 })));
+  check('the paid copy\'s age is attributed to the paid copy alone',
+    /a paid copy 25 days old/.test(mixedOld), mixedOld.slice(0, 220));
 
   console.log('\n  with the free ESPN line:');
   console.log('  ' + t);

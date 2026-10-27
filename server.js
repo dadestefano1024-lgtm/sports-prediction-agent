@@ -3078,11 +3078,28 @@ const MY_BOOK = process.env.MY_BOOK || 'DraftKings';
  * all guarded (`(odds.spreadQuotes || [])` then `sq.length`), which is why this
  * is safe, but it is safe by their care and not by accident.
  */
-function withFreeBook(odds, board) {
-  if (odds && odds.myBook) return odds;
+function withFreeBook(odds, board, sport) {
   const free = model.espnBookLine({ board, name: MY_BOOK });
+  const paid = odds && odds.myBook ? odds.myBook : null;
   if (!free) return odds;
-  return { ...(odds || {}), myBook: free };
+  if (!paid) return { ...(odds || {}), myBook: free };
+  // A FRESH LINE BEATS A STALE ONE, whatever it cost.
+  //
+  // The first version said "the paid feed wins when it has anything", which is
+  // true of a feed that is current and false of a cache. Danny's NBA board had
+  // three live ESPN lines and one from a paid copy TWENTY-FIVE DAYS OLD, and the
+  // old rule kept the 25-day-old price -- a number for a game played a month
+  // ago, on tonight's card. It also dragged the whole board into the mixed case
+  // below, so the banner reported the paid cache's age as the age of everything.
+  //
+  // Several books beat one, but only while they are describing the same game as
+  // the one being played.
+  const info = sport ? oddsServeInfo[sport] : null;
+  const paidAge = info && Number.isFinite(info.age) ? info.age : null;
+  if (paidAge !== null && paidAge > ODDS_CACHE_TTL_MS) {
+    return { ...odds, myBook: free };
+  }
+  return odds;
 }
 
 function matchOddsToGame(oddsData, homeTeamFull, awayTeamFull) {
@@ -4438,7 +4455,7 @@ app.get('/api/pool/:sport', async (req, res) => {
       const homeFull = home.team.displayName;
       const awayFull = away.team.displayName;
       const odds = withFreeBook(matchOddsToGame(oddsData, homeFull, awayFull),
-        (openingLines[event.id] || {}).board);
+        (openingLines[event.id] || {}).board, sport);
       const espnOdds = (comp.odds || [])[0] || null;
 
       // The book actually being bet at, then consensus, then ESPN.
@@ -4654,7 +4671,7 @@ app.post('/api/pool/:sport', async (req, res) => {
       const homeFull = home.team.displayName;
       const awayFull = away.team.displayName;
       const odds = withFreeBook(matchOddsToGame(oddsData, homeFull, awayFull),
-        entry && entry.board);
+        entry && entry.board, sport);
       const espnOdds = (comp.odds || [])[0] || null;
       // The number to score a frozen pool line against is the one on the screen
       // of the book being bet at — DraftKings — not a consensus of nine books
@@ -5205,7 +5222,7 @@ async function handleNFLPredictions(res, oddsData, requestedWeek) {
       }
 
       const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
-        (espnOpeningLines[event.id] || {}).board);
+        (espnOpeningLines[event.id] || {}).board, 'nfl');
       const espnLines = espnOpeningLines[event.id] || null;
       const sharpSignals = espnLines
         ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
@@ -5363,7 +5380,7 @@ async function handleNBAPredictions(res, oddsData) {
       ]);
 
       const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
-        (espnOpeningLines[event.id] || {}).board);
+        (espnOpeningLines[event.id] || {}).board, 'nba');
 
       // Look up opening lines from ESPN by game ID
       const espnLines = espnOpeningLines[event.id] || null;
@@ -5525,7 +5542,7 @@ async function handleNHLPredictions(res, oddsData) {
       ]);
 
       const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
-        (espnOpeningLines[event.id] || {}).board);
+        (espnOpeningLines[event.id] || {}).board, 'nhl');
       const espnLines = espnOpeningLines[event.id] || null;
       const sharpSignals = espnLines
         ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
@@ -5689,7 +5706,7 @@ async function handleMLBPredictions(res, oddsData) {
       ]);
 
       const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
-        (espnOpeningLines[event.id] || {}).board);
+        (espnOpeningLines[event.id] || {}).board, 'mlb');
       const espnLines = espnOpeningLines[event.id] || null;
       const sharpSignals = espnLines
         ? analyzeSharpAction(espnLines.spreadMovement, espnLines.totalMovement)
