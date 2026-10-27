@@ -15,3 +15,5 @@ cal-*-cache.json
 cal-*-rows.json
 cal-*-out.txt
 cal-*-err.txt
+cal-nba-travel-cache.json
+nba-travel.log

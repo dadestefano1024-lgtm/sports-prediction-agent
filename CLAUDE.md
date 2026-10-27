@@ -82,6 +82,58 @@ disagree** (46.3 / 52.3 / 54.4). Only the 0% column clears 2.5 SD. So
 `GATE_OK = 0.5` and `GATE_THIN = 0.75` in `stale-read.js`, and past that there is
 nothing to bet.
 
+### NBA: the same curve, measured, and it does NOT die at the close
+
+Danny asked whether NBA could get a recommendation without a second book. It
+can, and not from a projection -- from this. Harvested from ESPN only by
+`nba-travel.js` (1,228 completed 2025-26 games with both an opening and a
+closing number, 1,406 urls, cached to disk so a re-run is free).
+
+**Positive control first.** The sweep's 0% column reproduces the recorded
+headline independently: 62.2% at 2+ points on n=434 at +5.09 SD, against the
+62.1% / n=435 / 5.03 SD that `calibrate-sport.js` recorded. The curve was not
+believed until that matched.
+
+Push REFUNDS below, which is the live-betting rule and what the NBA tab is for.
+Scored with push as a loss as well, in `nba-travel.js`; the answer barely moves.
+
+| move | 0% absorbed | 25% | 50% | 75% | 100% | n |
+|---|---|---|---|---|---|---|
+| any (all moves were >=1pt) | 57.7% | 56.6% | 55.2% | 53.6% | 52.7% | 924 |
+| **>=2pt** | **62.2%** | **60.0%** | **58.6%** | **57.2%** | **55.3%** | 434 |
+| >=3pt | 64.1% | 60.8% | 60.1% | 57.6% | 54.4% | 217 |
+
+**The difference from football is the right-hand column.** NFL at the close is
+51.7% and +0.45 SD -- nothing. **NBA at the close is 55.3% at +2.21 SD.** So
+unlike football, a live NBA bet at the current number is not automatically
+edgeless, and the t=1 row is the FLOOR for one: betting now is somewhere at or
+before the close, so it cannot do worse in expectation.
+
+**The three gates, >=2pt, by how much of the move the number has absorbed:**
+
+| absorbed | rate | SD | months >50% | verdict |
+|---|---|---|---|---|
+| 0% | 62.2% | +5.09 | 7 of 7 | clears all three |
+| 25% | 60.0% | +4.11 | 7 of 7 | clears all three |
+| 50% | 58.6% | +3.57 | 7 of 7 | clears all three |
+| 75% | 57.2% | +2.98 | 6 of 7 | fails gate 2 |
+| 100% | 55.3% | +2.21 | 4 of 7 | fails gates 2 and 3 |
+
+So: **real and fully gated up to half the move, marginal at three quarters, and
+at the close 55.3% is above break-even but NOT proven to this project's bar.**
+Quote the floor with its gates attached, never bare.
+
+**What this does and does not license.** It licenses a one-book NBA
+recommendation, because the rule compares a number against ITSELF over time and
+ESPN's free feed carries DraftKings' open and current. It does not license
+reading the already-happened move as money in hand: a bet at the current number
+has that move priced into it, and what remains is the residual the 100% column
+measures.
+
+**It still does not license a projection.** That was measured and rejected --
+51.7% as a picker, 47.1% where the market did not move, and the EPA rebuild lost
+to the OPENING line. Asked again on 27 Oct 2026 and the answer is the same.
+
 **Beyond the market is not measured.** A pool number WORSE than the current line
 is travel > 1, outside the sweep. The first version clamped it to the 100% column
 and so priced six of week 7's sides — Vikings -7, Cowboys -5, Browns -3, Texans
@@ -118,6 +170,8 @@ Each cost real work. Numbers, not opinions.
 | Wind / cold / roof / short week / divisional | none clears three gates; wind has 41 games, cold 28, so unmeasured rather than disproven | `increment-test.js` |
 | West-coast team travelling east for a 1pm kickoff — the most-cited travel effect in football | 63 games. Fading the traveller 49.2%, backing them 47.6%. The market expected home by 0.33 and the road team won by 0.17, so the jet-lagged side slightly OUTPERFORMED the line — the point estimate is backwards | `increment-test.js` |
 | **NBA back-to-backs and rest** | Fully priced. Fading the tired side at the close is 49.2% over 301 games (-0.29 SD); away-tired 49.4%, home-tired 49.0%. A 3-in-4 looks real at 54.4% until the mirror is checked -- backing away against a tired HOME team is 49.3%, so it is asymmetric and therefore noise. Rest advantage of a day is 49.8%. And the totals run the wrong way: games with one tired side landed **1.78 points ABOVE** the line, not below | `nba-rest.js` |
+| NBA price movement as a signal of its own | Same signal as the number: price and number agree in 800 of 815 games, and following either gives +7.03 vs +7.18 points. Nothing to add for NBA or NFL; NHL is the exception, where the puckline is pinned | `price-move.js` |
+| The NBA projection as a picker | Re-asked 27 Oct 2026. Still the football answer: 51.7% as a picker, 47.1% where the market did not move, and an EPA rebuild lost to the OPENING line | `frozen-test.js`, `epa-test.js` |
 | Totals (stale-line rule) | 51.4% at move>=1 over 401 bets, **+0.55 SD**; 50.8–54.3% across buckets, seasons disagree (49.5 vs 53.2); and **always taking the over scores 50.6%**, so most of what is left is that. Re-measured with pushes as LOSSES, which is this pool's rule, and the answer did not move | `stale-totals-pool.js` |
 | Correlation between covers in a week | variance ratio 0.97 = independent, so multiplying the six is correct | `week-correlation.js` |
 | More confidence in last season | `priorRegression=1` is the WORST setting: 11.772 vs 11.066 | `regression-sweep.js` |
