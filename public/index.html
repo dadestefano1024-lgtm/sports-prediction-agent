@@ -2872,15 +2872,29 @@
       // the earlier save runs of a re-ranked card.
       const srcSplitHTML = (() => {
         const int = (o, k) => parseInt((o || {})[k], 10) || 0;
-        const row = (label, w, l, pu, note) => {
-          const settled = w + l + pu;
+        // A PUSH IS A LOSS IN THE PICK 6 AND A REFUND EVERYWHERE ELSE, so the two
+        // rows cannot share a divisor. Danny said so and he is right: this
+        // divided by w + l + pushes for BOTH, which is correct for the pool --
+        // where a frozen whole number landing on itself busts the card -- and
+        // wrong for the NFL tab, where the stake comes back and the bet never
+        // happened. Measured on the live record: the NFL tab showed 51.6% on
+        // 16-14-1 when it is 53.3%, understated by 1.7 points, which is the
+        // difference between reading as below the 52.4% break-even and above it.
+        //
+        // CLAUDE.md's first line about this app is that these two use cases pull
+        // in opposite directions and almost every bug in its history came from
+        // applying one's logic to the other. This was one of them.
+        const row = (label, w, l, pu, note, pushLoses) => {
+          const settled = pushLoses ? (w + l + pu) : (w + l);
           if (!settled) {
             return `<div class="src-row"><span class="src-lab">${label}</span>` +
                    `<span class="src-none">nothing settled yet</span></div>`;
           }
           const pct = (w / settled * 100).toFixed(1);
           // 2.5 SD is the bar this project uses before believing a signal, so it
-          // is printed beside the record rather than left to be assumed.
+          // is printed beside the record rather than left to be assumed. The
+          // baseline is a coin flip, NOT break-even -- deliberately left alone
+          // here rather than changed in the same breath as the divisor.
           const sd = (w / settled - 0.5) / Math.sqrt(0.25 / settled);
           return `<div class="src-row">
             <span class="src-lab">${label}</span>
@@ -2894,12 +2908,19 @@
         const rec = (data.bySource || {}).recommendation;
         const parts = [];
         if (pool) {
+          // push LOSES: a whole frozen number landing on itself busts the card
           parts.push(row('Pick 6', pool.wins || 0, pool.losses || 0, pool.pushes || 0,
-            pool.supersededRows ? pool.supersededRows + ' superseded rows not counted' : ''));
+            pool.supersededRows ? pool.supersededRows + ' superseded rows not counted' : '',
+            true));
         }
         if (rec) {
+          // push REFUNDS: the stake comes back, so the bet is not in the record
           parts.push(row('NFL tab (live picks)',
-            int(rec, 'wins'), int(rec, 'losses'), int(rec, 'pushes'), ''));
+            int(rec, 'wins'), int(rec, 'losses'), int(rec, 'pushes'),
+            int(rec, 'pushes') ? int(rec, 'pushes') +
+              (int(rec, 'pushes') === 1 ? ' push refunded, not counted'
+                                        : ' pushes refunded, not counted') : '',
+            false));
         }
         return parts.length ? `<div class="src-split">${parts.join('')}</div>` : '';
       })();
@@ -2953,7 +2974,11 @@
         const marketCards = data.byMarket.map(m => {
           const r = fmtRecord(m.wins, m.losses, m.pushes);
           const w = int(m.wins), l = int(m.losses), pu = int(m.pushes);
-          const settled = w + l + pu;
+          // Same per-source divisor as the split above, and for the same reason:
+          // a push busts a Pick 6 card and refunds a live bet. This block
+          // inherited `w + l + pu` from the version that got it wrong for both.
+          const pushLoses = m.src === 'pool';
+          const settled = pushLoses ? (w + l + pu) : (w + l);
           // Same bar and same wording as the source split, so the two sections
           // cannot be read as disagreeing about what counts as evidence.
           const sd = settled ? (w / settled - 0.5) / Math.sqrt(0.25 / settled) : null;
@@ -2971,7 +2996,7 @@
                 .sort((a, b) => (int(b.wins) + int(b.losses)) - (int(a.wins) + int(a.losses)))
                 .map(x => {
                   const xw = int(x.wins), xl = int(x.losses), xp = int(x.pushes);
-                  const n = xw + xl + xp;
+                  const n = pushLoses ? (xw + xl + xp) : (xw + xl);
                   return `<span class="bd-sp"><strong>${String(x.sport).toUpperCase()}</strong>
                     ${xw}-${xl}${xp ? '-' + xp : ''}
                     <span class="bd-sp-n">n=${n}</span></span>`;

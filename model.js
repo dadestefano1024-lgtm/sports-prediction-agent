@@ -449,7 +449,23 @@ const MARGIN_TABLES = {
     conditional: { base: 0.7239, mismatch: 0.1484, games: 1949 },
     // Checked against results: over 3,898 laying-1.5 observations the formula
     // predicted 36.30% and 36.30% happened, every bucket inside 1.5 points.
-    // On a live card its positives split two laying, two taking. Trusted.
+    // On a live card its positives split two laying, two taking.
+    //
+    // CAREFUL: THAT IS CALIBRATION, NOT EDGE, and this flag has been reading it
+    // as both. "The formula predicts cover rates accurately" says the margin
+    // model is right about the distribution. It does not say the book's
+    // moneyline and its run line disagree profitably -- and the only direct
+    // measurement of that disagreement, on 1,334 NHL games, is +0.01
+    // probability points (runline-test.js). Hockey and baseball are different
+    // sports, so that is evidence rather than proof, but it is the nearest
+    // evidence there is and it points at zero.
+    //
+    // Left TRUE pending Danny's call, because flipping it is user-visible: with
+    // verdict true this sport can badge "Best bet" off runLineEdge, and with it
+    // false the numbers are still shown under "Priced, not advised". Baseball
+    // is out of season, so nothing is riding on it today. By this file's own
+    // standard -- stated three entries down, "'may well be real' is not the
+    // standard for telling somebody to bet" -- it should probably be false.
     verdict: true,
   },
   nhl: {
@@ -479,9 +495,14 @@ const MARGIN_TABLES = {
     // somebody to bet. The numbers are computed and shown; they do not produce
     // a verdict until the season starts and they can be checked against
     // results.
+    // RESULTS ARE IN, and the note above said to wait for them. 1,334 games
+    // graded by runline-test.js: +0.01 probability points on 408 bets at +0.00
+    // SD. So the clean twelve-for-twelve sweep was indeed an artifact, and the
+    // underlying signal is not merely unproven -- it is measured at nothing.
+    // verdict stays false for a better reason than before.
     verdict: false,
-    verdictNote: 'every positive edge on the card was the underdog, which has ' +
-                 'been a modelling artifact before; waiting for results',
+    verdictNote: 'measured over 1,334 games: the puckline price lands +0.01 ' +
+                 'probability points on its own moneyline, i.e. dead on the price',
   },
 };
 
@@ -4018,8 +4039,25 @@ function bestBet({
   // same book, says that 1.5 has to be worth.
   //
   // No forecast anywhere in it. Two markets on one scoreboard describe one set
-  // of results; when they contradict each other, the cheaper one is worth
-  // taking. That is why this counts as an edge where the projection does not.
+  // of results; when they contradict each other, the cheaper one looks worth
+  // taking.
+  //
+  // IT IS NOW MEASURED, AND IT IS NOT AN EDGE. This comment used to end "that is
+  // why this counts as an edge where the projection does not", which was a
+  // mechanism argument with no number behind it. runline-test.js graded it on
+  // 1,334 NHL games (ESPN BET, puckline price against the same book's de-vigged
+  // moneyline): at the only thresholds with sample it lands +0.01 probability
+  // points on 408 bets at +0.00 SD, and -0.63 on 218. Dead on the price. A book
+  // prices its moneyline and its spread off one model, so the two do not
+  // disagree enough to collect -- which is the obvious answer in hindsight and
+  // was never checked.
+  //
+  // The >=5pt bucket reads 73.7% and is NINETEEN games at +1.42 SD, with a
+  // mirror of exactly -16.23: symmetric noise.
+  //
+  // The arithmetic is still worth SHOWING -- "this game's own moneyline says
+  // that 1.5 is worth +140 and it is offered at +120" is a true and interesting
+  // statement. It is not worth betting.
   if (cfg.fixedSpread) {
     const table = MARGIN_TABLES[sport];
     const noun = sport === 'nhl' ? 'puck' : 'run';
