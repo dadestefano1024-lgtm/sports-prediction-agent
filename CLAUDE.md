@@ -756,67 +756,81 @@ behave differently. `detectPoolRounding` re-measures it every week.
 Our projection is 1.45 points worse than it. Sustained 57-60% on NFL sides does
 not exist; real professionals run 53-55%.
 
-### THE POOL SPLITS. That changes the objective, and the app optimises the wrong thing
+### THE POOL SPLITS -- and the app is already shaped right, for a reason nobody had written down
 
-Danny gave the rules 27 Oct 2026, and CLAUDE.md had been saying "Only Danny knows
-the pool rules" for a reason: **~300 entrants, six picks, 6-0 required, a push
-LOSES, the pot SPLITS between winners, it ROLLS OVER when nobody wins, $1,800 a
-week.**
+Danny gave the rules 27 Oct 2026: **~300 entrants, six picks, 6-0 required, a
+push LOSES, the pot SPLITS between winners, it ROLLS OVER when nobody wins,
+$1,800 a week**, inside a season-long structure that also pays "first to N wins"
+and "top 25".
 
 `cardOdds` maximises P(my card goes 6-0). With a split pot the thing worth
-maximising is
+maximising is `P(hit) * E[pot / winners | hit]`, and the second factor depends on
+who else hits. `pool-ev.js` guessed at three field models and found a contrarian
+card worth **7.5x** under a "crowd" assumption.
 
-    E[$] = P(my card hits) * E[ pot / winners | my card hits ]
+**THAT FINDING DOES NOT APPLY TO THIS POOL, and the correction is the real
+result.** Danny then supplied the two facts that select between field models:
+the pot rolls over RARELY, and only 1-3 people split it when won. **None of my
+three models produced that pair** -- crowd gave 34% rollovers and 28-way splits,
+the random control 6.7% and 5.6 ways.
 
-and the second factor depends on who ELSE hits. Three hundred people picking off
-the same thirteen frozen lines do not pick independently -- they crowd onto the
-same attractive sides. Conditional on a POPULAR card hitting, many others hit and
-the pot divides.
+A winner almost every week with only 1-3 winners requires the field to hit about
+**1% per card, not 2%** -- worse than coin flips. There is a measured reason, and
+it was already in this file. The sheet rounds AWAY FROM ZERO, and
+`detectPoolRounding` spells out the consequence: at a whole number with a push
+losing, the dog side is identical to the market (Raiders +7 and +6.5 both lose a
+seven-point loss) while the FAVOURITE side is strictly worse (-7 pushes on a
+seven-point win where -6.5 pays). Rounding does not reward the dog, it penalises
+the favourite.
 
-`pool-ev.js`, 60,000 simulated weeks on the real week-7 board, margins drawn from
-the market line and legs settled on the pool line with a push losing:
+On the week-7 board, measured: **laying points averages 45.24% and taking points
+50.46%.** Six favourites compound to **0.86%**; six dogs to **1.65%**. A
+favourite-taking field of 300 therefore produces ~2.6 expected winners and a
+~7.5% chance of none -- **which reproduces both of Danny's observations**, where
+none of the guessed models did. `pool-ev2.js` calibrates it:
 
-| field model | strategy | hit rate | avg split | $/week |
+| favourite bias | no-winner weeks | avg field winners | matches? |
+|---|---|---|---|
+| 0.50 | 8.1% | 3.73 | **yes** |
+| 0.65 | 14.6% | 3.79 | **yes** |
+| 0.80 | 29.0% | 4.33 | no -- rolls too often |
+| 1.00 | 62.3% | 7.72 | no |
+
+And the strategy answer at the CALIBRATED field, not a convenient one:
+
+| field | strategy | hit rate | avg split | $/week |
 |---|---|---|---|---|
-| **crowd** (realistic) | max probability | 2.17% | 27.7 | **$2.41** |
-| | measured edge | 1.92% | 25.7 | **$2.45** |
-| | **contrarian** | 1.04% | **3.4** | **$18.12** |
-| random (control) | max probability | 2.17% | 5.6 | **$10.00** |
-| | contrarian | 0.97% | 5.1 | $4.86 |
+| bias 0.50 | **max probability** | 2.24% | 4.21 | **$13.72** |
+| | contrarian | 1.01% | 5.21 | $4.62 |
+| bias 0.65 | **max probability** | 2.13% | 2.72 | **$22.42** |
+| | contrarian | 1.01% | 9.52 | $2.80 |
 
-**Under crowding the contrarian card is worth 7.5x the max-probability one** while
-hitting half as often, and the control inverts it -- which is the proof that the
-mechanism is the CROWDING and not an artifact of the simulation. Maximising each
-pick is correct only when nobody else is doing the same thing.
+**THE APP'S CARD IS ALREADY THE CONTRARIAN CARD.** It takes dogs because the
+rounding makes them the better half, and the field takes favourites by instinct --
+so one card gets the higher probability AND avoids the crowd, and those are the
+same six picks. Its split runs 2.7-4.2 ways while a deliberately "contrarian"
+card made of favourites splits 5.2-9.5 ways and hits half as often: the worst of
+both. The season prizes reinforce it, since first-to-N-wins and top-25 depend on
+win COUNT and are unaffected by splits.
 
-This is the first thing measured here that is worth more than the stale-line
-edge, and it requires no forecasting at all.
+So `cardOdds` has been optimising the right quantity all along, and the reason is
+better than "it is the obvious thing": on this sheet, maximising probability and
+fading the crowd are the same move. **$13.72-$22.42 a week in expectation, which
+is $250-$400 over a season.**
 
-**WHAT IS ASSUMED, and it is the whole weak point.** I do not know how 300 people
-pick. The "crowd" model samples sides weighted toward high win probability; the
-real field may crowd harder or less. TWO FACTS DANNY CAN OBSERVE PIN IT DOWN:
+**Do not re-propose a contrarian card for this pool** without first re-checking
+the two calibration facts, because a split-pot pool CAN reward one -- just not a
+field that is already on the wrong side of the rounding.
 
-1. **How often does the pot roll over?** The models give 6.7% (no crowding),
-   34% (crowd), 95.9% (identical cards).
-2. **When it IS won, how many people split it?** 5.6 / 27.7 / 301.
-
-Whichever pair matches his experience selects the field model, and with it the
-strategy. Until then the direction is clear and the magnitude is not.
-
-**A caveat on the IDENTICAL row** (not reproduced above because it drives
-nothing): at 95.9% no-winner weeks the simulated pot rolls over for thousands of
-weeks and grows without bound, so its dollar figures are meaningless. The
-conclusion rests on crowd-versus-random.
-
-**AND A DEFECT WORTH REMEMBERING, because it is the third time.** The first run
-reported Cowboys -5 at 76.72% and a max-probability card of six favourites laying
-points. The away side was being settled as `-(m + A)` -- correct only when A is
-the HOME line -- instead of `A - m`, its own line. That computes the OPPOSITE
-TICKET. It is the same root cause as the away picks that once graded backwards (7
-of 42, a New England win recorded as a loss). Caught because 77% for laying 5 on a
-4.5 market is impossible; the positive control afterwards is that each mirrored
-game's two sides sum to 92-98%, the shortfall being the push mass, and the
-both-lay game has the largest shortfall at 89.3%.
+**AND A DEFECT WORTH REMEMBERING, because it is the third time.** `pool-ev.js`'s
+first run reported Cowboys -5 at 76.72% and built a max-probability card of six
+favourites laying points. The away leg was settled as `-(m + A)` -- correct only
+when A is the HOME line -- instead of `A - m` at its own line, which computes the
+OPPOSITE TICKET. Same root cause as the away picks that graded backwards, 7 of
+42, a New England win recorded as a loss. Caught because 77% for laying 5 into a
+4.5 market cannot happen. The control afterwards: each mirrored game's two sides
+sum to 92-98% with the shortfall equal to the push mass, and the both-lay game
+has the largest shortfall at 89.3%.
 
 **The Pick 6 is a lottery ticket the app makes marginally better. The money is in
 the book-price edge** — shop every book, take the best number, no prediction
