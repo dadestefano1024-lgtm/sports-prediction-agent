@@ -17,3 +17,5 @@ cal-*-out.txt
 cal-*-err.txt
 cal-nba-travel-cache.json
 nba-travel.log
+cal-nhl-price-cache.json
+nhl-harvest.log
