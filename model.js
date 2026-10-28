@@ -73,9 +73,21 @@
 //               counted table rather than extrapolating a relationship that was
 //               never checked there.
 //
-// TREAT THESE AS PLACEHOLDERS. They are widely cited approximations, good
-// enough to produce sane output and to test against, and not good enough to bet
-// on. Recalibrate from your own graded results.
+// WHAT IS MEASURED AND WHAT IS NOT, as of 27 Oct 2026. This banner used to read
+// "TREAT THESE AS PLACEHOLDERS ... not good enough to bet on", which was true
+// when written and is now wrong about every sport below. A stale warning is as
+// misleading as a stale number: it invites a reader to distrust figures that
+// were measured, or to assume nothing here ever was.
+//
+//   nfl   MEASURED, 1,087 games 2022-25        see the note on nfl below
+//   nba   MEASURED, 1,231 games 2025-26        calibrate-sport.js
+//   mlb   MEASURED, 2,430 games 2026           the whole season
+//   nhl   MEASURED, 1,312 games 2025-26        and the SHAPE was the real fix
+//
+// What is still unmeasured is narrower and is flagged at each site: eloPerPoint
+// and k are conventional Elo constants nothing here has fitted, and
+// leanThreshold is stated per sport by judgement rather than derived.
+// Recalibrate from graded results when there are enough of them.
 
 const SPORTS = {
   // nfl sigma is MEASURED, not cited. 1,087 games across 2022-2025 with a
@@ -1257,12 +1269,33 @@ function plausibleSpread(sport, value) {
  * normal curve therefore misprices exactly the spreads that occur most often —
  * and -3 is the single most common line in the sport.
  *
- * TREAT THESE AS APPROXIMATIONS. They are the widely reported shape of the
- * margin distribution, not values fitted to a specific dataset, and they are
- * the second thing (after sigma) that should be re-estimated from real results.
- * calibrateMarginWeights exists for that. What matters more than the exact
- * numbers is that the mechanism is here at all: a smooth curve cannot represent
- * a spike no matter how sigma is chosen.
+ * PARTLY FITTED, PARTLY HAND-SET, and the table below says which is which per
+ * entry. This banner used to read "TREAT THESE AS APPROXIMATIONS ... not values
+ * fitted to a specific dataset", which stopped being true for the four that
+ * matter most once 3, 4, 6 and 7 were solved against their conditional rates on
+ * 1,112 / 324 / 338 / 469 games.
+ *
+ * The rest are hand-set round numbers and CANNOT be checked from the data in
+ * this repo: books post half points precisely so that a push cannot happen, so
+ * only 40 of frozen-rows.json's 690 games closed on a whole number at all --
+ * one of them at 5. Auditing the weight at 5 needs the larger historical set
+ * the fitted four came from.
+ *
+ * IT IS ALSO LOW STAKES, which is why it is recorded rather than chased.
+ * Measured 27 Oct 2026: the dead mass at a line of 5 is 1.77%, so even DOUBLING
+ * the weight there moves a side by 0.88 points of probability. The numbers that
+ * move a card are 3 and 7, and both are fitted.
+ *
+ * One open flag from the same audit: pooled over 690 games, observed |margin|
+ * of 17 runs 5.07% against the model's 2.54% on 35 games -- a ratio of 2.00
+ * where the weight is 1.1. That is exactly the pooled-tail failure this file
+ * already warns about below (a weight of 2.32 wanted at a margin of 24 on a
+ * handful of games), so it is NOT acted on here. Every other non-thin bucket
+ * from 1 to 14 sits between 0.84 and 1.26.
+ *
+ * calibrateMarginWeights exists to redo any of this. What matters more than the
+ * exact numbers is that the mechanism is here at all: a smooth curve cannot
+ * represent a spike no matter how sigma is chosen.
  *
  * Anything not listed weighs 1, i.e. the smooth curve is left alone.
  */
@@ -1290,13 +1323,14 @@ const NFL_KEY_NUMBER_WEIGHTS = {
   2: 0.90,
   3: 2.834,  // by far the most common margin: one field goal
   4: 0.709,
-  5: 0.85,
+  5: 0.85,   // HAND-SET. Unverifiable here: 1 game in 690 closed at exactly 5.
+             // Low stakes -- the atom is 1.77%, so a 2x error is 0.88 pts a side.
   6: 1.122,
   7: 1.897,  // touchdown and extra point
   8: 0.90,
   9: 0.85,
   10: 1.25,  // touchdown plus field goal
-  11: 0.90,
+  11: 0.90,  // HAND-SET, and 0 games in 690 closed at exactly 11.
   13: 0.95,
   14: 1.20,  // two touchdowns
   17: 1.10,
