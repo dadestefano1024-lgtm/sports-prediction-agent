@@ -5218,8 +5218,8 @@ async function handleNFLPredictions(res, oddsData, requestedWeek) {
           isPreseason ? Promise.resolve(null) : fetchNFLRecentGames(homeTeamName),
           isPreseason ? Promise.resolve(null) : fetchNFLRecentGames(awayTeamName),
           fetchTravelData(awayTeamName, homeTeamName, 'nfl'),
-          fetchInjuries(homeFullName, 'nfl'),
-          fetchInjuries(awayFullName, 'nfl'),
+          fetchInjuries(homeFullName, 'nfl').catch(() => []),
+          fetchInjuries(awayFullName, 'nfl').catch(() => []),
           fetchNFLStartingQB(homeTeamName, seasonYear),
           fetchNFLStartingQB(awayTeamName, seasonYear),
           // Never ask for a forecast for a covered stadium.
@@ -5336,7 +5336,24 @@ async function handleNBAPredictions(res, oddsData) {
   try {
     // cachedGet, and the same URL fetchEspnOpeningLines uses, so the slate and
     // its lines come from one request rather than two.
-    const slate = await fetchSlate('basketball/nba');
+    // ESPN RATE-LIMITS, AND THIS BOARD IS THE HEAVIEST USER OF IT. Nine calls a
+    // game plus two seasons of game logs across thirty teams is ~100 ESPN
+    // requests for one NBA board, and ESPN answers 403 when it has had enough.
+    // Every other fetch below now degrades a field; the slate cannot, because
+    // without it there are no games -- so it reports that plainly instead of
+    // throwing a raw axios string up to the 500 handler. Danny saw exactly that:
+    // {"error":"Request failed with status code 403"} on a tab with four games on it.
+    let slate;
+    try {
+      slate = await fetchSlate('basketball/nba');
+    } catch (err) {
+      console.error('[NBA] slate fetch failed:', err.message);
+      return res.json({ sport: 'NBA', games: [], upstream: 'refused',
+        message: /40[39]/.test(err.message || '')
+          ? 'ESPN is rate-limiting this server right now, so the NBA board cannot be '
+            + 'built. Nothing is wrong with the games or your picks -- try again shortly.'
+          : 'Could not reach ESPN for the NBA slate: ' + err.message });
+    }
     const events = slate.events;
 
     if (events.length === 0) {
@@ -5344,7 +5361,8 @@ async function handleNBAPredictions(res, oddsData) {
     }
 
     // Fetch ESPN opening lines once for all games (cached 5 min)
-    const espnOpeningLines = await fetchEspnOpeningLines('nba');
+    const espnOpeningLines = await fetchEspnOpeningLines('nba')
+      .catch(() => ({}));   // costs the movement column, not the board
 
     // Opponent-adjusted ratings, computed once for the slate.
     //
@@ -5396,8 +5414,8 @@ async function handleNBAPredictions(res, oddsData) {
         fetchPaceData(homeTeamName),
         fetchPaceData(awayTeamName),
         fetchTravelData(awayTeamName, homeTeamName, 'nba'),
-        fetchInjuries(homeFullName, 'nba'),  // FIX: pass full name not nickname
-        fetchInjuries(awayFullName, 'nba')   // FIX: pass full name not nickname
+        fetchInjuries(homeFullName, 'nba').catch(() => []),  // FIX: pass full name not nickname
+        fetchInjuries(awayFullName, 'nba').catch(() => [])   // FIX: pass full name not nickname
       ]);
 
       const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
@@ -5556,7 +5574,8 @@ async function handleNHLPredictions(res, oddsData) {
       return res.json({ sport: 'NHL', games: [], message: 'No NHL games scheduled' });
     }
 
-    const espnOpeningLines = await fetchEspnOpeningLines('nhl');
+    const espnOpeningLines = await fetchEspnOpeningLines('nhl')
+      .catch(() => ({}));   // costs the movement column, not the board
 
     // Opponent-adjusted ratings, once for the slate.
     //
@@ -5607,8 +5626,8 @@ async function handleNHLPredictions(res, oddsData) {
         fetchNHLRecentGames(homeTeamName),
         fetchNHLRecentGames(awayTeamName),
         fetchTravelData(awayTeamName, homeTeamName, 'nhl'),
-        fetchInjuries(homeFullName, 'nhl'),
-        fetchInjuries(awayFullName, 'nhl')
+        fetchInjuries(homeFullName, 'nhl').catch(() => []),
+        fetchInjuries(awayFullName, 'nhl').catch(() => [])
       ]);
 
       const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
@@ -5713,7 +5732,8 @@ async function handleMLBPredictions(res, oddsData) {
       return res.json({ sport: 'MLB', games: [], message: 'No MLB games scheduled' });
     }
 
-    const espnOpeningLines = await fetchEspnOpeningLines('mlb');
+    const espnOpeningLines = await fetchEspnOpeningLines('mlb')
+      .catch(() => ({}));   // costs the movement column, not the board
 
     // Opponent-adjusted ratings, once for the slate.
     //
@@ -5771,8 +5791,8 @@ async function handleMLBPredictions(res, oddsData) {
         fetchMLBRecentGames(awayTeamName),
         fetchMLBPitcherFromProbable(homeProbable),
         fetchMLBPitcherFromProbable(awayProbable),
-        fetchInjuries(homeFullName, 'mlb'),
-        fetchInjuries(awayFullName, 'mlb')
+        fetchInjuries(homeFullName, 'mlb').catch(() => []),
+        fetchInjuries(awayFullName, 'mlb').catch(() => [])
       ]);
 
       const odds = withFreeBook(matchOddsToGame(oddsData, homeFullName, awayFullName),
