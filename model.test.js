@@ -2125,11 +2125,17 @@ test('bestBet says why it is silent when it cannot price the run line', () => {
   assert.match(noML.reason, /no moneyline here to price it against/);
 });
 
-test('bestBet withholds a hockey verdict until the sweep is explained', () => {
+test('bestBet withholds a hockey verdict, and now says why with a number', () => {
   // Hockey calibrates as well as baseball, but every positive edge on a live
-  // card was the underdog — twelve for twelve, and still twelve for twelve
-  // after switching to Shin. Until that is understood it is shown, not
-  // recommended.
+  // card was the underdog -- twelve for twelve, and still twelve for twelve
+  // after switching to Shin. The note used to say "waiting for results".
+  //
+  // THE RESULTS ARRIVED. runline-test.js graded the signal on 1,334 games at
+  // +0.01 probability points over 408 bets, so the sweep was an artifact and the
+  // signal is measured at nothing. This test asserted the old PHRASE and so
+  // failed on a correct change -- the behaviour (withhold, show the numbers) was
+  // never in question. Asserting the behaviour and the citation rather than the
+  // wording.
   assert.equal(m.MARGIN_TABLES.nhl.verdict, false);
   assert.equal(m.MARGIN_TABLES.mlb.verdict, true);
 
@@ -2150,7 +2156,12 @@ test('bestBet withholds a hockey verdict until the sweep is explained', () => {
   // never learned the pricing existed or why it was being held back.
   assert.equal(v.level, 'withheld', 'it must say it is withholding');
   assert.equal(v.pick, null, 'and still not recommend a side');
-  assert.match(v.reason, /waiting for results/);
+  // the reason must carry the MEASUREMENT, not a promise to measure later
+  assert.match(v.reason, /measured over 1,334 games/,
+    'the withheld verdict should cite what was measured: ' + v.reason);
+  assert.match(v.reason, /dead on the price/);
+  assert.doesNotMatch(v.reason, /waiting for results/,
+    'the old "waiting" wording must be gone -- the waiting is over');
   assert.match(v.reason, /worth/, 'the numbers are shown even though the advice is not');
 });
 
